@@ -62,6 +62,7 @@ async def api_chat_slots(request: web.Request) -> web.Response:
         is_owner_dashboard_request,
         schedule_visibility_refresh,
     )
+    from kiro_crew.dashboard.slot_list_pass import shared_slot_list
     from kiro_crew.dashboard.source_providers.chip_refresh import schedule_tiered_check_refresh
 
     # Same warm-up as the WebSocket connect path: slot source-link extraction is
@@ -74,8 +75,10 @@ async def api_chat_slots(request: web.Request) -> web.Response:
 
     include_check_status = is_owner_dashboard_request(request)
     is_dashboard_user = bool(request.get("is_dashboard_user"))
-    payloads = state.serialize_slots(
-        include_check_status=include_check_status, dashboard_user=is_dashboard_user
+    # Shared with the connects and GETs of a reconnect storm (see slot_list_pass);
+    # the list may be shared, so everything below builds new lists and rows.
+    payloads = await shared_slot_list(
+        state, include_check_status=include_check_status, dashboard_user=is_dashboard_user
     )
     # A crew-member caller admitted here (the chat gate stamped its verified
     # principal) sees ONLY the sessions it owns or created -- the same set the
@@ -997,9 +1000,31 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 return history_corpus_unreadable()
             requires_full_reader = bool(rotated)
 
+        # A sidebar row whose window has not loaded holds no rows in memory, so
+        # its page is read straight from disk and the window stays unloaded:
+        # opening a restored tab reads the page it shows, not its whole window.
+        if (
+            state.conversation_log
+            and not requires_full_reader
+            and getattr(slot, "window_pending", False) is True
+        ):
+            from kiro_crew.dashboard import slot_window_tail as _window_tail
+
+            row_page = await asyncio.to_thread(
+                _window_tail.read_row_page,
+                state.conversation_log,
+                history_key,
+                limit=read_limit,
+                before=before,
+            )
+            # A load that landed during the read may have appended rows the
+            # page does not hold; the usual path below reconciles them.
+            if row_page is not None and getattr(slot, "window_pending", False) is True:
+                bounded_page = row_page
+
         # A memory-only gateway (no conversation log) has no durable rows to
         # index; the fallback below already serves it from the resident window.
-        if state.conversation_log and not requires_full_reader:
+        if bounded_page is None and state.conversation_log and not requires_full_reader:
             # Imported here, not at module scope: this function runs on the
             # handlers module's globals (``_facade_compose.compose``).
             from kiro_crew.dashboard.transcript_snapshot import (
@@ -1125,6 +1150,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         if bounded_page is not None:
             messages, total, has_more, next_before = bounded_page
         else:
+            # The full reader reconciles against the resident window, so a row
+            # that has not loaded it loads it here, with the read off the loop.
+            from kiro_crew.dashboard.state import load_window_off_loop
+
+            await load_window_off_loop(slot)
             try:
                 all_msgs = (
                     await asyncio.to_thread(

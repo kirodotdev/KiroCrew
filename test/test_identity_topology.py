@@ -888,6 +888,13 @@ def test_a_proven_recycle_is_not_unverifiable(shared_topo, monkeypatch) -> None:
 
     # Publish a SIGNED 1:1 mapping, then make the live start token disagree with
     # the recorded one: REFUSAL_RECYCLED, reached only past a verifying MAC.
+    # The test brings its own trust-root key. Only a SecurityEventLog creates the
+    # real one, so without this the mapping is signed only when an earlier test
+    # on the same worker happened to start the SEL, and reads as "absent" otherwise.
+    key_file = shared_topo.cfg_dir / "sel_hmac.key"
+    key_file.write_bytes(b"\x01" * 32)
+    monkeypatch.setattr(session_pid_sig, "sel_hmac_key_path", lambda: key_file)
+    monkeypatch.setattr(session_pid_sig, "_sel_hmac_key_bytes", lambda: None)
     monkeypatch.setattr(session_pid_sig, "config_dir", lambda: shared_topo.cfg_dir)
     monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: "recorded-token")
     session_pid_sig.publish_session_pid(KIRO_CLI, SESSION_KEY)
@@ -1515,3 +1522,51 @@ def test_memory_recall_uses_the_shared_gate_identity_once(monkeypatch, identifie
     else:
         gateway.assert_not_called()
         assert result == refusal
+
+
+# ---------------------------------------------------------------------------
+# A channel agent named strictly is named leniently too.
+# The `X-Session-Key` a `kirocrew-core` call forwards comes from the lenient
+# resolver, and an app route that holds an operation from channel agents
+# (Ops Mission Control's `POST /rotation/arm`) reads that header. The hold
+# matches the core deny it replaced only while every key the strict gate
+# returns is also the lenient one's answer.
+# ---------------------------------------------------------------------------
+
+CHANNEL_KEY = "channel:ops-room"
+
+
+@pytest.mark.parametrize("source", ["token", "env_sole_tenant", "env_unpublished", "signed_pid"])
+def test_the_lenient_resolver_names_every_key_the_strict_one_names(
+    tmp_path, monkeypatch, source
+) -> None:
+    from kiro_crew import mcp_core, session_pid_sig, session_token_sig
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    topo = ProcessTopology(tmp_path)
+    topo.add(GATEWAY, 1)
+    topo.add(SESSION_HOST, GATEWAY)
+    topo.add(KIRO_CLI, SESSION_HOST)
+    topo.add(MCP_SERVER, KIRO_CLI)
+    _wire_shared(monkeypatch, topo)
+    monkeypatch.setattr("kiro_crew.mcp_caller._parent_pid", topo.parent_lookup("host"))
+    monkeypatch.setattr(session_pid_sig, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.config.paths.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_pid_sig.platform_compat, "get_process_start_id", lambda pid: None)
+    monkeypatch.setattr(session_pid_sig, "_load_hmac_key", lambda: b"k" * 32)
+    if source == "token":
+        monkeypatch.setattr(session_token_sig, "verify_session_token", lambda tok: CHANNEL_KEY)
+        monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, "channel-token")
+    elif source == "env_sole_tenant":
+        session_pid_sig.publish_session_pid(KIRO_CLI, CHANNEL_KEY, co_tenants=[CHANNEL_KEY])
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+    elif source == "env_unpublished":
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+    else:
+        session_pid_sig.publish_session_pid(KIRO_CLI, CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+
+    assert mcp_core._resolve_session_key_strict() == CHANNEL_KEY
+    assert mcp_core._resolve_session_key() == CHANNEL_KEY

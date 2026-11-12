@@ -264,6 +264,74 @@ class TestOwnerGate:
             await client.close()
 
 
+# ── bundle import ───────────────────────────────────────────────────────────
+
+
+def _pack_bundle(ident: str, states: dict, files: dict) -> dict:
+    return {
+        "kind": "crew-companion-pack",
+        "version": 1,
+        "id": ident,
+        "manifest": {"meta": {"id": ident, "name": ident}, "states": states},
+        "files": files,
+    }
+
+
+# One Hangul name in two Unicode spellings: distinct strings, one file on macOS.
+# Hangul because its decomposed Jamo are letters, so both spellings pass the
+# filename allowlist (an accented Latin name's combining mark does not).
+_NFC_NAME = "\uac00.svg"
+_NFD_NAME = "\u1100\u1161.svg"
+
+
+class TestAppearanceImport:
+    """The companion's import must refuse what ``POST /api/appearances/import`` refuses.
+
+    Both routes install through ``import_bundle``, which checks the files a bundle
+    CARRIES but not the files its manifest NAMES. The dashboard route adds that
+    check (``bundle_reference_error``); without it here, a bundle the dashboard
+    refuses installed through the companion with a 200.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            # The manifest names idle art the bundle does not carry: every slot 404s.
+            _pack_bundle("no-idle-art", {"idle": "missing.svg"}, {"other.svg": "<svg/>"}),
+            # Two spellings of one name are one file on macOS: the second write
+            # replaced the first and one state's art was lost.
+            _pack_bundle(
+                "one-file-twice",
+                {"idle": _NFC_NAME, "done": _NFD_NAME},
+                {_NFC_NAME: "<svg id='idle'/>", _NFD_NAME: "<svg id='done'/>"},
+            ),
+        ],
+        ids=["missing-idle-art", "nfc-nfd-collision"],
+    )
+    async def test_a_bundle_the_dashboard_refuses_is_refused_here(self, gated, bundle):
+        client = await _client()
+        try:
+            r = await client.post(f"{BASE}/appearances/import", json={"bundle": bundle})
+            assert r.status == 400, await r.text()
+            assert (await r.json())["code"] == "invalid_bundle"
+        finally:
+            await client.close()
+        assert not hooks.get_appearances().pack_exists(bundle["id"])
+
+    @pytest.mark.asyncio
+    async def test_a_well_formed_bundle_still_installs(self, gated):
+        bundle = _pack_bundle("good-pack", {"idle": "idle.svg"}, {"idle.svg": "<svg/>"})
+        client = await _client()
+        try:
+            r = await client.post(f"{BASE}/appearances/import", json={"bundle": bundle})
+            assert r.status == 200, await r.text()
+            assert (await r.json())["ok"] is True
+        finally:
+            await client.close()
+        assert hooks.get_appearances().pack_exists("good-pack")
+
+
 # ── reminders round trip ────────────────────────────────────────────────────
 
 

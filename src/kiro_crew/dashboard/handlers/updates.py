@@ -37,24 +37,21 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.dashboard.handlers.updates_apply import _build_frontend  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _policy_apply_tasks  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _PolicyApplyStopped  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _repo_exec_config_refusal  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _DEFERRED_RETRY_SECS  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import WHEN_CANCEL  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import WHEN_NEXT_START  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _quiescence_of  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _read_force_flag  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _read_update_when  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _resolve_restart_target  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _restart_pending_refusal  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _run_tracked_policy_apply  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _snapshot_memory_or_refuse  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _user_excludes_file  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import _venv_pip_install  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_cancel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_simulate  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_apply import policy_applies_in_flight  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_cache  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_path  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import _overlay_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _read_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
@@ -66,6 +63,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _CLI_MANIFEST_SCHEMA  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _FEED_MAX_BYTES  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _FEED_TIMEOUT_SECS  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _GIT_FETCH_TIMEOUT_S  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _MIN_VERSION_RE  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _PUB_DATE_RE  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _UPDATE_CHECK_INTERVAL  # noqa: F401
@@ -84,9 +82,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _last_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _run_update_check  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _upcoming_for_feed  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _update_policy_file  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import api_update_check  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import last_checked_at  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import status_update_fields  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_step_up import _OFFERED_MAX_CHARS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _arm_packaged_app  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _audit_update_event  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _loopback_peer  # noqa: F401
@@ -146,10 +147,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import __version__ as _local_version  # noqa: F401
-    from kiro_crew import dep_sync  # noqa: F401
     from kiro_crew import platform_compat  # noqa: F401
     from kiro_crew import shutdown_event  # noqa: F401
+    from kiro_crew import update_next_start  # noqa: F401
     from kiro_crew import update_ownership  # noqa: F401
+    from kiro_crew import update_restart_ready  # noqa: F401
     from kiro_crew.changelog import Release  # noqa: F401
     from kiro_crew.changelog import base_version  # noqa: F401
     from kiro_crew.changelog import build_release_list  # noqa: F401
@@ -161,6 +163,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import config_path  # noqa: F401
     from kiro_crew.config.loader import overlay_pins  # noqa: F401
     from kiro_crew.config.loader import update_config_locked  # noqa: F401
+    from kiro_crew.config.overlay_owners import SOURCE_POLICY  # noqa: F401
+    from kiro_crew.config.overlay_owners import OverlayPin  # noqa: F401
+    from kiro_crew.config.overlay_owners import overlay_pin  # noqa: F401
+    from kiro_crew.cron import stop_cron_before_restart  # noqa: F401
     from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
@@ -172,13 +178,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.urls import is_loopback  # noqa: F401
     from kiro_crew.dashboard.ws_event_scope import app_origin_frame  # noqa: F401
     from kiro_crew.dashboard.ws_event_scope import audit_teammate_withheld  # noqa: F401
-    from kiro_crew.executors import subprocess_executor  # noqa: F401
     from kiro_crew.gateway_restart import resolve_restart_launcher  # noqa: F401
-    from kiro_crew.git_divergence import UNREADABLE_TIMEOUT  # noqa: F401
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401
     from kiro_crew.platform import feed_trust  # noqa: F401
-    from kiro_crew.platform import release_apply  # noqa: F401
     from kiro_crew.platform.update_capability import AUTO_EFFECT_UNKNOWN  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_DEFERRED  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_FAILED  # noqa: F401
@@ -204,8 +207,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_governance import git_command_env  # noqa: F401
     from kiro_crew.platform.update_governance import min_version  # noqa: F401
     from kiro_crew.platform.update_governance import repo_exec_config_reason  # noqa: F401
-    from kiro_crew.platform.update_governance import resolve_remote_url  # noqa: F401
-    from kiro_crew.platform.update_governance import update_blocked_reason  # noqa: F401
     from kiro_crew.platform.update_governance import update_required  # noqa: F401
     from kiro_crew.platform.update_governance import upstream_remote_and_branch  # noqa: F401
     from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases  # noqa: F401
@@ -219,6 +220,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import reexec_launcher  # noqa: F401
     from kiro_crew.platform_compat import reexec_python_module  # noqa: F401
     from kiro_crew.pre_exec_stops import run_pre_exec_stops  # noqa: F401
+    from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
+
+    # A second alias of the same name; isort would fold it into the line above.
+    from kiro_crew import __version__ as _running_version  # noqa: F401  # isort: skip

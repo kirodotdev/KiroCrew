@@ -337,6 +337,11 @@ async def _ensure_session(self: DiscordClient) -> aiohttp.ClientSession:
     """Return the shared ClientSession, creating it once on demand
     (double-checked under a lock — REST calls run concurrently with the
     gateway loop)."""
+    if self._closed and (self._session is None or self._session.closed):
+        # close() has already closed the session (or is awaiting its close). A late caller (a typing loop,
+        # a queued drain) must not open a new one: nothing would ever close it,
+        # and the send would go out on a channel that was shut down.
+        raise aiohttp.ClientConnectionError("Discord client is closed")
     if self._session is None or self._session.closed:
         async with self._session_lock:
             if self._session is None or self._session.closed:
@@ -498,6 +503,8 @@ async def _api_request(
     that waits nothing is unaffected: the caller's own pre-send check is still
     the most recent reading when no time has passed.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        return _failed(DISCORD_TRANSIENT, detail="client closed")
     session = await self._ensure_session()
     url = _API_BASE + path
     auth = {"Authorization": f"Bot {self._token}"}
@@ -513,6 +520,11 @@ async def _api_request(
     recheck_hint = destination if recheck_destination else ""
     rate_limited = 0
     transient = 0
+    # A message create is applied once per copy Discord receives, and a 5xx, a
+    # timeout or a dropped response can follow a write Discord already made. So
+    # it is re-sent only when Discord certainly did not apply it: after a 429, or
+    # when the connection failed before the request went out.
+    sent_once = method == "POST" and path.rstrip("/").endswith("/messages")
     # The attempt that follows a 429 has already served that back-off, so it
     # sends immediately; re-checking the hold it just waited out would
     # charge it twice.
@@ -574,7 +586,7 @@ async def _api_request(
                     continue
                 if resp.status >= 500:
                     transient += 1
-                    if transient > _TRANSIENT_RETRIES:
+                    if transient > _TRANSIENT_RETRIES or sent_once:
                         logger.warning(
                             "Discord API %s failed: status=%s (retries exhausted)",
                             route,
@@ -623,7 +635,9 @@ async def _api_request(
                 route,
                 type(exc).__name__,
             )
-            if transient > _TRANSIENT_RETRIES:
+            if transient > _TRANSIENT_RETRIES or (
+                sent_once and not isinstance(exc, aiohttp.ClientConnectorError)
+            ):
                 return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
             permission = await self._wait_then_revalidate(
                 recheck_path, _TRANSIENT_BACKOFF_SECS * transient, recheck_hint

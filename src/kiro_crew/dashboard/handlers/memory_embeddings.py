@@ -861,6 +861,9 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             await kill_and_reap(proc)
             logger.warning("ensurepip bootstrap timed out")
             return False, "pip bootstrap (ensurepip) timed out"
+        except asyncio.CancelledError:
+            await kill_and_reap(proc)
+            raise
         if proc.returncode != 0:
             logger.warning("ensurepip bootstrap failed: %s", _redact_pip_stderr(stderr))
             return False, "pip bootstrap (ensurepip) failed"
@@ -1040,6 +1043,9 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                             {"error": "faiss-cpu install timed out."},
                             status=500,
                         )
+                    except asyncio.CancelledError:
+                        await kill_and_reap(proc)
+                        raise
                     if proc.returncode != 0:
                         # Same fall-through as the no-sandbox branch; the reason
                         # reaches the card via embedding-status's setup_warning.

@@ -3,8 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { useUpdateSwitchesShown } from '../../utils/updateSwitches'
-import { configuredAcpBackend, type AcpBackendConfig } from '../../api/acpBackend'
-import { KIRO_SIGN_IN_BACKEND } from '../../pages/developer/kiroSignInLink'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
+import { kasInUse, type AcpBackendConfig } from '../../api/acpBackend'
 import type { SettingsSearchGovernance } from './settingsSearchCore'
 
 /**
@@ -45,10 +45,11 @@ export function useSettingsSearchGovernance(
   // The updater's answer from cache only, on every surface: a search open is no
   // reason for an IPC round trip, and About re-reads it when it is opened.
   const { app, gateway } = useUpdateSwitchesShown({ fetch: false })
-  // The `['kirocrewConfig']` read naming the selected harness. The sign-in card
-  // signs out Crew's own Kiro sign-in, which agents run as only on KAS; on any
-  // other harness the entry would promise a sign-out of an account it does not
-  // touch. Withheld only on a successful read that names another harness.
+  // The `['kirocrewConfig']` read saying whether anything here runs on KAS. The
+  // sign-in card signs in Crew's own Kiro sign-in, which only KAS sessions run as
+  // (the main harness or Bots); where nothing runs on KAS the entry would promise
+  // a sign-in or sign-out of an account nothing uses. Withheld only on a
+  // successful read where nothing runs on KAS.
   // From cache only, on every surface: the shell already reads this at boot
   // (the credits pill), so a search adds no request of its own.
   const cfgQ = useQuery<AcpBackendConfig>({
@@ -56,9 +57,15 @@ export function useSettingsSearchGovernance(
     queryFn: () => api.kirocrewConfig(),
     ...CACHED_ONLY,
   })
-  const kiroSignInOffered = !cfgQ.isSuccess || configuredAcpBackend(cfgQ.data) === KIRO_SIGN_IN_BACKEND
+  const kiroSignInOffered = !cfgQ.isSuccess || kasInUse(cfgQ.data)
+  // The `['instances']` read RemoteCrewPanel picks its branch by, from cache only:
+  // the shell's tab bar already reads it at boot.
+  const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), ...CACHED_ONLY })
+  const remoteCrewsEnabled = instancesQ.isSuccess
+    ? true
+    : isInstancesDisabledError(instancesQ.error) ? false : undefined
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled],
   )
 }

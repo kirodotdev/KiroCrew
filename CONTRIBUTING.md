@@ -181,6 +181,7 @@ copy, which only the next stage replaces. See the runtime dist resolution notes 
 | `KIROCREW_HOME` | Config/data directory override | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Dashboard port override | `5476` |
 | `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
+| `KIROCREW_ALLOWED_LOOPBACK_PORTS` | Extra loopback ports trusted as browser origins (comma-separated), e.g. `3000` for the Vite dev server. Every page served on a listed port can act as you in the dashboard | none |
 
 If you don't need to run production and dev side by side, omit `KIROCREW_PORT` —
 just stop your production gateway first.
@@ -191,8 +192,8 @@ When working on frontend changes, run the Vite dev server alongside the backend
 for instant hot-reload without rebuilding:
 
 ```bash
-# Terminal 1 — start the backend
-KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew gateway
+# Terminal 1: start the backend, trusting the Vite port as a browser origin
+KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 KIROCREW_ALLOWED_LOOPBACK_PORTS=3000 kirocrew gateway
 
 # Terminal 2 — start the frontend dev server (hot-reloads .tsx changes)
 cd website
@@ -213,6 +214,11 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token
 - The editable backend must be restarted after Python source changes
 - The frontend hot-reloads automatically — no rebuild for `.tsx`/`.ts`/`.css` changes
 - Always access via `localhost:3000` (Vite) during frontend dev, not `localhost:6777` directly
+- The gateway trusts `localhost:3000` only because `KIROCREW_ALLOWED_LOOPBACK_PORTS=3000` says so. Do
+  not leave that set on a gateway you use while another app serves `:3000`: any page on a trusted
+  port can act as you in the dashboard, terminal included. The variable is inherited by everything
+  that gateway starts, its dashboard terminal included, so a gateway started from there trusts the
+  port too
 - If the backend restarts, you may need a new token (sessions expire with the process)
 
 ## Releasing New Versions
@@ -331,7 +337,11 @@ the one or two commits this repo allows, opening or updating the PR, then pollin
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill
-instead of describing the steps yourself.
+instead of describing the steps yourself. From a fork, `origin` is your fork and the
+skill reads the base from `origin/main`, so bring your fork's `main` level with
+upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
+`git fetch origin`); otherwise its diff, review briefs and squash all measure
+against your fork's older `main`.
 
 One thing the GitHub UI will get wrong for you: if your branch falls behind the
 base while the PR is open, **rebase it, do not merge**. Plain-clicking

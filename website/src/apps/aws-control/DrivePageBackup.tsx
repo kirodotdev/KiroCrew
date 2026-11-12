@@ -441,10 +441,25 @@ export function BackupSection({ account }: { account: string }) {
   // it. On failure the label is left unchanged and the row says so.
   const [editingLabel, setEditingLabel] = useState(false)
   const [labelDraft, setLabelDraft] = useState('')
+  // Refused while a write is already out: the save button keeps focus with
+  // `aria-disabled` rather than native `disabled`, so it stays clickable and
+  // this guard is what stops a second press starting a second write.
+  const labelSaveClaimed = useRef(false)
   const labelMut = useMutation({
     mutationFn: (label: string) => awsControlApi.installLabel(label),
-    onSuccess: () => { setEditingLabel(false); invalidate() },
+    onSuccess: () => { labelSaveClaimed.current = false; setEditingLabel(false); invalidate() },
+    // The editor stays open on failure, so the button is still mounted and must
+    // be pressable again once the reader corrects the name.
+    onError: () => { labelSaveClaimed.current = false },
   })
+  // The one path to the write, so the guard holds for BOTH the button and the
+  // field's Enter key -- a second press or a press-then-Enter must not start a
+  // second write.
+  const submitLabel = () => {
+    if (labelSaveClaimed.current) return
+    labelSaveClaimed.current = true
+    labelMut.mutate(labelDraft)
+  }
   // The archive row awaiting an in-page confirm, by key. Never the label: two
   // installs can publish the same label, and the confirm is about a specific
   // object.
@@ -724,8 +739,8 @@ export function BackupSection({ account }: { account: string }) {
                     // habituated by those presses Enter here, and losing the name to
                     // a key that works everywhere else is the worst version of it.
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') labelMut.mutate(labelDraft)
-                      if (e.key === 'Escape') { setEditingLabel(false); labelMut.reset() }
+                      if (e.key === 'Enter') submitLabel()
+                      if (e.key === 'Escape') { labelSaveClaimed.current = false; setEditingLabel(false); labelMut.reset() }
                     }}
                     autoFocus
                     disabled={labelMut.isPending}
@@ -734,8 +749,12 @@ export function BackupSection({ account }: { account: string }) {
                   />
                   <Btn
                     primary
-                    onClick={() => labelMut.mutate(labelDraft)}
-                    disabled={labelMut.isPending}
+                    // `aria-disabled` plus the click guard, NOT native `disabled`,
+                    // which leaves the tab order and drops a keyboard user's focus
+                    // to the page body for the whole write.
+                    aria-disabled={labelMut.isPending || undefined}
+                    className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+                    onClick={submitLabel}
                     data-testid="backup-install-save"
                   >
                     {i18nT('apps.awsControl.console.backup_install_save')}

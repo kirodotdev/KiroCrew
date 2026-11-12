@@ -76,9 +76,13 @@ class TestIndexFailureMemory:
             _external_registry_failure_path(labs.identity), _EXTERNAL_REGISTRY_FAILURE_TTL + 1
         )
 
-        await _load_external_registries()
+        assert _read_external_registry_failure(labs.identity) is False
+
+        rows = await _load_external_registries()
 
         assert labs.fetch.await_count == 2
+        assert [r["name"] for r in rows] == ["cool-app"]
+        assert _read_external_registry_failure(labs.identity) is True
 
     @pytest.mark.asyncio
     async def test_a_successful_fetch_clears_the_marker(self, labs):
@@ -112,10 +116,12 @@ class TestIndexFailureMemory:
         marker.write_text("")
         ahead = time.time() + 1
         os.utime(marker, (ahead, ahead))
+        labs.fetch.return_value = [{"name": "new-app", "repo": "https://git.example.com/labs/new"}]
 
-        await _load_external_registries()
+        rows = await _load_external_registries()
 
         assert labs.fetch.await_count == 0
+        assert [r["name"] for r in rows] == ["cool-app"]
 
     @pytest.mark.asyncio
     async def test_a_marker_dated_in_the_future_does_not_hold_the_fetch_back(self, labs):
@@ -123,19 +129,25 @@ class TestIndexFailureMemory:
         marker.write_text("")
         later = time.time() + 3600
         os.utime(marker, (later, later))
+        labs.fetch.return_value = [{"name": "new-app", "repo": "https://git.example.com/labs/new"}]
 
-        await _load_external_registries()
+        rows = await _load_external_registries()
 
         assert labs.fetch.await_count == 1
+        assert [r["name"] for r in rows] == ["new-app"]
+        assert not marker.exists()
 
     @pytest.mark.asyncio
     async def test_another_branch_of_the_same_registry_is_not_held_back(self, labs, monkeypatch):
         await _load_external_registries()
         monkeypatch.setattr(registry, "_effective_registries", lambda: [_registry("next")])
+        labs.fetch.return_value = [{"name": "new-app", "repo": "https://git.example.com/labs/new"}]
 
-        await _load_external_registries()
+        rows = await _load_external_registries()
 
         assert labs.fetch.await_count == 2
+        assert [r["name"] for r in rows] == ["new-app"]
+        assert _read_external_registry_failure(labs.identity) is True
 
     @pytest.mark.asyncio
     async def test_refresh_fetches_inside_the_window(self, labs, monkeypatch):

@@ -28,7 +28,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Cooperative-cancel grace | `acp/client_turn_control.py`, `acp/client_lifecycle.py`, `acp/client_timeouts.py` | Per cancel | `max(_CANCEL_GRACE_SECS, caller budget)`, floor 10s | No | Read loop abandons the turn as unresponsive once the grace elapses |
 | Process group kill | `acp/client_lifecycle.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)`, `killpg(SIGKILL)`, then `_kill_escaped_children` for descendants that changed PGID |
 | Per-process resource limits | `security/helpers.py` (`apply_resource_limits`, re-exported by the `security` package), delivered **after `exec`** by `_spawn_exec_shim.py` via `sandbox_rlimit.py` (`create_subprocess_limited` / `spawn_shim_argv`) | Every agent-influenced spawn (see the profile list below) | Kernel-enforced `RLIMIT_NOFILE=1024` default-on; `RLIMIT_NPROC` / `RLIMIT_CPU` / `RLIMIT_AS` opt-in (default off) | Yes, the kernel enforces at fork/alloc/open time, no sweep needed | Kernel refuses `open()` past the FD cap (EMFILE); on opt-in NPROC/CPU/AS: EAGAIN, SIGXCPU, ENOMEM |
-| Windows Job object (fork bomb + memory) | `platform_compat_winproc.py` (`apply_job_limits`) via `sandbox_slice.py` (`apply_windows_resource_ceiling`) | The ACP agent spawn tree on Windows (`AcpClient._spawn` and `AcpRuntime._spawn`), where `cgroup_scope_argv` is a no-op | `ActiveProcessLimit` plus `JobMemoryLimit`, read from the SAME `resource_limits` config as the cgroup path, so the per-spawn `max_processes` and `max_memory_mb` keys govern both platforms. The aggregate slice, CPU and rlimit keys (`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`, `max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are not enforced on Windows; a value set for any of them logs one warning naming it. The memory limit is the true `MemoryMax` equivalent, and its default is derived from `GlobalMemoryStatusEx` because the POSIX `os.sysconf` probe does not exist on Windows and the flat fallback it fell back to could equal or exceed physical RAM on a small host, leaving the ceiling unable to engage. The process limit is NOT a one-for-one `TasksMax` mapping: `TasksMax` counts tasks (threads) while `ActiveProcessLimit` counts processes, so the same budget binds more loosely here, though it still bounds a fork bomb | Yes, the kernel refuses the spawn or allocation | Fork bomb bounded: past the process limit the member's `CreateProcess` fails with `ERROR_NOT_ENOUGH_QUOTA` (1816); past the memory limit allocations fail. `KILL_ON_JOB_CLOSE` is deliberately NOT set (it would make a gateway exit kill running agents, a lifecycle change rather than a ceiling); omitting it also means the limits do not depend on a held handle, since a job stays alive while processes are assigned. The handle is kept only by an admitted Windows cleanup tree, whose teardown ends the job after its exact-handle drain ([platform-compat](../system-specs/common/platform-compat.md#windows-session-tree-teardown)); a gateway exit just closes it. Applied while the child is still suspended (`CREATE_SUSPENDED`), then resumed via `resume_process_main_thread`, because job membership covers a member's FUTURE descendants only. Fails soft: any Win32 error logs a SECURITY warning and returns `False`, never failing the spawn |
+| Windows Job object (fork bomb + memory) | `platform_compat_winproc.py` (`apply_job_limits`) via `sandbox_slice.py` (`apply_windows_resource_ceiling`) | The ACP agent spawn tree on Windows (`AcpClient._spawn` and `AcpRuntime._spawn`), where `cgroup_scope_argv` is a no-op | `ActiveProcessLimit` plus `JobMemoryLimit`, read from the SAME `resource_limits` config as the cgroup path, so the per-spawn `max_processes` and `max_memory_mb` keys govern both platforms. The aggregate slice, CPU and rlimit keys (`cpu_weight`, `max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`, `max_total_memory_mb`, `max_total_processes`, `max_user_processes`, `scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are not enforced on Windows; a value set for any of them logs one warning naming it. The memory limit is the true `MemoryMax` equivalent, and its default is derived from `GlobalMemoryStatusEx` because the POSIX `os.sysconf` probe does not exist on Windows and the flat fallback it fell back to could equal or exceed physical RAM on a small host, leaving the ceiling unable to engage. The process limit is NOT a one-for-one `TasksMax` mapping: `TasksMax` counts tasks (threads) while `ActiveProcessLimit` counts processes, so the same budget binds more loosely here, though it still bounds a fork bomb | Yes, the kernel refuses the spawn or allocation | Fork bomb bounded: past the process limit the member's `CreateProcess` fails with `ERROR_NOT_ENOUGH_QUOTA` (1816); past the memory limit allocations fail. `KILL_ON_JOB_CLOSE` is deliberately NOT set (it would make a gateway exit kill running agents, a lifecycle change rather than a ceiling); omitting it also means the limits do not depend on a held handle, since a job stays alive while processes are assigned. The handle is kept only by an admitted Windows cleanup tree, whose teardown ends the job after its exact-handle drain ([platform-compat](../system-specs/common/platform-compat.md#windows-session-tree-teardown)); a gateway exit just closes it. Applied while the child is still suspended (`CREATE_SUSPENDED`), then resumed via `resume_process_main_thread`, because job membership covers a member's FUTURE descendants only. Fails soft: any Win32 error logs a SECURITY warning and returns `False`, never failing the spawn |
 | cgroup v2 scope (fork bomb + memory) | `sandbox_slice.py` (`cgroup_scope_argv`) | Every agent-influenced spawn tree (each ACP harness process tree gets a scope; subagent sessions sharing that runtime stay in its tree, while a dedicated subagent process gets its own; each cron, app-backend, hook, git or tool spawn also gets its own) | `pids.max=8192` (`TasksMax`) plus `memory.max=65% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) and `memory.high=90% of that MemoryMax` (`MemoryHigh`, `resource_limits.scope_memory_high_pct`, `0` = off) per transient `systemd-run --user --scope` under `kirocrew-agents.slice`, default-on where cgroup v2 delegation exists | Yes, the kernel enforces at `fork()`/alloc time; OOM-kills the scope on a memory breach, `fork()` fails EAGAIN past `pids.max` — **per scope**: the aggregate across concurrent scopes is bounded by the slice row below | Fork bomb bounded to `pids.max`; memory balloon OOM-killed at `memory.max`. Unavailable (no delegation, macOS): no-op plus one loud SECURITY warning, `RLIMIT_NOFILE` still applies |
 | cgroup v2 slice (aggregate across concurrent spawns) | `sandbox_slice.py` (`ensure_agents_slice_limits`), applied at gateway startup | ALL concurrent agent scopes together (they are siblings under `kirocrew-agents.slice`) | `memory.max=80% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) plus `pids.max=32768` (`TasksMax`) on the slice, via `systemctl --user set-property --runtime`; overridable via `resource_limits.max_total_memory_mb` / `max_total_processes`. A pod (`KIROCREW_POD`) writes these on its own per-instance child slice instead, and on the parent fills only a property systemd shows as `infinity`, so it never replaces a value the host's gateway set | Yes — cgroup v2 bounds a descendant by the **minimum** effective limit of itself and all ancestors, so N scopes at 65% each can no longer jointly exceed the slice ceiling | Kernel OOM-kills some scope inside the slice on an aggregate breach; the resource-pressure sampler logs new kills with victim scopes, slice `memory.current`, and whether the slice ceiling (vs a scope's own) engaged. Same availability gate and single SECURITY warning as the scope row |
 | macOS memory (none) | None: `sandbox_slice.py` (`cgroup_scope_argv`) is a no-op off Linux, and the `session_host` rlimit profile sets only `RLIMIT_NOFILE` | The ACP agent spawn tree on macOS | **No ceiling.** `resource_limits.max_memory_mb` set or unset, nothing bounds the agent tree's resident memory: macOS has no cgroup or Job-object equivalent, `RLIMIT_AS` is never applied to the session host, and macOS accepts `RLIMIT_AS` without enforcing it anyway. The orphan MCP reaper below bounds leaked processes, not memory. Recorded in [`docs/decisions/2026-10-09-macos-has-no-agent-tree-memory-ceiling.md`](../decisions/2026-10-09-macos-has-no-agent-tree-memory-ceiling.md) | No | A runaway tree grows until the macOS kernel (jetsam) kills processes or the host stalls. What stands in front of that: the xdist `-n auto` cap (`resource_limits.xdist_auto_cap`) and the extractor's own RSS watchdog, each for its own child only. `session.watchdog_rss_max_mb` recycles an IDLE session over its limit and never a session mid-turn, so it is not a ceiling. Operators who need one run the gateway in a Linux VM or container, where the cgroup rows apply |
@@ -158,8 +158,11 @@ loop waiting for it.
   login or desktop UID routinely holds thousands of threads (roughly 3600 measured on one
   dev host), so any fixed cap tight enough to bound a fork bomb already sits below the
   host's baseline and would make **every** spawn fail to fork (EAGAIN), strictly worse than
-  the DoS gap. Safe to enable only when the gateway runs as its own dedicated UID. cgroup
-  v2 `pids.max` (per-cgroup, not per-UID) is the correct fork-bomb ceiling. Darwin nuance:
+  the DoS gap. Safe to enable only when the gateway runs as its own dedicated UID, through
+  its own key, `max_user_processes`. `max_processes` is the scope's task budget only and
+  never sets it, because a budget sized for one spawn tree would be below the UID's
+  baseline. cgroup v2 `pids.max` (per-cgroup, not per-UID) is the correct fork-bomb
+  ceiling. Darwin nuance:
   the kernel silently clamps a non-root `RLIMIT_NPROC` to `kern.maxprocperuid`, which can
   sit below the inherited hard cap (`kern.maxproc`); the clamp is strictly tighter, so
   enforcement is unaffected, and `test_config_overrides_applied` folds the sysctl into its
@@ -171,15 +174,25 @@ loop waiting for it.
   short-lived.
 - **`RLIMIT_AS = 0` (disabled).** It caps **virtual** address space, not resident memory,
   and Node/V8 (kiro-cli, every npm MCP server) reserves huge virtual mappings far exceeding
-  real use (roughly 2 GB VSZ measured for 4 idle worker threads, 3.4 GB for 8), so even a
-  generous 4 GB cap `SIGKILL`s normal MCP-heavy sessions with spurious ENOMEM. cgroup v2
-  `memory.max` is the correct RSS ceiling; `RLIMIT_AS` is left as an opt-in escape hatch for
-  non-Node fleets.
+  real use (roughly 2 GB VSZ measured for 4 idle worker threads, 3.4 GB for 8, and
+  `fetch()` cannot allocate its Wasm parser under 5 GB), so even a generous 4 GB cap
+  `SIGKILL`s normal MCP-heavy sessions with spurious ENOMEM. A GraalVM native image
+  reserves its heap range at startup and fails to create its isolate under such a cap (one
+  CLI was measured failing at 16 GB and starting at 64 GB). cgroup v2 `memory.max` is the
+  correct RSS ceiling; `RLIMIT_AS` is left as an opt-in escape hatch for non-Node fleets,
+  set through its own key, `max_address_space_mb`. `max_memory_mb` is the resident cap
+  only and never sets it, because every script and command cron spawns on the `tool`
+  profile, so a resident budget that also set `RLIMIT_AS` would stop those binaries from
+  starting in every cron child. `kirocrew config set` warns when the key is given a
+  positive value.
 
 **Config.** Operators override the defaults with a `resource_limits` object in the config
-JSON: `max_processes`, `max_open_files`, `max_cpu_seconds`, `max_memory_mb` (per-scope),
-plus `max_total_memory_mb` and `max_total_processes` (aggregate, on the slice), each a
-positive int to set and `0` to leave inherited. A requested limit is always clamped **down**
+JSON: `max_user_processes`, `max_open_files`, `max_cpu_seconds`, `max_address_space_mb`,
+`max_processes` and `max_memory_mb` (per-scope), plus `max_total_memory_mb` and
+`max_total_processes`
+(aggregate, on the slice), each a positive int to set; `0` leaves an rlimit inherited and gives
+a scope or slice key its default. A
+requested limit is always clamped **down**
 to the inherited hard limit, so the helper only tightens, never raises. On non-POSIX
 platforms (no `resource` module) it is a no-op; on a platform lacking a specific rlimit
 (macOS has no `RLIMIT_NPROC`) that limit degrades gracefully.
@@ -606,7 +619,7 @@ slice's aggregate ceiling OOM-kills rather than throttles). xdist honors the
 environment variable when resolving `auto`, so the launch tail both agent spawn
 boundaries share (`acp/launch.py`, for `acp/client.py` and `acp/runtime.py`) seeds it via
 `resource_status.inject_xdist_auto_cap()`:
-`min(cpus, floor(available_gb * 0.5 / per_worker_gb))`, floored at 1, where `per_worker_gb` is the assumed steady-state footprint of one worker (3 GB on Linux and Windows, 16 GB on macOS; `_DEFAULT_XDIST_PER_WORKER_GB` / `_MACOS_XDIST_PER_WORKER_GB`, constants rather than config keys) and `cpus` is the process CPU allowance (`cpu_affinity.affinity_cpu_count()`, or 1 when unknown), computed from the same
+`min(cpus, floor(available_gb * 0.5 / per_worker_gb))`, floored at 1, where `per_worker_gb` is the assumed steady-state footprint of one worker (5 GB on Linux and Windows, 16 GB on macOS; `_DEFAULT_XDIST_PER_WORKER_GB` / `_MACOS_XDIST_PER_WORKER_GB`, constants rather than config keys) and `cpus` is the process CPU allowance (`cpu_affinity.affinity_cpu_count()`, or 1 when unknown), computed from the same
 cgroup-clamped memory probe the advisory `resource_status` tool uses. Half of the
 *currently available* memory, so two sessions sizing themselves at the same instant cannot
 jointly commit more than what was free. This shapes **only** `auto`/`logical` resolution:
@@ -711,7 +724,10 @@ itself and the injection works as described above.
   `AcpRuntime` (`acp/runtime_spawn_launch.py`) registers at spawn, which covers the code-review-sage
   `ReviewPool` (`apps/builtins/code_review_sage/sage_lib/review_pool.py`), whose
   `_BatchRuntimeHolder` multiplexes every concurrent review onto ONE batch-scoped
-  `AcpRuntime` rather than a pool of subprocesses.
+  `AcpRuntime` rather than a pool of subprocesses. On a backend that runtime does not
+  serve, each task's own provider registers its client PID inline after start and
+  unregisters it at teardown; those processes, one per in-flight task, are bounded by
+  `review.max_concurrent`.
 
 - **Browser-triggerable filesystem work runs on an isolated pool.** Dashboard list
   endpoints (`GET /api/skills`, `/api/agents/installed`, `/api/prompts`, plus the themes,

@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk import capture_prompt_timeout
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 
@@ -408,7 +409,9 @@ class TestToLlmEventFieldParity:
     # ``AcpSessionHandle._run_turn`` before the event leaves the ACP layer. By
     # then the held chunk has been delivered as ordinary text or turned into the
     # turn's error, so no provider consumer has a decision left to make with it.
-    _INTENTIONALLY_DROPPED: set[str] = {"unattributed"}
+    # connection_mcp_identity: read only by the Connection approval mint, which takes
+    # the AcpEvent itself on both transports, never the provider's LlmEvent.
+    _INTENTIONALLY_DROPPED: set[str] = {"unattributed", "connection_mcp_identity"}
 
     @staticmethod
     def _distinguishable(field: "dataclasses.Field") -> object | None:
@@ -938,11 +941,15 @@ class TestStartKiroRuntimeResume:
         provider._client._model = model
         return provider
 
-    async def _run_start(self, provider, resume_sid, file_exists, load_raises=False):
+    async def _run_start(
+        self, provider, resume_sid, file_exists, load_raises=False, inherited_model="landed"
+    ):
         mock_handle = MagicMock()
         mock_handle.session_id = "kiro-sess-1"
         mock_handle.store_session_config = MagicMock()
         mock_handle.set_model = AsyncMock()
+        # What an inherit=True set_model records; "" reads as a refused inherit.
+        mock_handle.inherited_model = inherited_model
         mock_runtime = MagicMock()
         mock_runtime.pid = 4321
         mock_runtime.spawn = AsyncMock()
@@ -1096,20 +1103,39 @@ class TestStartKiroRuntimeResume:
             ("", "auto", False),
         ],
     )
-    async def test_an_unpinned_kas_start_names_kiro_cli_chat_default_model(
+    async def test_an_unpinned_kas_start_inherits_kiro_cli_chat_default_model(
         self, monkeypatch, backend, pin, noticed
     ):
-        """KAS ignores chat.defaultModel and Crew does not apply it: an
-        unpinned KAS start records a notice naming it and sends no extra model."""
+        """KAS reads no cli.json, so an unpinned KAS start applies kiro-cli's
+        chat.defaultModel itself, as an inherited model, and names no notice."""
         from kiro_crew.providers import acp_runtime_start
 
-        monkeypatch.setattr(acp_runtime_start, "default_model_notice", lambda cwd: "names it")
+        monkeypatch.setattr(
+            acp_runtime_start, "kiro_cli_default_model", lambda cwd: "claude-sonnet-4.5"
+        )
         provider = self._kiro_provider(model=pin)
         provider._client.backend = backend
         handle, _runtime = await self._run_start(provider, "", file_exists=True)
-        assert provider._client.kas_default_model_notice == ("names it" if noticed else "")
-        expected = [call(pin)] if pin not in ("", "auto") else []
-        assert handle.set_model.await_args_list == expected
+        if noticed:
+            assert handle.set_model.await_args_list == [call("claude-sonnet-4.5", inherit=True)]
+        else:
+            expected = [call(pin)] if pin not in ("", "auto") else []
+            assert handle.set_model.await_args_list == expected
+        assert provider._client.kas_default_model_notice == ""
+
+    @pytest.mark.asyncio
+    async def test_a_kas_chat_default_model_that_does_not_land_is_named(self, monkeypatch):
+        """The inherited model was refused (nothing recorded): the notice names it."""
+        from kiro_crew.providers import acp_runtime_start
+
+        monkeypatch.setattr(
+            acp_runtime_start, "kiro_cli_default_model", lambda cwd: "claude-sonnet-4.5"
+        )
+        provider = self._kiro_provider(model="auto")
+        provider._client.backend = "kas"
+        handle, _runtime = await self._run_start(provider, "", file_exists=True, inherited_model="")
+        assert handle.set_model.await_args_list == [call("claude-sonnet-4.5", inherit=True)]
+        assert "claude-sonnet-4.5" in provider._client.kas_default_model_notice
 
     @pytest.mark.asyncio
     async def test_default_model_does_not_call_set_model(self):
@@ -1139,6 +1165,7 @@ class TestStartKiroRuntimeResume:
         # failure in this file into a sandbox verdict.
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         # The shared translation settles the stderr drain before it reads
         # the latch, so this has to be awaitable: a plain MagicMock raises
         # "object MagicMock can't be used in 'await' expression".
@@ -1183,6 +1210,7 @@ class TestStartKiroRuntimeResume:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         # Backend-authored text can carry a line break and a terminal escape;
         # neither may reach the log line, which must stay one line.
@@ -1237,6 +1265,7 @@ class TestStartKiroRuntimeResume:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime._stderr_task = asyncio.ensure_future(asyncio.sleep(3600))
         settle_entered = asyncio.Event()
 
@@ -1319,6 +1348,7 @@ class TestKiroStartupMetric:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=bool(spawn_exc))
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         mock_runtime.create_session = AsyncMock(return_value=mock_handle)
@@ -1368,6 +1398,7 @@ class TestKiroStartupMetric:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=True)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         rec = _CapturingRecorder()
@@ -1860,6 +1891,43 @@ def test_child_fidelity_aware_survives_client_replacement():
     # to the real AcpSessionProvider at replacement time.
     provider._client = MagicMock()
     assert provider.child_fidelity_aware is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marked", [True, False])
+async def test_the_keepalive_routes_mark_survives_client_replacement(marked):
+    """The registry ``/api/session-keepalive`` reads marks the OUTER provider when it
+    publishes it, which can be before startup REPLACES the placeholder client. The
+    start marks the real ``AcpSessionProvider`` then, so its handle times calls on
+    Kiro Crew's own servers; an unmarked provider (``kirocrew chat``'s) starts one
+    that does not."""
+    provider = TestStartKiroRuntimeModelEntitlement()._kiro_provider("auto")
+    placeholder = provider._client
+    if marked:
+        provider.mark_keepalive_routed()
+        placeholder.mark_keepalive_routed.assert_called_once_with()
+    handle = MagicMock()
+    handle.session_id = "kiro-sess-1"
+    handle.model_pin_refused = ""
+    handle.available_models = []
+    runtime = MagicMock(
+        pid=UNALLOCATABLE_PID, spawn=AsyncMock(), create_session=AsyncMock(return_value=handle)
+    )
+    started: list[MagicMock] = []
+
+    def session_provider(h, r, **_kw):
+        started.append(MagicMock(_handle=h, _runtime=r, resumed=False))
+        return started[-1]
+
+    with (
+        patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
+        patch("kiro_crew.providers.acp.AcpSessionProvider", side_effect=session_provider),
+        patch("pathlib.Path.exists", return_value=False),
+    ):
+        await provider._start_kiro_runtime()
+
+    assert provider._client is started[0]
+    assert started[0].mark_keepalive_routed.called is marked
 
 
 def test_to_llm_event_preserves_provenance_flags():

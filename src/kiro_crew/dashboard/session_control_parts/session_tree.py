@@ -45,10 +45,10 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
 )
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
-    MAX_SLOTS_PER_CREATOR,
     SlotOrigin,
     _safe_folder_tree,
     append_and_surface,
+    creator_slot_cap_refusal,
     load_window_off_loop,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
@@ -264,12 +264,8 @@ async def fork_session(
             code="slot_cap_reached",
             status=409,
         )
-    if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-        raise SessionControlError(
-            f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-            code="creator_slot_cap_reached",
-            status=409,
-        )
+    if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+        raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
 
     audit_caller = f"session:{caller_key}"
     # The copy below reads the source's rows: a source restored as a sidebar
@@ -356,12 +352,8 @@ async def fork_session(
             raise SessionControlError(
                 f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=409
             )
-        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-            raise SessionControlError(
-                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-                code="creator_slot_cap_reached",
-                status=409,
-            )
+        if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+            raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
 
     in_crew_tree = False
     # The caller's folder principal: an inherited folder in a mate's home stays

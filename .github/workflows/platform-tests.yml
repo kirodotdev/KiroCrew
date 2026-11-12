@@ -216,7 +216,8 @@ jobs:
         run: |
           set -o pipefail
           echo "::remove-matcher owner=python::"
-          pytest -v -n0 --no-cov --timeout=90 -o faulthandler_timeout=75 \
+          python -m pytest -v -n0 --no-cov --timeout=90 \
+            -p scripts.ci_faulthandler_budget --faulthandler-grace=15 \
             -p no:cacheprovider test/test_terminal_handler.py \
             test/test_terminal_handler_session_routes.py \
             test/test_terminal_handler_completion.py \
@@ -261,7 +262,8 @@ jobs:
         # 36228922099): 21-27 minutes a shard against 32-39 the same day at one.
         # The plugin is right for a developer laptop it does not know; this
         # runner is a fixed shape the lane can state outright, and an explicit
-        # count skips the budget (it hooks pytest_xdist_auto_num_workers only).
+        # count skips the memory budget (that hooks pytest_xdist_auto_num_workers
+        # only; an explicit count still claims the shared host slots).
         # 2 rather than 3: each worker imports its shard's files and holds them,
         # and the 16 GiB/worker figure the plugin carries for macOS (#10061) was
         # measured on a 36 GiB laptop, not here. Swap pressure or a jetsam kill
@@ -273,14 +275,16 @@ jobs:
         # Residual darwin gaps are node ids in test/macos-expected-failures.txt,
         # applied by the rootdir conftest through the same matcher as the
         # Windows list.
-        # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
+        # PYTHONUNBUFFERED plus the faulthandler dump: the first full run of shard
         # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
         # pytest command line, and the runner then reaped nine orphan bash and two
         # Python processes. A hang that leaves no output is a lost run, not a
-        # failed test (testing-conventions.md, class 6). faulthandler fires at
-        # 150 s, while the test is still stuck, and dumps every thread's traceback
-        # to stderr naming the frame; the per-test --timeout then fails it by
-        # name at 180.
+        # failed test (testing-conventions.md, class 6). The per-test --timeout
+        # fails a test by name at 180 s (or its own mark); one still stuck 30 s
+        # later, where SIGALRM cannot reach it, gets every thread's traceback
+        # dumped to stderr naming the frame (scripts/ci_faulthandler_budget.py).
+        # Never a fixed faulthandler_timeout: a dump of a thread still running
+        # Python can segfault the worker, so it must not fire inside a budget.
         env:
           PYTHONUNBUFFERED: "1"
         run: |
@@ -299,7 +303,7 @@ jobs:
           # exactly as it does in backend-test and backend-test-windows.
           python -m pytest -p scripts.ci_file_shards -q -n 2 --timeout=180 \
             --no-cov --max-worker-restart=0 \
-            -o faulthandler_timeout=150 \
+            -p scripts.ci_faulthandler_budget --faulthandler-grace=30 \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             2>&1 | tee "shard-macos-${{ matrix.group }}.log"
 

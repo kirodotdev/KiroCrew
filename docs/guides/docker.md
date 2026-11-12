@@ -63,9 +63,10 @@ Two one-time steps after the container is up:
    Open the printed link, substituting the host you reach the container on
    (with the mapping above: `http://localhost:5476/?token=...`). Login links
    expire minutes after minting — mint, then open immediately. (The gateway
-   also prints one link at boot, as on every platform; by the time you read
-   it in `docker logs` it has usually expired, so `docker exec` minting is
-   the reliable path.)
+   prints its own link at boot only when its stdout is a terminal. The
+   `docker run -d` above and compose give it none, so `docker logs` shows the
+   bare dashboard URL and a line naming `kirocrew token`, and `docker exec`
+   minting is the path.)
 
 ## Configuration
 
@@ -133,11 +134,38 @@ which need no file edit at all.)
 
 All persistent state — gateway home (`~/.kiro/crew`), kiro-cli credentials,
 agents, skills — lives under `/home/kirocrew`. One named volume covers all
-of it. Upgrade by pulling the newer image; state carries over:
+of it, so an upgrade replaces the container and keeps the volume: the new
+container mounts the same volume and carries on with the same crew.
+
+**Started with `docker run`** (the command at the top of this guide): pull the
+newer image, then stop, remove and re-run the container with the same volume.
+`docker rm` deletes the container, never the `kirocrew-home` volume:
+
+```
+docker pull ghcr.io/kirodotdev/kirocrew:stable
+docker stop kirocrew
+docker rm kirocrew
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+In both commands, use your channel tag (`stable` as above, `insider` or
+`nightly`), or the version tag you are moving to, such as `0.12.0`. Keep the
+same `-v` your first `docker run` used, and repeat any other flag it carried,
+such as `-e` or `--security-opt`.
+
+**Started with compose:** run this from the folder that holds your
+`compose.yaml`:
 
 ```
 docker compose pull && docker compose up -d
 ```
+
+A browser tab opened before the upgrade may ask you to sign in again. Mint a
+new link with `docker exec kirocrew kirocrew token --ttl 2h`, as in
+[First-run setup](#first-run-setup).
 
 There is no in-container auto-update: the image is immutable and the tag is
 the version selector (channel tags track their channel; version tags pin).

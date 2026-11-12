@@ -625,7 +625,8 @@ def test_the_manifest_records_what_was_omitted(tmp_path: Path) -> None:
         assert "archive/workspace/alias.json" not in tar.getnames()
 
     omitted = {e["path"]: e["reason"] for e in manifest["skipped"]}
-    assert omitted == {os.path.join("workspace", "alias.json"): pinned_fs.SKIP_NOT_REGULAR}
+    # Forward slashes on every host, so a bundle made on Windows reads the same on POSIX.
+    assert omitted == {"workspace/alias.json": pinned_fs.SKIP_NOT_REGULAR}
 
 
 # ── The opt-in has to be reachable from the shipped command ──────────────────

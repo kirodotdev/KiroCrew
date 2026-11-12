@@ -6,6 +6,7 @@ The full report (``TestDoctor``) is in ``test_cli.py``; the MCP section is in
 
 import contextlib
 import json
+import os
 import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -66,6 +67,34 @@ class TestDoctorStaleProjectDir:
         out = capsys.readouterr().out
         assert "stale" in out
         assert "source dir:  ⚠️  not set" not in out  # should NOT show fallback message
+
+    def test_an_unreadable_project_dir_file_is_a_row_not_a_traceback(self, tmp_path, capsys):
+        from kiro_crew.doctor_checks import install
+
+        # Not UTF-8; a root-owned 0600 file takes the same path as a PermissionError.
+        (tmp_path / "project_dir").write_bytes(b"/home/\xff\xfe/clone\n")
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False),
+        ):
+            assert install._doctor_project(issues) == ""
+        out = capsys.readouterr().out
+        assert "unreadable" in out
+        assert issues == ["unreadable project_dir"]
+
+    def test_the_unreadable_row_quotes_a_home_with_spaces(self, tmp_path, capsys):
+        from kiro_crew.doctor_checks import install
+
+        home = tmp_path / "my home"
+        home.mkdir()
+        (home / "project_dir").write_bytes(b"\xff\n")
+        with (
+            patch("kiro_crew.cli_doctor.config_dir", return_value=home),
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False),
+        ):
+            install._doctor_project([])
+        assert f"rm '{home / 'project_dir'}'" in capsys.readouterr().out
 
 
 class TestDoctorStt:
@@ -163,9 +192,16 @@ class TestDoctorStt:
         _healthy_agent_file(tmp_path / "kirocrew.json")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
 
-        def _which(binary, **_kw):
-            if binary == "ffmpeg" and not ffmpeg:
+        def _which(binary, **kw):
+            if os.path.basename(binary) == "ffmpeg" and not ffmpeg:
                 return None
+            # A probe of one directory answers from that directory: the trusted
+            # ffmpeg lookup refuses a hit outside the directory it asked about.
+            if os.path.dirname(binary):
+                return binary
+            search = kw.get("path")
+            if search:
+                return os.path.join(search.split(os.pathsep)[0], binary)
             return f"/usr/local/bin/{binary}"
 
         # `ffmpeg` has to answer BOTH routes into `transcribe._find_ffmpeg`. The
@@ -893,3 +929,70 @@ class TestDoctorEmbeddings:
         out = capsys.readouterr().out
         assert "model url:   ❌ unreachable" in out
         assert "Check network connectivity" in out
+
+
+class TestModelUrlUnreachableCause:
+    """The unreachable model url line leads with the cause and keeps url secrets off screen."""
+
+    @staticmethod
+    def _probe(monkeypatch, capsys, url, exc):
+        import kiro_crew.cli_doctor as doc
+
+        monkeypatch.setattr(doc, "_resolve_model_url", lambda: url)
+        with patch("urllib.request.urlopen", side_effect=exc):
+            doc._doctor_model_url_reachable([])
+        return capsys.readouterr().out
+
+    def test_unresolved_host_names_the_cause(self, monkeypatch, capsys):
+        import socket
+
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
+        assert (
+            "❌ unreachable (the host name could not be resolved) https://mirror.example/m.gguf"
+            in out
+        )
+        assert "Errno" not in out
+
+    def test_refused_connection_names_the_cause(self, monkeypatch, capsys):
+        err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
+        assert "❌ unreachable (connection refused)" in out
+
+    def test_other_failures_keep_their_text(self, monkeypatch, capsys):
+        out = self._probe(
+            monkeypatch, capsys, "https://mirror.example/m.gguf", OSError("disk on fire")
+        )
+        assert "❌ unreachable (disk on fire)" in out
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:hunter2@mirror.example/m.gguf",
+            "https://user:pa:hunter2@mirror.example/m.gguf",
+            "https://mirror.example/m.gguf?sig=hunter2",
+            "https://mirror.example/m.gguf#hunter2",
+        ],
+        ids=["password", "password-with-colon", "query", "fragment"],
+    )
+    def test_a_secret_bearing_url_never_reaches_the_error_text(self, monkeypatch, capsys, url):
+        out = self._probe(
+            monkeypatch, capsys, url, ValueError("nonnumeric port: 'hunter2@x' hunter2")
+        )
+        assert "hunter2" not in out
+        assert "❌ unreachable (the model url could not be opened)" in out
+
+    def test_a_real_urllib_error_for_a_colon_password_is_not_echoed(self, monkeypatch, capsys):
+        import kiro_crew.cli_doctor as doc
+
+        url = "https://user:pa:hunter2@mirror.example/m.gguf"
+        monkeypatch.setattr(doc, "_resolve_model_url", lambda: url)
+        doc._doctor_model_url_reachable([])
+        out = capsys.readouterr().out
+        assert "hunter2" not in out
+        assert "❌ unreachable (the model url could not be opened)" in out
+
+    def test_a_secret_bearing_url_still_names_a_known_cause(self, monkeypatch, capsys):
+        err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        out = self._probe(monkeypatch, capsys, "https://user:pw@mirror.example/m.gguf", err)
+        assert "❌ unreachable (connection refused)" in out

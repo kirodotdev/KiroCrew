@@ -582,14 +582,16 @@ class TurnTracker:
         with self._lock:
             self._trim_locked(store, limit, session_of, what)
 
-    def pop_unless_live(self, store: "dict[str, Any]", session_id: str) -> None:
+    def pop_unless_live(self, store: "dict[str, Any]", session_id: str) -> "Any":
         """Drop *session_id*'s entry from the caller's *store* unless it has a live turn.
 
+        Returns the popped value, or ``None`` when the session was pinned or absent.
         Same locking contract as :meth:`trim`.
         """
         with self._lock:
             if session_id not in self._pinned:
-                store.pop(session_id, None)
+                return store.pop(session_id, None)
+        return None
 
     # -- internals -------------------------------------------------------------------
 

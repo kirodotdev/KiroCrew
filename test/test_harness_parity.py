@@ -1303,6 +1303,22 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/runtime_spawn_entry.py",
+        "spawn",
+    ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
+    "KAS relay alone (kiro-cli's v3 engine copy); every other harness, Kiro CLI "
+    "included, starts exactly as before",
+    (
+        "src/kiro_crew/acp/runtime_liveness.py",
+        "_drain_stderr",
+    ): "the broken-KAS-extract stderr latch feeds only the KAS repair; a non-KAS "
+    "runtime never latches it. "
+    '"V3 is currently not supported on this system" is kiro-cli refusing the v3 '
+    "engine KAS runs on, so the host verdict it records is KAS's alone "
+    "(``mark_backend_unservable`` of KAS). No other harness runs that engine, and "
+    "recording it from another child would move KAS off a host on a line about "
+    "something else.",
+    (
         "src/kiro_crew/acp/session_handle_turn.py",
         "_build",
     ): (
@@ -1413,6 +1429,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
     "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
+    (
+        "src/kiro_crew/acp/runtime_session_registry.py",
+        "__aenter__",
+    ): "The chat turn gate on a shared process is skipped on KAS only: the KAS engine "
+    "names the session on every ``session/update`` and orders turns itself, so no "
+    "ownerless control frame needs one turn in flight. Of the two "
+    "``ACP_BACKENDS_CHAT_RUNTIME_SHARING`` members, kiro-cli is the one that emits "
+    "frames without a sessionId; a positive KAS test keeps every other host gated.",
     (
         "src/kiro_crew/acp/session_handle_kas.py",
         "kas_command_call",

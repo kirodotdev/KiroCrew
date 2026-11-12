@@ -120,9 +120,11 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, 
 # is built per session (``mate_worker.worker_session_spec``), with every tool the
 # crewmate switches off rewritten into ``excludedTools``. KAS takes that whole
 # definition over the wire (``_meta.kiro.customAgents``) and projects
-# ``excludedTools``, so the limits hold. claude carries only the MCP half of them
-# (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` below), so a worker whose crewmate
-# file excludes a native tool is refused there before spawn
+# ``excludedTools``, so the limits hold. claude carries their MCP half and the
+# native tools its ``tools`` list can withhold
+# (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` and
+# ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`` below), so a worker whose crewmate
+# file excludes any other native entry or a wildcard is refused there before spawn
 # (``capability_tool_limits_unsupported``). codex carries the worker kit but not
 # this: its worker capture proves no limit held, so a limited worker is refused
 # there the same way.
@@ -136,7 +138,8 @@ ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 # tool switched off with ``disabledTools``, and an ``@server/tool`` or ``@server``
 # entry in the crewmate file's ``excludedTools``. A native-tool exclude (``shell``,
 # ``fs_write``) or a wildcard is refused before spawn on a backend here unless it
-# is in ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`` too
+# is in ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`` too, or the native tool is one
+# ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`` below carries
 # (``mate_worker.uncarried_tool_limits_of``). KAS carries them as the worker spec's
 # ``excludedTools``, as above (``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``).
 # claude carries them as ``permissions.deny`` rules
@@ -150,6 +153,27 @@ ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 # tools reached the model's tool list while their siblings asked and ran.
 # kiro-cli is not here: it never runs a worker (``ACP_BACKENDS_MATE_WORKER_KIT``).
 ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS | frozenset(
+    {ACP_BACKEND_CLAUDE}
+)
+
+# Backends that honour a crewmate WORKER's native-tool excludes (``shell``,
+# ``fs_write``, ``@builtin/<tool>``, a tag such as ``write``). KAS carries them in
+# the worker spec's ``excludedTools``, as above
+# (``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``). claude carries each one
+# its built-in table maps (``claude_worker_tools.CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL``)
+# as an allow-list: the worker's session gets only the built-ins of the native
+# tools it keeps as its ``tools`` option, so a built-in the table does not list is
+# withheld too. Any other native entry (``use_aws``, a bare ``@builtin``, a glob)
+# is still refused before spawn. claude is captured live on claude-agent-acp 0.94.0
+# with Claude Code 2.1.319:
+# ``test/fixtures/acp_frames/claude/worker-native-tool-limits-live.jsonl``. A worker
+# excluding ``shell`` and ``fs_write`` was offered no command-running or
+# file-writing built-in while ``Read`` and ``Grep`` ran, its deferred MCP tool
+# loaded and ran, and a subagent it started had the same tools.
+# kiro-cli is not here: it never runs a worker (``ACP_BACKENDS_MATE_WORKER_KIT``).
+# The covered entries are read off claude's table, so another member needs its own
+# table and a per-backend reading.
+ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS | frozenset(
     {ACP_BACKEND_CLAUDE}
 )
 

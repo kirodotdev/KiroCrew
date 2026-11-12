@@ -613,7 +613,9 @@ class AdaptiveController:
         finished = len(starts) + len(completed)
         attributable = attributable_starts + attributable_runs
         timeout_rate = attributable / finished if finished else 0.0
-        admitted = len(completed)
+        # Non-congestion outcomes (cancels, denials, turn limits) are not the
+        # host failing to finish work, so they stay out of the denominator.
+        admitted = done_ok + attributable_runs
         completion_rate = (done_ok / admitted) if admitted else 1.0
 
         throttles: dict[str, int] = {}

@@ -4,8 +4,9 @@
  * One row per updatable app: the shared icon tile, the display name, the
  * version diff, and an in-place Update button; the header carries Update All
  * with the sequential batch's progress. The rows are `useAppsData.updatables`
- * — the SAME list the sidebar badge and the sub-tab count are sized from — so
- * a row leaves this list by the data refresh that confirms its update
+ * — the list the sub-tab count is sized from, and whose enabled rows the
+ * sidebar badge counts — so a row leaves this list by the data refresh that
+ * confirms its update
  * (`useAppUpdates` announces each success, the registry refetch clears the
  * app's `updateAvailable`), never by local bookkeeping that could disagree
  * with the badge.

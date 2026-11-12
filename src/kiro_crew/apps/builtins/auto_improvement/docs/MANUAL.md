@@ -258,12 +258,46 @@ at least one check actually run**, no unresolved comments.
 | `watcherAutoStart` | off | Let the app start watchers for filed PRs whose checks went red (§8). |
 | `watcherAcceptEgressRisk` | off | Acknowledge a watcher's residual network-egress risk; no watcher runs without it (§8). |
 | `acceptUnsandboxedAgentRisk` | off | The explicit risk decision for unattended assignments outside a `strict` sandbox (§1). |
+| `candidateAdmissionCommand` | unset | Ask your own evidence checker before any candidate is kept (below). |
 
 The UI sets the repository, branch and a few run controls; most keys in this table are
 set through `PUT /api/apps/auto-improvement/config`. Some keys are deliberately **not**
 settable through the config API — `clone` and
 `target_url` decide which repository the agent is turned loose on, so they move only
 through Connect. Rejected keys are echoed back rather than silently dropped.
+
+### Your own check before a keep
+
+`candidateAdmissionCommand` is not settable through the config API; write it into the
+app's `config.json` as an argv list whose first element is an absolute path, for example
+`["/opt/checks/admit", "--strict"]`. A value of any other shape stops the run from
+starting, and so does any value on Windows, where the checker is not supported. When it
+is set, both tracks ask the checker before a candidate is committed:
+
+- The checker gets one JSON object on stdin: a fresh `request_id`, `base_sha`, `branch`,
+  `candidate_id`, `patch_sha256`, `profile_id`, `track`, `metric` and `direction`.
+- It admits the candidate only by exiting 0 and printing a JSON object (64 KiB at most)
+  whose `request_sha256` is the SHA-256 of the exact request bytes it read and whose
+  `status` is `"admitted"`. Other keys are ignored.
+- Anything else refuses the keep: another status, a wrong or missing digest, a non-zero
+  exit, no answer within 60 seconds, or a clone that is not clean. The checker vouches for
+  the candidate's diff alone, so the clone must have no uncommitted changes before the
+  check and the same `HEAD`, branch and files after it, whatever the checker answered. The
+  candidate is recorded as `failed_verify` and is not committed; the log names the reason.
+- A check that left unsafe git settings in the clone stops the run, and the clone is set
+  aside and not reused. A check that changed the clone otherwise has the branch and tracked
+  files put back (if that fails, the run stops and the clone is quarantined). An untracked
+  file in the clone, whoever left
+  it, refuses every later keep, in this run and the next, until you remove it; `git status`
+  in the clone shows it.
+
+The checker runs in the same `strict` sandbox as the target repository's tests, from its
+own directory, with credential directories, credential environment variables and
+`~/.kiro/crew` hidden. It runs in its own process group, and when the check ends, by an
+answer or at the 60-second limit, that whole group is stopped before the clone is
+checked: a process the checker left running is stopped with it unless it left the
+group. Install it outside `~/.kiro/crew`, and give it evidence it can read without
+credentials. It can only add a refusal: every built-in gate still runs.
 
 ---
 

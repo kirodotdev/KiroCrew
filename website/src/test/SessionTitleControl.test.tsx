@@ -19,7 +19,7 @@
  *       moves nothing, and a confirmed rename is announced through a polite
  *       status region.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Provider, useSelector } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -39,6 +39,8 @@ import { generateSlotTitle } from '../hooks/slotTitleGeneration'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { api } from '../api/client'
 import { sseSlotTitle, updateSlotPin, sseDisconnected, sseConnected } from '../store/dashboardSlice'
+import { i18next } from '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 const SLOT = 'pane-a'
 const TITLE = 'Alpha session'
@@ -279,6 +281,15 @@ describe('SessionTitleControl', () => {
     expect(undo.getAttribute('title')).toBe('Untitled session')
     await act(async () => { fireEvent.click(undo) })
     expect(storeTitle(store)).toBe(SLOT)
+  })
+
+  it('names the Undo by one catalog sentence, so each language punctuates it (French: U+202F before the colon)', async () => {
+    await act(async () => { await i18next.changeLanguage('fr') })
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    const { store } = renderControl()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: i18nT('pages.chatPage.regenerate_title_with_llm') })) })
+    await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
+    expect(await screen.findByRole('button', { name: `Annuler\u202f: ${TITLE}` })).toBeTruthy()
   })
 
   it('a refused Undo of an untitled session names it "Untitled session" in the notice, never its key', async () => {

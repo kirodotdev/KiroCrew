@@ -22,6 +22,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.session_control_parts.app_reach import prewarm_app_reach
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     SessionControlError,
     _audit,
@@ -295,8 +296,10 @@ async def send_to_target(
     the caller is told it queued rather than steered.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
-    that cap only binds unattended (app-owned) slots, and every target this
-    function can authorize is attended — see the comment at the delivery call.
+    that cap bounds an app's own automation on unattended (app-owned) slots. The
+    one unattended target this function can authorize is an app's session that
+    the app opened to the owner's chats, and that turn is the owner's chat's
+    work — see the comment at the delivery call.
     """
     # A broadcast passes its own instance so the timeout handler can read facts
     # this delivery recorded before cancellation erased its stack. A plain send
@@ -315,6 +318,7 @@ async def send_to_target(
         await asyncio.to_thread(sel)
     except Exception:  # noqa: BLE001 - a prewarm failure must not fail the send
         logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_app_reach(state)
     await prewarm_enabled_check()
 
     body = message.strip()
@@ -499,6 +503,7 @@ async def send_to_target(
         # re-assert: a snapshot taken now must not certify a link the authorization
         # never saw.
         async def _queue_after_orphaned_unavailable() -> None:
+            await prewarm_app_reach(state)
             await prewarm_enabled_check()
             regated = authorize_target(
                 state,
@@ -666,6 +671,7 @@ async def send_to_target(
             # again here is what `prewarm_enabled_check`'s own docstring prescribes for
             # a gate that sits after an await.
             async def _prewarm_regate() -> None:
+                await prewarm_app_reach(state)
                 await prewarm_enabled_check()
 
             await _await_authorized_delivery(_prewarm_regate())
@@ -695,14 +701,16 @@ async def send_to_target(
         started = False
     else:
         # `deliver` passes `_run_chat` straight through, NOT wrapped in
-        # `state.run_background_turn`: that cap is structurally unreachable here.
-        # `run_background_turn` returns the coroutine untouched for an attended slot
-        # (`state_parts/dashboard_services.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
-        # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
-        # every `_app` target above (`app_scoped_target`) — so no target this
-        # function can reach is ever unattended, and a wrapper would only add a
-        # never-taken timeout arm. The composer's own queued path does the same
-        # (`server.py` passes `_run_chat` directly).
+        # `state.run_background_turn`. The one unattended target this function can
+        # reach is an app's session whose app lets the owner's chats send to it
+        # (`app_reach`): `_ChatSlot.unattended` is `bool(self._app) and not
+        # self._human_seen`, and a peer send sets no `_human_seen`. That turn is
+        # the owner's chat's work, not the app's automation the cap bounds, so it
+        # runs uncapped like a send to any of the owner's sessions. Wrapping it
+        # would also need `spawn_guarded_turn`'s queue hand-off, which the run arm
+        # below does not have: a turn that gave up waiting for a permit would leave
+        # the slot's queue stranded behind it. The composer's own queued path does
+        # the same (`server.py` passes `_run_chat` directly).
         # No suspension inside: the non-steer peer arm is the synchronous
         # queue-or-run call, so no cancellation can enter this await.
         started = (
@@ -1026,12 +1034,13 @@ async def broadcast_to_targets(
         # The DEFAULT audience's own bound. An explicit list was already refused
         # above, before resolution, and deduplication only ever shrinks it -- so
         # this now guards the fence-built audience, whose size the caller did not
-        # choose. It should be unreachable: ``broadcast_audience`` returns the live
-        # slots this caller created, which ``MAX_SLOTS_PER_CREATOR`` bounds at or
-        # below this cap (see ``MAX_BROADCAST_TARGETS``). Kept because "unreachable
-        # because two constants are ordered correctly" is a property a later edit
-        # can break, and truncating a fleet-wide send is the failure that must not
-        # be the fallback.
+        # choose. Unreachable at the default per-creator cap: ``broadcast_audience``
+        # returns the live slots this caller created, which
+        # ``MAX_SLOTS_PER_CREATOR`` bounds at or below this cap (see
+        # ``MAX_BROADCAST_TARGETS``). Reachable once the owner raises
+        # ``session.max_per_creator`` above it, and the refusal then tells the
+        # caller to send to a named subset: truncating a fleet-wide send is the
+        # failure that must not be the fallback.
         raise _too_many_targets(len(audience))
 
     results: list[dict[str, Any]] = []

@@ -16,6 +16,7 @@ from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_tools import control
 from kiro_crew.monitoring.controller import MonitorController
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
+from kiro_crew.monitoring.limits import runtime_ceiling_secs
 from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorDispatchResult,
@@ -58,10 +59,9 @@ def test_babysit_keeps_finite_legacy_path_for_unobserved_review_evidence() -> No
 
     legacy_args = session_directive.decode(legacy, "monitor_start")
     assert legacy_args is not None
-    assert legacy_args["max_cycles"] == 48
-    assert legacy_args["max_runtime_secs"] == 14_400
-    # The runtime, not the cycle cap, ends the loop.
-    assert legacy_args["idle_secs"] * legacy_args["max_cycles"] >= legacy_args["max_runtime_secs"]
+    # A gated loop with no bounds named: no cycle cap, the runtime ceiling ends it.
+    assert legacy_args["max_cycles"] == 0
+    assert legacy_args["max_runtime_secs"] == runtime_ceiling_secs()
     # Gated, with the judge off: an unchanged pull request costs no turn and any
     # change to its reading, comments included, wakes the loop.
     assert legacy_args["gate"] is True

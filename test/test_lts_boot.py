@@ -417,13 +417,17 @@ def test_failed_policy_exits_with_the_fix(lts: None, capsys: pytest.CaptureFixtu
     assert "start Kiro Crew again" in err
 
 
-def test_oss_policy_failure_is_left_to_the_caller() -> None:
+def test_oss_policy_failure_is_left_to_the_caller(capsys: pytest.CaptureFixture[str]) -> None:
     # Returns, so the caller re-raises exactly as before this change.
-    lts_boot.refuse_policy_boot(PlatformCompositionError("x"))
+    assert lts_boot.refuse_policy_boot(PlatformCompositionError("x")) is None
+    assert capsys.readouterr().err == ""
 
 
-def test_lts_non_composition_error_is_left_to_the_caller(lts: None) -> None:
-    lts_boot.refuse_policy_boot(ValueError("x"))
+def test_lts_non_composition_error_is_left_to_the_caller(
+    lts: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert lts_boot.refuse_policy_boot(ValueError("x")) is None
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.asyncio

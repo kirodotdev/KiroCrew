@@ -221,6 +221,7 @@ class TestProfileDiscovery:
             mock.patch.object(
                 routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
             ),
+            mock.patch.object(routes_mod.deploy_profiles, "aws_cli_is_v1", return_value=False),
             mock.patch.object(routes_mod.deploy_profiles, "load_registry") as registry,
         ):
             resp = asyncio.run(
@@ -232,6 +233,38 @@ class TestProfileDiscovery:
         assert _payload(resp)["code"] == "profiles_unavailable"
         # Nothing was read either: the answer does not depend on the registry.
         registry.assert_not_called()
+
+    @staticmethod
+    def _aws_cli_v1(args, profile, *a, **kw):
+        """AWS CLI v1 as a real host answers: no ``configure list-profiles``."""
+        if args == ["--version"]:
+            return 0, "aws-cli/1.44.87 Python/3.9.23 Linux/6.1 botocore/1.42.97\n", ""
+        return 2, "", "aws: error: argument subcommand: Invalid choice\n"
+
+    @pytest.mark.parametrize(
+        "method,path", [("GET", "/profiles/available"), ("POST", "/profiles/register")]
+    )
+    def test_aws_cli_v1_is_answered_as_not_retryable(self, method, path):
+        # v1 refuses the listing on every call, so the 503 that asks for a retry
+        # would loop the page on a Try again that can never work.
+        handlers = _registered()
+        p1, p2 = self._env()
+        with (
+            p1,
+            p2,
+            mock.patch.object(routes_mod.os, "name", "posix"),
+            mock.patch.object(
+                routes_mod.deploy_profiles.engine, "run_aws", side_effect=self._aws_cli_v1
+            ),
+            mock.patch.object(routes_mod.deploy_profiles, "locked_registry") as locked,
+        ):
+            req = self._post({"names": ["real"]}) if method == "POST" else _request(method, path)
+            resp = asyncio.run(handlers[(method, path)](req))  # type: ignore[operator]
+        assert resp.status == 501
+        payload = _payload(resp)
+        assert payload["code"] == "unsupported_aws_cli_v1"
+        assert "AWS CLI v2" in payload["error"]
+        locked.assert_not_called()
 
     def test_available_on_windows_keeps_the_platform_answer(self):
         # Windows cannot enumerate profiles at all, and the page has copy naming
@@ -274,6 +307,7 @@ class TestProfileDiscovery:
             mock.patch.object(
                 routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
             ),
+            mock.patch.object(routes_mod.deploy_profiles, "aws_cli_is_v1", return_value=False),
             mock.patch.object(routes_mod.deploy_profiles, "locked_registry") as locked,
             mock.patch.object(routes_mod.accounts_mod, "invalidate_cache") as invalidated,
         ):

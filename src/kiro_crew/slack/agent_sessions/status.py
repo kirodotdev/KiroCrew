@@ -639,7 +639,8 @@ class AgentSessionStatus:
 def configure(orch: Any) -> AgentSessionStatus | None:
     """Attach the driver to the orchestrator's Slack client, gated on the setting.
 
-    Called once at boot. The driver is always attached to a real client but does
+    Called at boot, and by a Reconnect for the client it publishes
+    (``reconnect._bring_up``). The driver is always attached to a real client but does
     nothing unless ``agent_sessions_enabled`` holds for ``orch._cfg`` when a call
     is made (the Slack setting is on and the install can run agent sessions), so
     a toggle applied to the live config needs no reattach. Off, every call goes

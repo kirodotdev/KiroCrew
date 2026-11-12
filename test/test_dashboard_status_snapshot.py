@@ -189,6 +189,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_latest_version",
             "update_latest_version_display",
             "update_channel",
+            "update_upcoming",
             "update_channel_move_pending",
             "update_managed_by",
             "update_policy_file",
@@ -198,6 +199,11 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_auto_effect",
             "update_auto_manual_only",
             "update_bundled_by_app",
+            "update_restart_ready",
+            "update_restart_ready_version",
+            "update_restart_ready_reason",
+            "update_armed_version",
+            "pending_apply_error",
             "update_last_checked_at",
             "update_check_interval_secs",
             "update_required",
@@ -327,7 +333,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
         sentinel = {key: f"S:{key}" for key in status_update_fields()}
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.updates.status_update_fields",
-            lambda: dict(sentinel),
+            lambda *_next_start: dict(sentinel),
         )
 
         async def _run():

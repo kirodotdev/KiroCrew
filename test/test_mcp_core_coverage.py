@@ -287,6 +287,15 @@ class TestExtractHistorySnippet:
     def test_blank_needle_returns_empty(self):
         assert _extract_history_snippet([{"role": "user", "content": "hi"}], "   ") == ""
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self):
+        msgs = [
+            {"role": "user", "content": "please maintain the release notes"},
+            {"role": "assistant", "content": "we started tracking ai usage per team"},
+        ]
+        out = _extract_history_snippet(msgs, "ai usage tracking")
+        assert "<<<usage>>>" in out
+        assert "maintain" not in out
+
     def test_tool_roles_are_skipped(self):
         msgs = [
             {"role": "tool", "content": "needle in a tool trace"},
@@ -749,6 +758,42 @@ class TestWorkflowDefinitionLibrary:
             out = _call_tool("workflow_library_list", {"search": "debugging"})
         assert mocked.call_args[0][0] == "/api/workflows/definitions?q=debugging"
         assert "/workflow debug-project" in out
+
+    def test_list_never_offers_an_empty_or_none_command(self):
+        """A listed workflow is offered under its slug, else its id, and never
+        as ``/workflow `` or ``/workflow None``: one with no usable ref, or
+        whose read listed both refs as shadowed, is left out."""
+        response = {
+            "definitions": [
+                {"id": "wfd_free", "slug": None, "revision": 1, "name": "No Slug"},
+                {"id": "wfd_blank", "slug": "   ", "revision": 1, "name": "Blank Slug"},
+                {"id": None, "slug": None, "revision": 1, "name": "Nothing"},
+                {"slug": "", "revision": 1, "name": "Missing Id"},
+                {
+                    "id": "wfd_held",
+                    "slug": "held",
+                    "shadowed_refs": ["held", "wfd_held"],
+                    "revision": 1,
+                    "name": "Both Held",
+                },
+            ]
+        }
+        with patch.object(mcp_core, "_get", return_value=response):
+            out = _call_tool("workflow_library_list", {})
+
+        assert "/workflow None" not in out
+        assert "/workflow `" not in out and "/workflow  " not in out
+        assert out.splitlines()[1:] == [
+            "- `/workflow wfd_free` — No Slug (revision 1, id `wfd_free`)",
+            "- `/workflow wfd_blank` — Blank Slug (revision 1, id `wfd_blank`)",
+        ]
+
+    def test_list_of_only_unreachable_workflows_says_none_are_saved(self):
+        response = {"definitions": [{"id": None, "slug": None, "revision": 1}]}
+        with patch.object(mcp_core, "_get", return_value=response):
+            out = _call_tool("workflow_library_list", {})
+
+        assert out == "No saved workflows yet."
 
 
 class TestWorkflowReadIdentity:

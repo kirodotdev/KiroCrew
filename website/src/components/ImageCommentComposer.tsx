@@ -80,8 +80,9 @@ export function ImageCommentComposer({ x, y, onSubmit, onCancel, scrollRef, init
 }) {
   const [text, setText] = useState(initialText)
   const [growTick, setGrowTick] = useState(0)
-  // How far `scrollRef` has scrolled since the box opened, so the box follows
-  // the image it names rather than staying fixed over other content.
+  // How far the point has moved since the box opened (a scroll, or a resize
+  // that rescales the image), so the box follows the image it names rather
+  // than staying fixed over other content.
   const [scrolled, setScrolled] = useState({ dx: 0, dy: 0 })
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -97,29 +98,55 @@ export function ImageCommentComposer({ x, y, onSubmit, onCancel, scrollRef, init
     onTextChangeRef.current?.(next)
   }, [])
 
-  // Re-placed as the input grows, and as the image scrolls.
+  // Re-placed as the input grows, and as the image scrolls or resizes.
   const style = useAnchoredPosition(rootRef, x - scrolled.dx, y - scrolled.dy, growTick, scrollRef)
 
-  // Glued to its image the way the composer's other popovers stay glued to
-  // their triggers: on a resize (window, rotation, on-screen keyboard) it is
-  // clamped again, and on a scroll it moves by how far `scrollRef` has
-  // scrolled since the box opened.
+  // Glued to the box it names, the way the text composer re-reads its
+  // selection's rect on every scroll and resize. The point is kept as a
+  // fraction of the drawn box (`[data-image-box-draft]`, which the layer
+  // sizes by percentage of the picture), so a resize that rescales or reflows
+  // the image carries the composer with it. Without that box on screen it
+  // falls back to following `scrollRef`'s scroll since the box opened.
+  const draftBox = useCallback((): HTMLElement | null =>
+    scrollRef?.current?.querySelector<HTMLElement>('[data-image-box-draft]') ?? null, [scrollRef])
+  const anchor = useRef<{ fx: number; fy: number } | null>(null)
   const scrollOrigin = useRef<{ left: number; top: number } | null>(null)
   useLayoutEffect(() => {
     const t = scrollRef?.current
     scrollOrigin.current = t ? { left: t.scrollLeft, top: t.scrollTop } : null
-  }, [scrollRef])
+    const r = draftBox()?.getBoundingClientRect()
+    anchor.current = r && r.width > 0 && r.height > 0 ? { fx: (x - r.left) / r.width, fy: (y - r.top) / r.height } : null
+  }, [scrollRef, draftBox, x, y])
   const remeasure = useCallback(() => {
-    const t = scrollRef?.current
-    const o = scrollOrigin.current
-    if (t && o) {
-      const dx = t.scrollLeft - o.left
-      const dy = t.scrollTop - o.top
+    const a = anchor.current
+    const r = a ? draftBox()?.getBoundingClientRect() : undefined
+    if (a && r && r.width > 0 && r.height > 0) {
+      const dx = x - (r.left + a.fx * r.width)
+      const dy = y - (r.top + a.fy * r.height)
       setScrolled(prev => (prev.dx === dx && prev.dy === dy ? prev : { dx, dy }))
+    } else {
+      const t = scrollRef?.current
+      const o = scrollOrigin.current
+      if (t && o) {
+        const dx = t.scrollLeft - o.left
+        const dy = t.scrollTop - o.top
+        setScrolled(prev => (prev.dx === dx && prev.dy === dy ? prev : { dx, dy }))
+      }
     }
     setGrowTick(n => n + 1)
-  }, [scrollRef])
+  }, [scrollRef, draftBox, x, y])
   useAnchorRemeasure(true, remeasure)
+  // The layer resizes the picture's box from a ResizeObserver, which reports
+  // after the window resize's frame has measured, so the last measure of a
+  // resize could read the box at its old size. Observing the box catches it.
+  // ceiling: observes the box element found at mount; if the layer remounts it, scroll and window resize still re-query, observe the replacement if a late frame matters
+  useEffect(() => {
+    const el = draftBox()
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => remeasure())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [draftBox, remeasure])
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {

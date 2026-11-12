@@ -268,7 +268,7 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
         if refused and not clean:
             # Every field was refused: keep no row at all (see the docstring). An
             # entry that is legitimately empty ({} or only muted:false) still
-            # rides, exactly as before.
+            # rides.
             continue
         kept[channel] = clean
     return _seeded(kept), dropped

@@ -8,7 +8,7 @@ lands, and the exit reason built from the child's last stderr line.
 import asyncio
 import logging
 import signal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -89,6 +89,8 @@ async def test_observed_exit_retires_registry_entries_once_reaped(monkeypatch):
         return -9
 
     proc.wait = _reap
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[1] = pending
     task = await _start_reader(rt)
     try:
         reader.feed_eof()
@@ -96,6 +98,9 @@ async def test_observed_exit_retires_registry_entries_once_reaped(monkeypatch):
     finally:
         await _stop_reader(task)
     assert rt._dead is True
+    # The reason a pending caller fails with names the code the reap measured.
+    with pytest.raises(AcpRuntimeDead, match=r"^process exited \(rc=-9\b"):
+        pending.result()
     # Bound to the identity read at spawn, never to the bare number.
     assert calls == [(4242, "tok-4242")]
     # The status the wait measured reaches the retained summary: a turn or a
@@ -122,6 +127,8 @@ async def test_observed_exit_keeps_tracking_while_the_root_still_runs(monkeypatc
         await asyncio.sleep(10)
 
     proc.wait = _never_exits
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[1] = pending
     task = await _start_reader(rt)
     try:
         reader.feed_eof()
@@ -129,6 +136,9 @@ async def test_observed_exit_keeps_tracking_while_the_root_still_runs(monkeypatc
     finally:
         await _stop_reader(task)
     assert calls == []
+    # The status was never read, and the reason says so rather than ``rc=None``.
+    with pytest.raises(AcpRuntimeDead, match=r"^process exited \(rc=<not reaped>\)$"):
+        pending.result()
 
     # Reaped by the watcher's account, yet the pid still answers: retain.
     rt, reader, proc = _make_runtime()
@@ -1048,3 +1058,32 @@ async def test_a_kill_returns_only_after_its_remote_workspace_has_closed(monkeyp
     rt._remote_workspace = {"server": {"name": "workspace"}, "workdir": "/w", "close": close}
     await rt.kill(expected=True, reason="reset")
     assert closed.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["completed", "refused", "raised"])
+async def test_a_completed_kill_releases_the_runtimes_skill_projections(monkeypatch, outcome):
+    """The views a runtime's process ran on are released once its kill
+    completes, as the direct client's are, so they are pruned now instead of at a
+    next boot a stopped and deleted home never has. A refused kill and one that
+    raised (a Windows tree still draining) keep them."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod, "authorize_runtime_kill", lambda *a, **k: outcome != "refused")
+    if outcome == "raised":
+        rt._kill_inner = AsyncMock(side_effect=OSError("tree still draining"))
+    spawn, adopted = MagicMock(name="spawn projection"), MagicMock(name="adopted projection")
+    rt._spawn_skill_projection = spawn
+    rt._native_skill_projection = adopted
+
+    if outcome == "raised":
+        with pytest.raises(OSError, match="tree still draining"):
+            await rt.kill(expected=True, reason="graceful shutdown")
+    else:
+        await rt.kill(expected=True, reason="graceful shutdown")
+
+    released = 1 if outcome == "completed" else 0
+    assert spawn.release.call_count == released
+    assert adopted.release.call_count == released

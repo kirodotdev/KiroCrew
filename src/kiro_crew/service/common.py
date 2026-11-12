@@ -9,9 +9,10 @@ import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from kiro_crew.config import loader
+from kiro_crew.config.paths import CONFIG_DIR_NAME
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
@@ -219,6 +220,30 @@ def service_environment(home: str) -> "dict[str, str]":
     return env
 
 
+def service_dotenv(
+    environ: "Mapping[str, str] | None" = None, plat: "Platform | None" = None
+) -> "tuple[Path, str]":
+    """The ``.env`` the installed service reads, and the account to edit it as.
+
+    ``sudo kirocrew service install`` on systemd runs the unit as ``SUDO_USER``
+    with that account's passwd home (``linux_unit._current_user`` and
+    ``_home_for_user``), while this process's home is root's under ``sudo -H``,
+    so :func:`loader.env_path` would name a file the service never reads. In
+    every other case it is that file and the account is ``""``: no ``sudo``,
+    launchd (whose plist bakes this process's home), or ``KIROCREW_HOME`` set
+    (its own caveat applies).
+    """
+    source = os.environ if environ is None else environ
+    account = source.get("SUDO_USER", "").strip()
+    if account in ("", "root") or _home_override_is_set(environ):
+        return loader.env_path(), ""
+    if (plat or current_platform()) is not Platform.SYSTEMD:
+        return loader.env_path(), ""
+    from kiro_crew.service import linux  # circular import: linux imports this module at load
+
+    return Path(linux._home_for_user(account), CONFIG_DIR_NAME, ".env"), account
+
+
 def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     """Return whether an API-key credential is set but invisible to the service.
 
@@ -237,7 +262,7 @@ def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     if not source.get(_AUTH_ENV_VAR, "").strip():
         return False
     try:
-        names = _names_defined_in_env_file(loader.env_path())
+        names = _names_defined_in_env_file(service_dotenv(environ)[0])
     except loader.EnvFileWideEncodingError:
         # The gateway reads a wide file as unset, so the key is dropped.
         return True
@@ -263,7 +288,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     """
     if not api_key_will_be_dropped(environ):
         return ""
-    dotenv = loader.env_path()
+    dotenv, account = service_dotenv(environ)
     try:
         _names_defined_in_env_file(dotenv)
     except loader.EnvFileWideEncodingError as exc:
@@ -280,6 +305,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
                 f"     {restart_command_hint()}",
             ],
             environ,
+            account,
         )
     # The append must never CREATE the file: under a 022 umask a fresh .env is
     # 0644 until load_credentials() next tightens it. Pre-create and chmod first,
@@ -305,15 +331,27 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"     {remedy}",
         f"     {restart_command_hint()}",
     ]
-    return _with_crew_home_caveat(lines, environ)
+    return _with_crew_home_caveat(lines, environ, account)
 
 
-def _with_crew_home_caveat(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
-    """Join a warning's lines, adding the crew-home caveat when it applies.
+def _with_crew_home_caveat(
+    lines: "list[str]", environ: "Mapping[str, str] | None", account: str = ""
+) -> str:
+    """Join a warning's lines, adding the caveat on whose ``.env`` it is when one applies.
+
+    *account* is :func:`service_dotenv`'s: the file is in that account's home,
+    so its remedy runs as that account, or root would own a file the service
+    cannot read.
 
     Not named ``*home_no*``: CodeQL's private-data name heuristic reads that as a
     home phone number and flags every printed warning built here as sensitive.
     """
+    if account:
+        lines += [
+            "",
+            f"   Run the lines that write the file as {account}, not under sudo, so",
+            "   the file is owned by the account the service runs as.",
+        ]
     if _home_override_is_set(environ):
         lines.append("")
         lines.append(
@@ -366,19 +404,47 @@ def service_path(home: str) -> str:
     the next install, so a Node mise installs later is found only through the
     shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
     also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
+
+    nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
+    shims for the same reason: nvm has no shims, so the versioned bin dir the
+    installing shell resolved ``node`` from is the only way the service finds
+    that Node instead of an older system one in ``/usr/bin``.
+
+    No entry names a versioned install tree, the rule ``ExecStart`` follows
+    (:func:`_persistable_path_entry`): the next update replaces that tree.
     """
+    env_path = [
+        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
+    ]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
-        required.append(shims)
+    if sys.platform.startswith("linux"):
+        if shims := _mise_shims_dir(home):
+            required.append(shims)
+        required += _nvm_bin_dirs(env_path)
     required += [
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
     ]
-    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
+
+
+def _persistable_path_entry(entry: str, home: str) -> str:
+    """*entry* as the service PATH may persist it.
+
+    A managed-venv dir (``crew-venv-<version>/bin``) is named through
+    ``crew-venv-current``. A Toolbox tool-version dir under
+    ``~/.toolbox/tools/`` is replaced by ``~/.toolbox/bin``, which reaches
+    every tool across updates; the next update removes that version.
+    """
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
+    toolbox_tools = PurePosixPath(home, ".toolbox", "tools")
+    if PurePosixPath(entry).is_relative_to(toolbox_tools):
+        return str(PurePosixPath(home, ".toolbox", "bin"))
+    return through_stable_link(entry)
 
 
 def _mise_shims_dir(home: str) -> str | None:
@@ -397,6 +463,33 @@ def _mise_shims_dir(home: str) -> str | None:
     if ":" in shims or "\0" in shims or not os.path.isabs(shims):
         return None
     return shims
+
+
+def _nvm_bin_dirs(env_path: list[str]) -> list[str]:
+    """nvm's versioned Node bin dirs among *env_path*, in their PATH order.
+
+    Read from the installer's PATH rather than ``$NVM_BIN``: nvm exports that
+    variable only in shells that source ``nvm.sh``, and ``sudo`` typically drops
+    it, while the PATH entry is what actually resolved ``node`` for the
+    installer. An entry matches only as an absolute
+    ``<root>/versions/node/<version>/bin``, where ``<root>`` is one nvm itself
+    installs to: a dir named ``.nvm`` (the default) or ``nvm`` (the
+    ``$XDG_CONFIG_HOME/nvm`` default), or the installer's ``$NVM_DIR``. So an
+    unrelated dir is never promoted ahead of the system dirs.
+    """
+    nvm_dir = os.environ.get("NVM_DIR", "")
+    nvm_root = PurePosixPath(nvm_dir) if nvm_dir.startswith("/") else None
+    dirs = []
+    for p in env_path:
+        path = PurePosixPath(p)
+        parts = path.parts
+        if not (p.startswith("/") and len(parts) >= 6
+                and parts[-4:-2] == ("versions", "node") and parts[-1] == "bin"):
+            continue
+        root = path.parents[3]
+        if root.name in (".nvm", "nvm") or root == nvm_root:
+            dirs.append(p)
+    return dirs
 
 
 class Platform(enum.Enum):

@@ -10,7 +10,7 @@
 // - user-facing copy comes from the failure `code`, not from the raw library
 //   `message`
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, act, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 
@@ -19,6 +19,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 import { fmtSpeed } from '../api/helpers'
 import { i18next } from '../i18n/all'
+import { i18nT } from '../i18n/t'
 import { fmtPercent } from '../i18n/format'
 
 type UpdateState = Record<string, unknown>
@@ -34,11 +35,15 @@ type UpdateState = Record<string, unknown>
  */
 function mountWithStates(info: Record<string, unknown> = {}) {
   const download = vi.fn().mockResolvedValue({ ok: true })
+  const install = vi.fn().mockResolvedValue({ ok: true })
+  const relaunch = vi.fn().mockResolvedValue({ ok: true })
   ;(window as unknown as { updateAPI?: unknown }).updateAPI = {
     onState: () => () => {},
     check: vi.fn().mockResolvedValue({ ok: true }),
     download,
-    install: vi.fn().mockResolvedValue({ ok: true }),
+    armsOnQuit: true,
+    install,
+    relaunch,
     getInfo: vi.fn().mockResolvedValue({
       version: '0.1.2',
       channel: 'nightly',
@@ -61,6 +66,9 @@ function mountWithStates(info: Record<string, unknown> = {}) {
   return {
     ...utils,
     download,
+    armsOnQuit: true,
+    install,
+    relaunch,
     setState: (s: UpdateState) => act(() => { qc.setQueryData(['update-state'], s) }),
   }
 }
@@ -201,27 +209,49 @@ describe('AboutPanel download states', () => {
     expect(row.textContent).toMatch(/something went wrong/i)
   })
 
-  it('keeps the install button terminal after dispatch (no re-arm before the quit)', async () => {
-    // `update:install` resolves as soon as the install is DISPATCHED; on macOS the
-    // platform installer then works for several more seconds before the app quits.
-    // The button must NOT become clickable again in that window -- an
-    // install-and-restart action followed by an unexplained quit reads as a crash.
+  it('holds the install button disabled while the arm is in flight, with copy that promises no restart', async () => {
+    // `update:install` only ARMS: the app does not restart or quit, so the card
+    // must never say it will reopen automatically or sit on "Restarting...".
     const { setState } = mountWithStates()
     setState({ state: 'downloaded', version: '0.1.3' })
 
-    const btn = await screen.findByRole('button', { name: /install update & restart app/i })
+    const btn = await screen.findByRole('button', { name: /install when i quit/i })
     expect(btn.hasAttribute('disabled')).toBe(false)
-    fireEvent.click(btn)
-
-    const restarting = await screen.findByRole('button', { name: /restarting/i })
-    // The card's last words before the gateway goes down must explain the
-    // potentially long handoff and the automatic return.
+    expect(screen.queryByRole('button', { name: /restart/i })).toBeNull()
     const cardText = (await screen.findByTestId('update-card')).textContent
-    expect(cardText).toMatch(/several minutes/i)
-    expect(cardText).toMatch(/reopen automatically/i)
-    expect(cardText).not.toMatch(/installation progress/i)
-    expect(restarting.hasAttribute('disabled')).toBe(true)
-    expect(screen.queryByRole('button', { name: /install update & restart app/i })).toBeNull()
+    expect(cardText).toMatch(/installs when you quit/i)
+    expect(cardText).not.toMatch(/reopen automatically|several minutes/i)
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn.hasAttribute('disabled')).toBe(true))
+  })
+
+  it('shows an armed update as finished: installs when you quit, with a Restart and install now that relaunches', async () => {
+    const { setState, relaunch, install } = mountWithStates()
+    setState({ state: 'downloaded', version: '0.1.3' })
+    fireEvent.click(await screen.findByRole('button', { name: /install when i quit/i }))
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    // The lane re-emits the same version, now armed.
+    setState({ state: 'downloaded', version: '0.1.3', armed: true })
+
+    const restartNow = await screen.findByTestId('update-restart-now')
+    expect(restartNow.hasAttribute('disabled')).toBe(false)
+    expect(restartNow.textContent).toMatch(/restart and install now/i)
+    expect(screen.queryByRole('button', { name: /install when i quit/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^restarting/i })).toBeNull()
+    expect((await screen.findByTestId('update-ready-note')).textContent).toMatch(/installs when you quit/i)
+
+    fireEvent.click(restartNow)
+    await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
+    expect(install).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers the agent hand-off when Restart now is refused', async () => {
+    const { setState, relaunch } = mountWithStates()
+    relaunch.mockResolvedValue({ ok: false, error: 'relaunch is only available from the local dashboard' })
+    setState({ state: 'downloaded', version: '0.1.3', armed: true })
+    fireEvent.click(await screen.findByTestId('update-restart-now'))
+    const notice = await screen.findByTestId('update-restart-error')
+    expect(within(notice).getByText(i18nT('components.askAgent.ask_the_agent'))).toBeInTheDocument()
   })
 
   it('warns before dispatch when Windows will take over in a separate installer window', async () => {

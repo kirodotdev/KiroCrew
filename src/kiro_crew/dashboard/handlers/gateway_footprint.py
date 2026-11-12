@@ -44,7 +44,11 @@ def _settings_rows(path: Path) -> dict[str, dict[str, Any]]:
     muted or catalog-governed entry is not launched, and an HTTP/SSE entry has
     no process to measure. Env NAMES only, never a value.
     """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+    from kiro_crew.mcp_cleanup import (
+        mcp_entry_is_muted,
+        mcp_entry_is_registry_governed,
+        mcp_entry_is_remote,
+    )
     from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
     from kiro_crew.user_json import loads_user_json
 
@@ -62,7 +66,7 @@ def _settings_rows(path: Path) -> dict[str, dict[str, Any]]:
         if mcp_entry_is_muted(entry) or mcp_entry_is_registry_governed(entry):
             continue
         command = entry.get("command")
-        if not isinstance(command, str) or not command:
+        if not isinstance(command, str) or not command or mcp_entry_is_remote(entry):
             continue
         args = entry.get("args")
         argv = [str(a) for a in args] if isinstance(args, list) else []

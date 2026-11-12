@@ -40,6 +40,27 @@ _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
 _ALERT_AFTER_DEFAULT = 1
 
 
+def parked_by_its_run(
+    kind: object, user_paused: object, user_pause_requested: object, last_run_ts: object
+) -> bool:
+    """Whether a paused job is a one-shot its own run parked, not a pause the user made.
+
+    A fired ``at`` job that keeps its row is stored as ``enabled`` False and
+    ``user_paused`` True, the same flags a user pause writes
+    (:func:`~kiro_crew.cron_service.execution.run_parks_one_shot`). A user pause
+    also sets ``user_pause_requested``; a park does not. A paused one-shot without
+    it that has run (``last_run_ts``) was parked by that run, so health readers
+    count it and a failed one-shot is not hidden as a user pause.
+
+    shortcut: a pause saved before ``user_pause_requested`` existed carries no
+    marker, so an ``at`` job paused that way after a run reads as parked until the
+    user pauses or resumes it again. Drop this note once such stores are gone.
+    """
+    if kind != "at" or user_paused is not True or user_pause_requested is True:
+        return False
+    return not isinstance(last_run_ts, bool) and isinstance(last_run_ts, (int, float))
+
+
 def _lifts_default_pause(limit: object) -> bool:
     """Whether *limit* lets a job keep failing past the default limit (0 or above it)."""
     if isinstance(limit, bool) or not isinstance(limit, int):
@@ -119,6 +140,11 @@ class CronJob:
     # repeated request whose booleans already have that value. A pending run
     # record uses it to keep a newer user choice while merging runtime fields.
     user_pause_generation: int = 0
+    # True while ``user_paused`` is the person's own pause request (a pause, a job
+    # created paused, an import held for review); a resume clears it. A run's park
+    # of a fired one-shot writes ``user_paused`` but never this, which is how the
+    # health readers tell the two apart (:func:`parked_by_its_run`).
+    user_pause_requested: bool = False
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
@@ -154,6 +180,15 @@ class CronJob:
     # ``delete_after_run`` one-shot is still retained by ``run_never_started``.
     # Reset at the start of every run.
     refusal_cannot_clear: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run did
+    # nothing a person would look for in the run history (a gateway job's quiet
+    # tick, which woke no one), so the run writes no history row. Reset at the
+    # start of every run.
+    quiet_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was a
+    # script's Skip(), so its history row is marked idle and the Logs tab can
+    # hide it. Reset at the start of every run.
+    idle_run: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -180,6 +215,10 @@ class CronJob:
     # (e.g. a delivery-path exception) and then overran its deadline during
     # cleanup is counted once, not twice.
     failure_recorded: bool = False
+    # Runtime-only: True when THIS run's counted failure was an auth expiry
+    # (``record_failure(auth_expiry=True)``), so the store-side pause decision
+    # (``execution.pause_at_current_limit``) skips the pause as well.
+    failure_auth_expiry: bool = False
     # Runtime-only: ``auto_paused`` as it stood when THIS run started, stamped by
     # _run_job_isolated and carried on the run's record. A store whose
     # ``auto_paused`` differs from it was changed by someone else while the
@@ -345,6 +384,14 @@ class CronJob:
     secret_env_pending: dict[str, str] = field(default_factory=dict)
     secret_env_pending_pin: str = ""
     secret_env_pending_ts: float = 0.0
+    # The pending pin of the last re-approval request the SCHEDULER filed for
+    # a stale active grant (see cron_service.grant_resurface). It lets the
+    # scheduler raise that request once per code revision: an operator who
+    # denies it is not asked again on every refused run, while a further code
+    # change mints a different pin and asks again. Agent-writable like every
+    # stored field, which costs nothing: it only ever suppresses or permits a
+    # REQUEST, and nothing is granted without the operator's approval.
+    secret_env_resurfaced_pin: str = ""
 
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.
@@ -454,14 +501,16 @@ class CronJob:
         off, whatever limit it carries: 0 and any limit above the default alike,
         so raising the limit buys the same bounded retry rate as turning
         auto-pause off. A job at or below the default pauses before it gets
-        here. Below the default streak a job fires on schedule.
+        here, unless the failures were auth expiries (:meth:`record_failure`),
+        which never pause it: it is still enabled, so it backs off the same way.
+        Below the default streak a job fires on schedule.
 
         The delay counts from ``last_run_ts``. For an ``every`` job that is the
         start of the last run, because ``close_run`` restores the start time;
         for a cron-expression job it is the last run's completion.
         """
         limit = self.auto_pause_limit()
-        if limit is not None and limit <= _AUTO_PAUSE_THRESHOLD:
+        if limit is not None and limit <= _AUTO_PAUSE_THRESHOLD and not self.enabled:
             return None
         failures = self.consecutive_failures
         if isinstance(failures, bool) or not isinstance(failures, int):
@@ -520,7 +569,7 @@ class CronJob:
         except Exception:
             logger.debug("SEL logging failed for a cron auto-pause limit change", exc_info=True)
 
-    def record_failure(self) -> None:
+    def record_failure(self, *, auth_expiry: bool = False) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
         Sets both `enabled` (the scheduler stops at once) and `auto_paused` (the
@@ -531,8 +580,18 @@ class CronJob:
         resume in this process) counts nothing: the resume gave the job fresh
         attempts. ``failure_recorded`` is still set, so the timeout arm and the
         reaper treat the failure as handled.
+
+        A failure the gateway classified as an auth expiry (``auth_expiry``: the
+        harness needs a new sign-in, see ``_cron_auth_expiry``) counts like any
+        other but never auto-pauses the job: it is environmental and clears once
+        the user signs in again. Its streak still drives the alert and, past the
+        default threshold, the backoff in :meth:`failure_backoff_until`, so a job
+        that stays signed out keeps a bounded retry rate. A later failure of
+        another kind pauses the job as usual once the streak is at its limit.
         """
-        if self.count_failure() and self.failure_limit_reached():
+        counted = self.count_failure()
+        self.failure_auth_expiry = auth_expiry
+        if counted and not auth_expiry and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")
@@ -545,6 +604,7 @@ class CronJob:
         run (``cron_service/settlement.py``).
         """
         self.failure_recorded = True
+        self.failure_auth_expiry = False
         if self.auto_paused_at_start and not self.auto_paused:
             return False
         self.consecutive_failures += 1

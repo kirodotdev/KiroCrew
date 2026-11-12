@@ -34,6 +34,8 @@ def slots_app(monkeypatch: pytest.MonkeyPatch) -> web.Application:
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda _r: False)
     state = SimpleNamespace(
         _slots={},
+        slot_list_held_keys=lambda: [],
+        slot_list_hold_channels=lambda: False,
         serialize_slots=lambda **_k: [dict(ROOT), dict(WORKER), dict(PLAIN)],
     )
     app = web.Application()
@@ -80,7 +82,10 @@ def _mate_app(monkeypatch: pytest.MonkeyPatch, previews: dict[str, bool]) -> web
     cfg = SimpleNamespace(dashboard=SimpleNamespace(feature_previews=previews))
     monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
     state = SimpleNamespace(
-        _slots={}, serialize_slots=lambda **_k: [dict(MATE), dict(MATE_CHILD), dict(PLAIN)]
+        _slots={},
+        slot_list_held_keys=lambda: [],
+        slot_list_hold_channels=lambda: False,
+        serialize_slots=lambda **_k: [dict(MATE), dict(MATE_CHILD), dict(PLAIN)],
     )
     app = web.Application()
     app["state"] = state

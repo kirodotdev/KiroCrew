@@ -216,6 +216,11 @@ describe('connecting a new provider', () => {
       expected: 'Action failed: The MCP server entry disappeared before authorization could start. Try connecting again.',
     },
     {
+      reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
+    },
+    {
       reason: 'mint_url_rejected',
       state: 'failed',
       expected: 'Action failed: The provider returned an approval address containing credential-like data, so it was not displayed.',
@@ -686,12 +691,19 @@ describe('relaying the loopback return address', () => {
     fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
+    // In flight the button stays FOCUSABLE (aria-disabled, not disabled) and the
+    // address field stays in the tab order (readOnly, not disabled), so a
+    // keyboard user who submitted it is not dropped to the page body (#32995);
+    // the press/Enter guards refuse a re-submit. Focus retention itself is
+    // asserted in ConnectionsPage.busyFocus.test.tsx.
     const sending = await screen.findByRole('button', { name: 'Sending…' })
-    expect(sending).toBeDisabled()
-    expect(relayInput()).toBeDisabled()
+    expect(sending).not.toBeDisabled()
+    expect(sending).toHaveAttribute('aria-disabled', 'true')
+    expect(relayInput()).not.toBeDisabled()
+    expect(relayInput()).toHaveAttribute('readonly')
 
     pending.resolve({ ok: true })
-    await waitFor(() => expect(relayInput()).toBeEnabled())
+    await waitFor(() => expect(relayInput()).not.toHaveAttribute('readonly'))
   })
 
   it('replaces the delivered line with the failure and leaves waiting when a reloaded attempt fails', async () => {

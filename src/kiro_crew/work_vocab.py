@@ -85,8 +85,8 @@ WORK_EVENT_KINDS: tuple[str, ...] = (
 #: Item records the ``work`` fold may hold for one board at once: a memory bound on
 #: the fold, not on the board's life. The fold holds the open items (at most 32) plus
 #: :data:`WORK_CLOSED_WINDOW` closed ones, so a board the store admits never reaches
-#: this; it guards a log something else wrote. Also the highest goal ``item_cap``
-#: the store accepts. Here because the fold and the store may not import each other.
+#: this; it guards a log something else wrote. Here because the fold and the store
+#: may not import each other.
 WORK_STORED_ITEM_LIMIT: int = 256
 #: Closed items the ``work`` fold keeps whole, newest-closed last, for the surfaces
 #: that draw recent history. Older closed items leave the fold; their full history
@@ -118,6 +118,18 @@ WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "retire": ("worker_session_key", "worker_instance_id", "retired_bindings"),
     "destroy": ("retired_bindings",),
 }
+
+#: The acceptance conditions the evaluator can judge, one example object per kind, as
+#: the text a tool description shows a conductor. ``work_ledger_record`` quotes it on
+#: its ``acceptance`` argument and ``work_dispatch`` points there, so the object can
+#: be written from the description alone; a kind's field names are otherwise only in
+#: the evaluator's source. ``cmd`` is absent because the evaluator refuses it.
+ACCEPTANCE_SHAPES: str = (
+    'One of: {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}; {"kind": '
+    '"pr_merged", "pr": 123, "repo": "owner/name"}; {"kind": "file", "path": '
+    '"/absolute/path"} (add "exists": false for a path that must be gone); {"kind": '
+    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}.'
+)
 
 
 #: Most retired bindings an item keeps; past it the oldest destroyed one goes first.
@@ -223,6 +235,8 @@ class WorkBoardItem(TypedDict):
     status: str | None
     #: One of :data:`WORK_BLOCKED_REASONS` on a blocked/question report, or unset.
     reason: str | None
+    #: When a ``progress`` report's worker will resume; present only while set.
+    wake_at: NotRequired[str]
     summary: str
     artifacts: dict[str, str]
     pr: int | None

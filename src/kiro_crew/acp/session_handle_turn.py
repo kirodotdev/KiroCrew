@@ -393,6 +393,7 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    self._reset_tool_silence()
     # A new turn starts a new batch window (``acp.batch_guard``).
     batch_window = getattr(self, "_batch_window", None)
     if batch_window is not None:
@@ -965,6 +966,8 @@ async def _run_turn(
             # What the cut turn was waiting on, named by id, tool name and age
             # only: a later "prompt already in progress" on this session is
             # otherwise unattributable, and the next prompt clears the map.
+            # The last frame's age tells a backend still streaming at the cut
+            # from one silent for most of the turn.
             _now = time.monotonic()
             _open_calls = ", ".join(
                 f"{_loggable_request_id(call_id)} "
@@ -972,14 +975,16 @@ async def _run_turn(
                 f"open {_now - state.dispatch_ts:.0f}s)"
                 for call_id, (state, _aux) in self._tool_tracker.active_calls.items()
             )
+            _frame_at = self.session_activity_at
             logger.warning(
                 "prompt req %s cut before its terminal after %.0fs [session=%s sid=%s]; "
-                "open tool calls: %s",
+                "open tool calls: %s; %s",
                 req_id,
                 _now - _sent_at,
                 self._session_key,
                 self._session_id,
                 _open_calls or "none",
+                "no frame" if _frame_at is None else f"last frame {_now - _frame_at:.0f}s ago",
             )
         raise
     finally:

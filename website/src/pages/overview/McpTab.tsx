@@ -4,7 +4,7 @@ import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, 
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { configuredAcpBackend, kasChatOwnsMcpSignIn, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
@@ -406,6 +406,32 @@ function signInTargetFor(
 }
 
 /**
+ * Whether this row's sign-in cannot work on the KAS harness at all. Crew sends a
+ * server's own `oauth` block to the engine, except a block that names a client
+ * secret or keeps nothing Crew sends (`oauthWithheld`, from
+ * `mcp_oauth_projection.oauth_withheld`), so neither the chat guidance nor Sign in
+ * could finish for that one. A Connections provider is left to its card, and a
+ * sign-in Crew holds is Crew's, not the harness's.
+ * shortcut: an engine older than 0.66.104 drops every block, and this row cannot
+ * see the engine version; the chat notice covers that case. Read the version
+ * here if the gateway ever reports it per row.
+ */
+function kasCannotSignIn(s: McpServer, managedProvider: unknown, onKas: boolean): boolean {
+  return onKas && !managedProvider && !!s.oauthWithheld && !s.authCrewHeld
+}
+
+/** The row's sentence for a sign-in KAS cannot do. It offers no harness switch:
+ *  a Kiro CLI pick runs on KAS wherever kiro-cli offers its v3 engine
+ *  (`kiro_cli_pick_backend`), so the switch would not reach the sign-in either. */
+function KasSignInUnsupported() {
+  return (
+    <span className="text-warn text-[12px]" data-testid="mcp-sign-in-unsupported">
+      {i18nT('pages.overview.mcpTab.sign_in_unsupported_on_kas')}
+    </span>
+  )
+}
+
+/**
  * Only a hard failure is toned as an error; `needs_auth` rides the warn default.
  *
  * A held grant is the exception, and it is toned `muted` rather than `warn`: amber
@@ -583,7 +609,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
-  const { data: harnessProbe } = useQuery<{ backends: AcpBackendProbe[] }>({
+  const { data: harnessProbe } = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -593,9 +619,15 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     const active = configuredAcpBackend(harnessCfg)
     return harnessProbe.backends?.find(b => b.id === active)
   }, [harnessCfg, harnessProbe])
-  // Chats on KAS never read a sign-in made from this table (#24693); each row
-  // that offers one says so. Off while the config has not loaded.
-  const kasChatNote = kasChatOwnsMcpSignIn(harnessCfg)
+
+  // Chats run on KAS; off while the config has not loaded. A stored Kiro CLI pick
+  // that loads as KAS counts too: the saved value still reads "kiro" there. The
+  // probe is read only while the loaded config still says "kiro", because its
+  // cached answer outlives a harness switch made in another tab.
+  const configuredBackend = harnessCfg === undefined ? undefined : configuredAcpBackend(harnessCfg)
+  const onKas =
+    configuredBackend === ACP_BACKEND_KAS
+    || (configuredBackend === ACP_BACKEND_KIRO && harnessProbe?.kiro_selection_runs_on_kas === true)
 
   const pendingCount = useMemo(() => {
     return servers.reduce((count, s) => {
@@ -891,7 +923,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
             const managedProvider = connectionProviderForServer(s)
-            const signInTarget = signInTargetFor(s, managedProvider, connectionsUi)
+            const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas)
+            const signInTarget = signInUnsupported ? undefined : signInTargetFor(s, managedProvider, connectionsUi)
             // Greyed like a pending uninstall, but not AS a pending uninstall: the
             // row is inert because its config lives elsewhere. The reason is SAID
             // on the row -- one line in the Tools cell naming the file to edit --
@@ -1059,11 +1092,15 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           ? i18nT('pages.overview.mcpTab.status_invalid_value')
                           : notProbedReason
                             ? i18nT('pages.overview.mcpTab.not_probed')
-                            : mcpStatusLabel(s.status, mcpAuthState(s))}
+                            : signInUnsupported && mcpAuthState(s) !== 'unknown'
+                              ? i18nT('pages.overview.mcpTab.sign_in_unavailable')
+                              : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {(() => {
                         // The signed-in tip names Kiro CLI's sign-in, which a Crew-held row does not use.
-                        const hint = s.authCrewHeld && mcpAuthState(s) === 'signed_in' ? undefined
+                        // The sign-in tips name a step that cannot finish where sign-in is unavailable;
+                        // only the replaced badge loses its tip, so Outdated and Online keep theirs.
+                        const hint = (s.authCrewHeld && mcpAuthState(s) === 'signed_in') || (signInUnsupported && mcpAuthState(s) !== 'unknown') ? undefined
                           : mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
                         return hint ? <InfoTip text={hint} placement="top" /> : null
                       })()}
@@ -1174,8 +1211,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     </div>
                   )}
                   {s.status === 'error' && s.error ? (
-                    <span className="text-danger text-[12px]">
-                      <AlertTriangle className="lucide-inline" /> {s.error}
+                    <span className="text-[12px]">
+                      <ErrorNotice variant="inline" message={s.error} askAgent messageClassName="break-all" testId="mcp-probe-error" />
                       {/* A configured Authorization header that the server rejected reads as
                           an opaque HTTP code. When the same response advertised OAuth, the
                           actionable fact is that no static token can satisfy this server. */}
@@ -1188,9 +1225,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {/* A server that advertised OAuth and failed may be holding a grant
                           that stopped working (expired, revoked, or minted for other
                           scopes). Signing in again is the remedy the row can offer. */}
+                      {!!s.authChallenge && !s.headers && signInUnsupported && (
+                        <span className="block mt-0.5"><KasSignInUnsupported /></span>
+                      )}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
-                          <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote && !s.authCrewHeld} />
+                          <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={s.kasChatSignIn} />
                           <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_hint')}</span>
                         </span>
                       )}
@@ -1210,8 +1250,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        sentence that routes the user to chat (a link, because navigating
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
-                    signInTarget ? (
-                      <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={kasChatNote && !s.authCrewHeld} />
+                    signInUnsupported ? (
+                      <KasSignInUnsupported />
+                    ) : signInTarget ? (
+                      <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={s.kasChatSignIn} />
+
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans
@@ -1220,6 +1263,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         />
                       </span>
                     )
+                  ) : mcpAuthState(s) === 'signed_in' && signInUnsupported ? (
+                    /* A held grant is Kiro CLI's, which a KAS chat does not use, so
+                       the row says the same as one nobody signed in to. */
+                    <KasSignInUnsupported />
                   ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length && !s.authCrewHeld ? (
                     /* A held grant the probe cannot verify. The probe never uses the
                        session's grant, so it cannot list this server's tools; the
@@ -1230,7 +1277,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        on a row that reads Signed in looks like it would undo the
                        sign-in. */
                     <div className="flex flex-col items-start gap-1">
-                      <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote && !s.authCrewHeld} />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={s.kasChatSignIn} />
                       <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_no_tools_hint')}</span>
                     </div>
                   ) : s.tools?.length ? (<div>

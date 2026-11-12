@@ -238,7 +238,9 @@ class TestConnectSnapshot:
 
         fake_ws = _FakeWebSocket()
         _floor_monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        _floor_monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        _floor_monkeypatch.setattr(
+            dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws
+        )
         _floor_monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", _no_allowlist)
         _floor_monkeypatch.setattr(
             dashboard_ws,

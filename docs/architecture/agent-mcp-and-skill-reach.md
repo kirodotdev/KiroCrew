@@ -106,7 +106,11 @@ to custom agents, needs an explicit owner decision.
   own file, `~/.kiro/mates/agents/<id>.json`, is layered on top:
   `mate_worker.worker_additions` reads its `mcpServers`, `resources` and
   `skills`, and `mate_worker.merge_worker_spec` adds them to the base, then
-  applies the governance ceiling (`src/kiro_crew/mate_worker.py`).
+  applies the governance ceiling (`src/kiro_crew/mate_worker.py`). A server the
+  file declares is callable only when the file's `tools` select it (`@server`,
+  `@server/tool`, or `*`; `mate_worker.server_selectors`); one declared with no
+  selector is mounted with no tool, and the capability catalog counts it as one
+  the worker lacks.
 - **How a new server or skill gets there.** Only by adding it to that mate:
   in chat, when the mate asks with `request_capabilities` and the user applies
   the card (`src/kiro_crew/mcp_mate.py`), or in the mate's **Abilities**

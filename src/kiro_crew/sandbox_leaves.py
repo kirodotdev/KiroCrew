@@ -103,6 +103,14 @@ _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 #: needs no backend carve-out to hand the directory back to a sandboxed app.
 _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 
+#: The masked DIRECTORY the self-update engine downloads a release wheel into
+#: (``platform.wheel_engine_transfer._staging_dir``). The wheel's SHA-256 is checked as it
+#: lands and pip opens the same path seconds later, so a sandboxed writer that can reach
+#: the directory could replace the checked file before pip reads it. It is not under
+#: ``trust/``, which stays sandbox read-write for SEL. A top-level directory mask covers
+#: every name inside it, present and future, and the gateway is its only writer.
+_UPDATE_STAGING_LEAF: str = "update-staging"
+
 #: The mediated-secret request directory (``secrets_mediation.provenance.
 #: REQUEST_POLICY_DIRNAME``): the owner-signed authorization policy and its
 #: authorize lock. Hidden as a WHOLE directory and
@@ -201,7 +209,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``/api/tasks`` all live in the gateway process and open it directly.
     "tasks",
     # The per-process scratch root (``agent_scratch``): every kiro-cli session
-    # and every shared runtime gets ``<home>/scratch/<label>-<rand>`` as its
+    # and every shared runtime gets ``<home>/scratch/<rand>`` as its
     # ``TMPDIR``. Masked as a WHOLE so one session tree cannot open another's
     # scratch; each spawn passes its OWN directory back through
     # ``extra_private_dirs`` (``acp/client.py``, ``acp/runtime.py``) -- a
@@ -403,6 +411,8 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # in-flight temp -- which holds the same key and chain-state bytes as the two leaves
     # above -- and any crash orphan are covered at every name, present and future.
     _AUTH_STORE_STAGING_LEAF,
+    # The self-update engine's wheel download directory (see ``_UPDATE_STAGING_LEAF``).
+    _UPDATE_STAGING_LEAF,
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
@@ -522,6 +532,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # The update armed for the next start (``update_next_start``). The boot-time
+    # apply installs on the strength of this record alone, so a writable copy lets
+    # a sandboxed shell skip the step-up, the self-protection deny floor and the
+    # operator's unattended-apply switch. Every writer is the gateway or the
+    # operator's own ``kirocrew update``, outside the sandbox; in-sandbox code may
+    # read the arm and the error the last apply left.
+    "update_next_start.json",
     # The owner's Shared Crew preview switch. A writable record lets an
     # auto-approved agent choose whether the Crew opens to other people on its
     # next start. The read-only mount is the load-bearing half; the shell gate
@@ -672,6 +689,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # and environment a later server start runs, so it is sealed. Pre-created and
     # no-follow for the ``pi-gate`` reasons above.
     "kas-mcp-launch",
+    # Crew-owned Connection bridge snapshots (``kas_env_shim.BRIDGE_LEAF``): a slug,
+    # the gateway port and a per-bridge token, no vendor credential. Sealed for the
+    # ``kas-mcp-launch`` reason: a write would choose what a later bridge connects as.
+    "crew-oauth-bridge",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -1026,6 +1047,13 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
     # foreign child that reads it learns nothing.
     "app-agent-launch",
+    # Crew-owned Connection bridge snapshots. The bridge every bridged harness's child
+    # starts must read its own; each holds a slug, a port and a per-bridge token, no
+    # vendor credential and no other server's env (those stay in ``kas-mcp-launch``).
+    # A token read from another session's file is useful only with that bridge's pid
+    # pin and an approval Crew's gate minted for that session, tool and arguments.
+    # Read-gate fenced, so the agent's own file tools still cannot open it.
+    "crew-oauth-bridge",
     # The KAS engine bundle a sandboxed KAS process must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
     # what an enforced child can open; the rest are already outside the mask. (The
@@ -1072,6 +1100,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # the product depends on and buy nothing.
     "cloud.json",
     "cloud_launch_state.json",
+    # The arm record: a version, a timestamp and an error line, no credential. The
+    # risk is a write, answered by the read-only seal.
+    "update_next_start.json",
     # The runtime config and its overlay. NOT credential-free, unlike ``cloud.json``:
     # a channel bot token stored inline (``telegram.bot_token``, ``discord.bot_token``,
     # ``weixin``/``webex``; the ``sensitive`` fields in ``config/sections_*.py``) lives

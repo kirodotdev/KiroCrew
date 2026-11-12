@@ -17,6 +17,8 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { dirtyWorktreeChanged } from '../../utils/dirtyWorktree'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useAppSelector } from '../../store'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -62,7 +64,15 @@ function gwCheckErrorText(code: string): string {
  * `AboutPanel` calls it once per render, ahead of the verdicts it derives from this
  * state for the hero card and the Updates card.
  */
-export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
+/** The background check's answer, from the status frame. */
+export interface BackgroundCheck {
+  /** `update_last_checked_at`: when the last check finished, epoch seconds. */
+  checkedAt: number | null
+  /** `update_check_status`. */
+  status: string | undefined
+}
+
+export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background: BackgroundCheck) {
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
   // Display-only sibling of gwTarget, folded to the clean release version on
@@ -82,6 +92,19 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
   // `checked` is the verdict, and `gwError` names why there is none.
   const [gwChecked, setGwChecked] = useState(false)
   const [gwError, setGwError] = useState('')
+  // The newest answer a check in THIS tab got (the Check button or a channel
+  // switch, which re-runs the check): when it finished, on the backend's own
+  // clock, and whether it failed. Null = this tab has not checked. A later
+  // background check (a newer status-frame stamp) supersedes it.
+  const [local, setLocal] = useState<{ at: number; failed: boolean } | null>(null)
+  // An answer with no stamp of its own (a request that failed outright, an
+  // older gateway, a check superseded by a channel switch) is dated at the
+  // newest stamp seen so far, this tab's previous answer included: newer than
+  // every answer already known, older than any later one.
+  const recordLocal = (failed: boolean, d?: { last_checked_at?: unknown }) => {
+    const stamp = typeof d?.last_checked_at === 'number' ? d.last_checked_at : null
+    setLocal(prev => ({ at: stamp ?? Math.max(prev?.at ?? 0, background.checkedAt ?? 0), failed }))
+  }
   // Why there is no verdict when nothing FAILED: this gateway is not the update
   // surface for the install it runs inside. Separate from `gwError` because
   // rendering a deferral under "Couldn't check for updates" would be its own
@@ -121,6 +144,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       // version" until the flag catches up.
       setGwFound(d?.update_available === true)
       setGwChecked(d?.check_status === 'succeeded')
+      recordLocal(typeof d?.error_code === 'string', d)
       // Adopted unconditionally (0 when absent) so one check's divergence can
       // never survive into the next check's verdict.
       setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
@@ -143,22 +167,37 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       // have changed: adopt it, unless a save or a read has moved it since.
       adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
+    // The request itself failed: that is now the newest answer, so an earlier
+    // check's verdict and reason must not outlive it.
+    onError: () => {
+      setGwChecked(false)
+      setGwFound(false)
+      setGwAhead(0)
+      setGwBehind(0)
+      setGwError('')
+      setGwUnavailableReason('')
+      recordLocal(true)
+    },
   })
+  // Update ARMS the update for the next start (`POST /api/update`): nothing
+  // installs and nothing restarts now. The status frame then carries
+  // `update_armed_version`, which the card below renders.
   const gwApply = useMutation({
     mutationFn: () => api.applyUpdate(),
-    onSuccess: () => setRestarting(true),
+    onSuccess: () => {
+      setApplyError('')
+      setApplyDirty(false)
+      setShowConfirm(false)
+    },
     onError: (e: unknown) => {
-      // A real server rejection (e.g. 409 dirty tree, 400) arrives as ApiError
-      // with a status code — surface it. A bare network failure means the POST's
-      // connection was reset by the gateway restart the update itself triggers;
-      // that is the expected success path, not a failure.
       const changed = dirtyWorktreeChanged(e)
       setApplyDirty(changed !== null)
       if (changed !== null) setApplyError(i18nT('pages.settings.aboutPanel.update_refused_dirty_worktree', { changed }))
-      else if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
-      else setRestarting(true)
+      else setApplyError(e instanceof ApiError ? (e.message || i18nT('pages.settings.aboutPanel.update_failed')) : i18nT('pages.settings.aboutPanel.update_failed'))
     },
   })
+  // Take the armed update back: the next start applies nothing.
+  const gwCancelArm = useMutation({ mutationFn: () => api.disarmUpdate() })
   // Restart WITHOUT updating: the missing half of the non-self-updatable flow.
   // After the user runs the copied installer command in a terminal, the running
   // gateway is still executing the old code and had no in-app way to reload.
@@ -171,6 +210,8 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       setApplyDirty(false)
+      // The person declined the "work is running" confirmation: a quiet cancel.
+      if (e instanceof WorkConfirmDeclined) return
       if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
       else setRestarting(true)
     },
@@ -203,6 +244,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       if (typeof d?.channel === 'string') setGwChannel(d.channel)
       setGwFound(d?.update_available === true)
       setGwChecked(d?.check_status === 'succeeded')
+      recordLocal(typeof d?.error_code === 'string', d)
       setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
       setGwBehind(typeof d?.commits_behind === 'number' ? d.commits_behind : 0)
       // Only `error_code` may render as an error; a deferral is not a failure.
@@ -216,12 +258,21 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
   })
+  // Which answer is newest, local or background, decided once here for the hero
+  // and the card alike. Equal stamps are the same check, and the local answer
+  // carries its reason, so a tie goes to it.
+  const newestIsLocal = local !== null
+    && !(background.checkedAt !== null && background.checkedAt > local.at)
+  const newestCheckFailed = newestIsLocal ? local.failed : background.status === 'failed'
+  const newestCheckSucceeded = newestIsLocal ? gwChecked : background.status === 'succeeded'
+
   return {
+    newestIsLocal, newestCheckFailed, newestCheckSucceeded,
     gwChanges, gwTarget, gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwError,
     gwUnavailableReason, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, showConfirm, setShowConfirm,
     applyError, setApplyError, applyDirty, restarting, setRestarting, gwCheck, gwApply, gwRestart,
-    gwChannelMutation,
+    gwChannelMutation, gwCancelArm,
   }
 }
 
@@ -250,6 +301,7 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs,
   botName,
   autoUpdateSwitch,
+  restartControls = true,
 }: {
   gwUpdate: AboutPanelGatewayUpdateState
   showUpdate: boolean
@@ -270,17 +322,53 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs: number
   botName: string
   autoUpdateSwitch: React.ReactNode
+  /**
+   * False in the desktop app when its card renders its own Restart row: the
+   * app restarts the gateway it supervises, and this body's `POST /api/restart`
+   * replaces that gateway in place, out from under the supervisor.
+   */
+  restartControls?: boolean
 }) {
   const {
     gwChanges, gwTarget, gwTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
-    setApplyError, restarting, setRestarting, gwCheck, gwRestart,
+    setApplyError, restarting, setRestarting, gwCheck, gwRestart, newestIsLocal, newestCheckFailed,
   } = gwUpdate
   // A git checkout that is only behind its upstream reports the version it
   // already runs as the target, so the text names no version then.
   const namedTarget = gwTarget && gwTarget !== runningVersion ? gwTarget : ''
+  // The update a person armed (applies at the next start) and the error the last
+  // boot-time apply left, from the status frame.
+  const armedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  const pendingApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
   return (
     <div className="flex flex-col gap-2.5">
+      {armedVersion && (
+        <p className="text-[13px] text-muted" data-testid="about-update-armed-note">
+          {i18nT('components.updateFoundModal.update_armed_note')}
+          <button
+            type="button"
+            data-testid="about-update-cancel-armed"
+            className="ml-2 underline text-muted hover:text-text bg-transparent border-none p-0 text-[13px] cursor-pointer"
+            onClick={() => gwUpdate.gwCancelArm.mutate()}
+            disabled={gwUpdate.gwCancelArm.isPending}
+          >
+            {i18nT('components.updateFoundModal.cancel_update')}
+          </button>
+        </p>
+      )}
+      <ErrorNotice
+        message={gwUpdate.gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+        askAgent
+        testId="about-update-cancel-armed-error"
+      />
+      {pendingApplyError && (
+        <ErrorNotice
+          message={i18nT('components.updateFoundModal.update_apply_failed', { error: pendingApplyError })}
+          askAgent
+          testId="about-update-apply-error"
+        />
+      )}
       {(showUpdate || channelMovePending) ? (
         <>
           {showUpdate && (
@@ -341,13 +429,15 @@ export function AboutPanelGatewayUpdates({
                         running the old version until it re-execs. Primary
                         once the command has been copied, because that is
                         when restarting is the actual next action. */}
-                    <RestartGatewayButton
-                      primary={gwCommandCopied}
-                      pending={gwRestart.isPending}
-                      restarting={restarting}
-                      onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
-                      testId="gateway-restart"
-                    />
+                    {restartControls && (
+                      <RestartGatewayButton
+                        primary={gwCommandCopied}
+                        pending={gwRestart.isPending}
+                        restarting={restarting}
+                        onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                        testId="gateway-restart"
+                      />
+                    )}
                   </div>
                   {/* Below the Copy/Restart row, not inside it: the hand-off
                       link counts as a third action there
@@ -378,7 +468,7 @@ export function AboutPanelGatewayUpdates({
                     does not follow the verb in every language. */}
                 <ArrowUp size={13} className="lucide-inline" /> {namedTarget
                   ? i18nT('pages.settings.aboutPanel.update_to_version', { version: namedTarget })
-                  : i18nT('pages.settings.aboutPanel.update_now')}
+                  : i18nT('pages.settings.aboutPanel.update_when_i_restart')}
               </Btn>
             </div>
           )}
@@ -410,7 +500,7 @@ export function AboutPanelGatewayUpdates({
               "you're on the latest version" while being two releases
               behind. An unrecognised error code still lands here (in the
               error branch), never in the success branch. */}
-          {gwCheck.isSuccess && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
+          {gwCheck.isSuccess && newestIsLocal && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
             gwDiverged ? (
               /* The third verdict: diverged. "No update available" here is
                  the no-auto-apply safety property doing its job, not
@@ -429,14 +519,17 @@ export function AboutPanelGatewayUpdates({
               <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
             )
           )}
-          {gwCheck.isSuccess && !!gwUnavailableReason && (
+          {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && (
             <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>
           )}
-          {/* askAgent on: a failed read; the Check button above is the retry. */}
-          {(gwCheck.isError || (gwCheck.isSuccess && !!gwError)) && (
+          {/* askAgent on: a failed read; the Check button above is the retry.
+              Keyed on the NEWEST answer, so a failed background check gets the
+              notice too (no reason: the status frame carries none), and a
+              newer success clears an older failure. */}
+          {newestCheckFailed && (
             <ErrorNotice
               variant="inline"
-              message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
+              message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${newestIsLocal && gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
               askAgent
               testId="check-failed"
             />
@@ -458,7 +551,7 @@ export function AboutPanelGatewayUpdates({
           already renders a Restart button wired to the same mutation, and
           two identical buttons a few rows apart read as two different
           actions. */}
-      {!showManualUpdate && (
+      {restartControls && !showManualUpdate && (
         <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
           data-testid="gateway-restart-row">
           {/* One label, not a title + note pair: the button already names the
@@ -485,7 +578,7 @@ export function AboutPanelGatewayUpdates({
           user no feedback whatsoever. */}
       {/* askAgent on: a refused restart of a standing action; nothing on
           this card is a draft. */}
-      {!showManualUpdate && (
+      {restartControls && !showManualUpdate && (
         <ErrorNotice message={applyError} askAgent testId="gateway-restart-error" />
       )}
     </div>
@@ -551,7 +644,7 @@ export function AboutPanelUpdateConfirm({
             offers no apply, so warning about its restart would keep the
             update promise the body just withdrew. */}
         {!gwDiverged && (
-          <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.updating_restarts_the_gateway_active_sessions_wi')}</p>
+          <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.update_installs_at_next_restart')}</p>
         )}
         {/* askAgent on: the apply's inputs are all server-side (a 409 dirty
             tree, a 400) and this dialog holds no draft. `ErrorNotice` exposes
@@ -563,11 +656,7 @@ export function AboutPanelUpdateConfirm({
             <CopyCommand><code>git stash push -u -m "before kirocrew update"</code></CopyCommand>
           </div>
         )}
-        {restarting ? (
-          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5 py-2" role="status">
-            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating_gateway_restarting')}
-          </div>
-        ) : gwCheck.isPending ? (
+        {gwCheck.isPending ? (
           /* The pre-apply check is still running: its answer may be
              "diverged", so an enabled apply button here is a race the user
              can win against their own safety check. Hold the action until
@@ -582,7 +671,7 @@ export function AboutPanelUpdateConfirm({
           </Btn>
         ) : (
           <Btn primary className="w-full justify-center" disabled={gwApply.isPending} onClick={() => gwApply.mutate()}>
-            {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_now')}
+            {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_when_i_restart')}
           </Btn>
         )}
       </div>

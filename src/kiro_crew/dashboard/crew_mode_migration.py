@@ -170,6 +170,7 @@ def _usable(target: str) -> str:
     """
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.config.loader_agents import resolve_agent_bindings
+    from kiro_crew.config.loader_snapshots import refresh_materialized_agents
     from kiro_crew.validation_parts.input_bounds import is_registered_agent_name
 
     if not is_registered_agent_name(target):
@@ -184,6 +185,12 @@ def _usable(target: str) -> str:
         bindings = resolve_agent_bindings(
             cfg, target, None, validate_memory_files=False, selection_kind="template"
         )
+        if not bindings.requested_resolved:
+            # The snapshot may lack a template whose file is on disk.
+            refresh_materialized_agents()
+            bindings = resolve_agent_bindings(
+                cfg, target, None, validate_memory_files=False, selection_kind="template"
+            )
     except Exception:
         return "agent_unresolved"
     return "" if bindings.requested_resolved else "agent_not_found"

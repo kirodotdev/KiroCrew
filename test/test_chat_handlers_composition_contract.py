@@ -45,7 +45,7 @@ _BASE_NAMES = frozenset("""
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX
         AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider Any Awaitable
         CHAT_TURN_TIMEOUT_MAX CHAT_TURN_TIMEOUT_MIN COLOR_HEX_RE Callable
-        ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
+        DashboardState DeferredHoldFull DeferredHoldRebound
         FavoritesUnreadable GrantDeadline HUMAN_TURN_META_KEY Iterable JEV_ROUTE_MODEL
         KiroCrewConfig LLMProvider MAX_COLOR_INDEX MAX_DEFERRED_NOTES
         MAX_DEFERRED_NOTE_CHARS MAX_SOURCE_LABEL_LEN MODEL_NAMESPACE_ACP Mapping
@@ -233,6 +233,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
+    ("POST", "/api/chat/slots/{slot}/ultracode", "api_chat_slot_ultracode"),
     ("POST", "/api/chat/slots/{slot}/workspace", "api_chat_slot_workspace"),
     ("PUT", "/api/chat/slots/{slot}/queue/order", "api_chat_slot_queue_reorder"),
 )
@@ -533,12 +534,14 @@ _OWNER_MODULES = frozenset(
         "chat_send",
         "conductor_close",
         "continue_turn",
+        "crew_steer",
         "followup_card",
         "handover_drain",
         "pending_context",
         "project_lists",
         "prompt_queue",
         "resume",
+        "resume_identity",
         "resume_window",
         "session_relaunch",
         "slot_approval",
@@ -672,7 +675,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "resume_slot_from_history",
             "async function",
-            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
+            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', expected_created_at: 'str | None' = None, containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
     "resume_window": (
@@ -768,7 +771,7 @@ project_lists | api_favorite_projects | async function | (request: 'web.Request'
 project_lists | api_favorite_project_add | async function | (request: 'web.Request') -> 'web.Response'
 project_lists | api_favorite_project_remove | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_reload | async function | (request: 'web.Request') -> 'web.Response'
-session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None) -> 'web.Response'
+session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> 'web.Response'
 session_relaunch | api_chat_slot_workspace | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_project | async function | (request: 'web.Request') -> 'web.Response'
 slot_approval | _internal_session_approval_refusal | async function | (request: 'web.Request', operation: 'str') -> "'web.Response | None'"
@@ -779,7 +782,7 @@ slot_approval | _end_trust_scopes | async function | (slots: 'list[Any]', audit_
 slot_approval | _still_owning | function | (state: 'Any', slots: 'list[Any]', key: 'str') -> 'list[Any]'
 slot_approval | _end_trust_scope | async function | (scope: 'str', caller: 'str') -> 'None'
 slot_approval | api_chat_mode | async function | (request: 'web.Request') -> 'web.Response'
-slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]') -> 'web.Response'
+slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]', still_live: 'Callable[[], bool] | None' = None, cascade_may_raise: 'bool' = True) -> 'web.Response'
 slot_approval | _get_pattern_from_pending | function | (slot: '_ChatSlot', request_id: 'str', field: 'str') -> 'str'
 slot_approval | _deny_approval_mode | function | (*, caller: 'str', operation: 'str', mode: 'str', resource: 'str' = '') -> 'web.Response'
 slot_approval | _grant_deadline | function | (ttl: 'int | None') -> 'GrantDeadline | None'
@@ -1691,6 +1694,9 @@ _SYNC_IO_PLANTS = {"time": "time.sleep(1)", "os": 'os.system("true")'}
 #: this split and sit outside it; each row goes when its owner is respelled.
 _SYNC_IO_REACH_PENDING = frozenset({"resume", "slot_lifecycle"})
 
+#: Owners that define no coroutine, so the gate has nothing in them to reach.
+_SYNC_ONLY_OWNERS: frozenset[str] = frozenset()
+
 
 def _sync_io_gate() -> types.ModuleType:
     path = _SRC.parent / "scripts" / "check_sync_io_in_async.py"
@@ -1730,8 +1736,19 @@ def _with_blocking_call(source: str, call: str) -> tuple[str, int]:
     return "".join(lines), first.lineno
 
 
+def test_a_sync_only_owner_defines_no_coroutine() -> None:
+    """An owner the planted-call check below leaves out holds no coroutine for the
+    gate to miss; one that gains a coroutine leaves the list and joins that check."""
+    assert _SYNC_ONLY_OWNERS <= _OWNER_MODULES
+    for stem in sorted(_SYNC_ONLY_OWNERS):
+        tree = ast.parse(_owner_sources()[stem])
+        assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(tree)), stem
+
+
 @pytest.mark.parametrize("module", sorted(_SYNC_IO_PLANTS))
-@pytest.mark.parametrize("stem", sorted(_OWNER_MODULES - _SYNC_IO_REACH_PENDING))
+@pytest.mark.parametrize(
+    "stem", sorted(_OWNER_MODULES - _SYNC_IO_REACH_PENDING - _SYNC_ONLY_OWNERS)
+)
 def test_the_sync_io_gate_reports_a_blocking_call_planted_in_an_owner(
     stem: str, module: str
 ) -> None:

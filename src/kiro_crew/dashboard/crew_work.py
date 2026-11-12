@@ -82,11 +82,12 @@ def summarize(
     *,
     closed: Callable[[str], bool],
     looping: Callable[[str], bool],
+    held: Callable[[str], bool] = lambda _key: False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """The ``crew_work`` field for a board's open *items*.
 
-    *closed* and *looping* answer for a worker's session key. Per listed item:
+    *closed*, *looping* and *held* answer for a worker's session key. Per listed item:
     ``worker`` (the bound session's slot key, ``""`` for a remote or unbound worker)
     and ``stale_at_ms`` (epoch ms it is stale from while its worker's turn is not
     running; ``0`` for never). Both answers come from ``is_stale``. ``person_workers``
@@ -127,12 +128,22 @@ def summarize(
         # reads as neither closed nor looping, so only the window can flag it.
         gone = bool(key) and not remote and closed(key)
         loops = bool(key) and not remote and looping(key)
+        stuck = bool(key) and not remote and held(key)
 
         def stale(
-            at: datetime, item: WorkItem = item, gone: bool = gone, loops: bool = loops
+            at: datetime,
+            item: WorkItem = item,
+            gone: bool = gone,
+            loops: bool = loops,
+            stuck: bool = stuck,
         ) -> bool:
             return is_stale(
-                item, worker_running=False, worker_closed=gone, worker_looping=loops, now=at
+                item,
+                worker_running=False,
+                worker_closed=gone,
+                worker_looping=loops,
+                worker_loop_held=stuck,
+                now=at,
             )
 
         if remote:
@@ -143,7 +154,7 @@ def summarize(
         elif stale(moment):
             stale_at = int(moment.timestamp() * 1000)
         elif stale(moment + _FAR):
-            since = parse_stamp(quiet_since(item))
+            since = parse_stamp(quiet_since(item, wake=not stuck))
             window = timedelta(seconds=DEFAULT_STALE_WINDOW_SECS)
             stale_at = int((since + window).timestamp() * 1000) if since is not None else 0
         else:
@@ -180,6 +191,7 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
         items,
         closed=lambda key: ledger_wake.worker_closed(state, key),
         looping=lambda key: ledger_wake.worker_looping(nudge, key),
+        held=lambda key: ledger_wake.worker_loop_held(nudge, key),
     )
     # The conductor's own live work-ledger patrol is what picks a stalled item up, so
     # the row keeps a stall out of sight while it holds one. Only that kind: a loop

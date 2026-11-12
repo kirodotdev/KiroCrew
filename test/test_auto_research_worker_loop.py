@@ -86,6 +86,8 @@ class TestLoopLaunch:
         assert state.get_or_create_slot.call_args.kwargs["agent"] == "kirocrew-research"
         # Worker slot is auto-approved so the loop doesn't stall on tool prompts.
         assert state.get_or_create_slot.return_value._trust is True
+        # And the session policy the spawn gate reads, so its subagents do not ask.
+        state.sessions.set_approval_policy.assert_any_call(f"dashboard:research-{c['id']}", "auto")
 
     @pytest.mark.asyncio
     async def test_launch_pins_campaign_model_on_slot(self, monkeypatch):

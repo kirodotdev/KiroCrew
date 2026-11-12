@@ -52,6 +52,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -82,6 +83,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_TOOL_SILENCE_TIMER,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
@@ -1137,6 +1139,11 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
+    #: connection_mcp_identity: ``(server, tool)`` Kiro Crew's own pi gate extension
+    #: named in its nonce-bound envelope, from its registration table. Read ONLY by
+    #: the Crew-owned Connection approval (``crew_oauth_proxy.connection_identity``);
+    #: it never sets ``mcp_identity_trusted``, which other auto-approve gates read.
+    connection_mcp_identity: tuple[str, str] | None = None
     #: mcp_identity_unreadable: the frame PRESENTED an MCP identity half the
     #: name bound refused (``tool_surface.mcp_identity_unreadable``) -- on the
     #: preceding tool_call frame (carried per scoped toolCallId) or on this
@@ -1145,6 +1152,11 @@ class AcpEvent:
     #: deny that name is under cannot be checked, and every site that answers a
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
+    #: mcp_identity_unreadable_reason: which check set ``mcp_identity_unreadable``,
+    #: a key of ``deny_notice.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
+    #: empty when the identity is readable. The refusal names it in its log line,
+    #: its audit row and the notice steered to the model.
+    mcp_identity_unreadable_reason: str = ""
     #: kas_builtin_ids: this permission event was built for a member of
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so a bare built-in
     #: ``tool_name`` is a KAS id (``read_file``) that ``platform.tool_names``
@@ -1165,6 +1177,12 @@ class AcpEvent:
     #: tier and governance, and approves only a host-identified built-in it names.
     #: Empty everywhere else, which grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_hook_held: on the same requests, the ``@server/tool`` grants a
+    #: PreToolUse hook kept at ``ask`` (``AcpSessionHandle.kas_hook_held``), written
+    #: the same way. The gate's ``batch-guard-grant`` row approves one only for a
+    #: surface that says it fires the PreToolUse hooks on the request. Empty
+    #: everywhere else, which grants nothing.
+    spec_hook_held: frozenset[str] = frozenset()
     #: spec_granted_commands: on the same requests, the agent's
     #: ``toolsSettings.shell.allowedCommands`` as Python regexes
     #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The

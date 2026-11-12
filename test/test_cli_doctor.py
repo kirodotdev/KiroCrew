@@ -22,6 +22,11 @@ from kiro_crew.doctor_checks import resources as doctor_resources
 
 
 class TestManagedServicePolicyDoctor:
+    @pytest.fixture(autouse=True)
+    def _no_loaded_unit_lag(self, _floor_monkeypatch):
+        """The loaded-unit read asks the host's systemd; each test names its answer."""
+        _floor_monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [])
+
     def test_no_service_is_silent(self, monkeypatch, capsys):
         monkeypatch.setattr(
             cli_doctor.service_controller,
@@ -56,6 +61,20 @@ class TestManagedServicePolicyDoctor:
         cli_doctor._doctor_managed_service_policy(issues)
         assert "managed-service policy marker installed" in capsys.readouterr().out
         assert issues == []
+
+    def test_a_loaded_unit_that_lags_this_build_is_named_with_its_remedy(self, monkeypatch, capsys):
+        note = (
+            "kirocrew.service (system scope): the loaded unit caps restarts at 5 starts "
+            "in 10s, not this build's 3 in 300s, ...: re-run `sudo kirocrew service install`"
+        )
+        monkeypatch.setattr(
+            cli_doctor.service_controller, "installed_service_has_managed_marker", lambda: True
+        )
+        monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [note])
+        issues: list[str] = []
+        cli_doctor._doctor_managed_service_policy(issues)
+        assert f"unit:        ⚠️  {note}" in capsys.readouterr().out
+        assert issues == ["managed service unit lags this build"]
 
 
 class TestFixHint:
@@ -94,14 +113,17 @@ class TestFfmpegLinuxHintResolvable:
     def test_hint_does_not_name_the_deliberately_excluded_dir(self) -> None:
         assert ".local/bin" not in cli_doctor._FFMPEG_LINUX_HINT
 
-    def test_every_directory_named_is_actually_searched(self) -> None:
-        from kiro_crew import transcribe
+    def test_every_directory_named_is_actually_searched(self, monkeypatch) -> None:
+        from kiro_crew import platform_compat, transcribe
 
+        # The Linux search set, whatever host runs this.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        searched = transcribe._ffmpeg_candidate_dirs()
         dirs = re.findall(r"/[A-Za-z0-9._/-]+", cli_doctor._FFMPEG_LINUX_HINT)
         assert dirs, "the hint must name at least one concrete install directory"
         for directory in dirs:
             assert (
-                directory in transcribe._FFMPEG_CANDIDATE_DIRS
+                directory in searched
             ), f"{directory} is in the doctor hint but _find_ffmpeg never searches it"
 
     def test_hint_offers_the_managed_store_download(self) -> None:
@@ -525,16 +547,18 @@ class TestUnresolvedMcpRefs:
     broken install, so it must never move doctor's exit code.
     """
 
-    def _arrange(self, monkeypatch, rows, *, spec_found=True):
-        """Fixture the SDK delegation the row asks.
+    def _arrange(self, monkeypatch, rows, *, spec_found=True, by_design=frozenset()):
+        """Fixture the SDK delegations the row asks.
 
-        Patched at ``agent_sdk.drivers.acp``, its defining module, because the row
-        imports it lazily. One return value, because the row asks one boundary-clean
-        question, which keeps `doctor_checks/mcp.py` off the agent-sdk-boundary baseline.
+        Patched at ``agent_sdk.drivers.acp``, their defining module, because the row
+        imports them lazily, which keeps `doctor_checks/mcp.py` off the
+        agent-sdk-boundary baseline. *by_design* is what the shared translation mounts
+        of Crew's identity-bound servers, so no row reads this host's real spec.
         """
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
         monkeypatch.setattr(acp_driver, "agent_spec_mcp_refs", lambda _agent: (spec_found, rows))
+        monkeypatch.setattr(acp_driver, "mirror_withheld_crew_refs", lambda _agent: by_design)
 
     def test_a_backend_with_no_projection_names_the_unprojected_refs(self, monkeypatch, capsys):
         self._arrange(monkeypatch, [("codex", ["@kirocrew-core"], False)])
@@ -591,6 +615,49 @@ class TestUnresolvedMcpRefs:
         assert "\u26a0 claude" in out
         assert "@marked" in out
         assert "has no mirror" not in out
+
+    def test_a_mirror_withholding_crews_identity_bound_servers_is_not_a_warning(
+        self, monkeypatch, capsys
+    ):
+        """A mirror leaves Crew's own guide and mate servers out by design (it cannot
+        hand them the session's identity), so the stock spec's refs to them are a
+        ⏹ note, explained once, and only a ref the mirror really dropped stays ⚠."""
+        bound = ["@kirocrew-guide", "@kirocrew-mate"]
+        self._arrange(
+            monkeypatch,
+            [
+                ("codex", bound, True),
+                ("goose", bound, True),
+                ("strands", [*bound, "@marked"], True),
+            ],
+            by_design=frozenset(bound),
+        )
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "⏹ codex withholds by design: '@kirocrew-guide', '@kirocrew-mate'" in out
+        assert "⏹ goose withholds by design:" in out
+        # ``_print_wrapped`` folds the paragraph, so count on collapsed whitespace.
+        assert " ".join(out.split()).count("nothing needs fixing") == 1
+        assert "⚠ codex" not in out and "⚠ goose" not in out
+        assert "⚠ strands projects a spec that still misses: '@marked'" in out
+
+    def test_the_by_design_set_is_what_the_translation_mounts_unnarrowed(self, monkeypatch):
+        """Crew's identity-bound servers the shared translation mounts, less a narrowed
+        one, never the control plane or a third-party server. A guide ref dropped
+        before a mirror sees it (registry mode, an undefined server) is not in the set,
+        so claude, which mounts what it is handed, keeps that ref's ⚠."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp import session_mcp
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        names = ["kirocrew-core", "kirocrew-guide", "kirocrew-mate", "github"]
+        projection = SimpleNamespace(
+            servers=[{"name": n} for n in names], restricted=frozenset({"kirocrew-mate"})
+        )
+        monkeypatch.setattr(session_mcp, "session_mcp_projection", lambda _agent: projection)
+
+        assert acp_driver.mirror_withheld_crew_refs("kirocrew") == {"@kirocrew-guide"}
 
     def test_no_spec_on_disk_is_informational(self, monkeypatch, capsys):
         self._arrange(monkeypatch, [], spec_found=False)

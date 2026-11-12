@@ -971,8 +971,11 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
-def _self_tokens(text_lower: str) -> "list[str]":
+def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
+
+    *resolve* False stops before assignment and alias resolution, so a quoted
+    script stays the one token its carrier receives.
 
     Splitting the raw text into segments first (as the pattern passes do) is
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
@@ -1007,9 +1010,10 @@ def _self_tokens(text_lower: str) -> "list[str]":
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
-        )
+        tokens = normalize_shell_command(command)
+        if not resolve:
+            return tokens
+        return _resolve_function_aliases(_resolve_local_assignments(tokens))
     except Exception:
         return []
 
@@ -1576,6 +1580,21 @@ def _nested_shell_payloads(
 
 
 def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """:func:`_shell_payload_walk_uncached`, once per text inside one ``sharing_views``
+    call; each caller gets fresh lists, so one that edits its argv cannot reach the next."""
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    memo = _CALL_VIEWS.get()
+    if memo is None:
+        return _shell_payload_walk_uncached(text_lower)
+    key = ("payload_walk", text_lower)  # the redirect views' keys are plain str
+    frames = memo.get(key)
+    if frames is None:
+        frames = memo[key] = _shell_payload_walk_uncached(text_lower)
+    return [(source, list(tokens)) for source, tokens in frames]
+
+
+def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``

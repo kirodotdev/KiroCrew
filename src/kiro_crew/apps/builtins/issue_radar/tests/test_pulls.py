@@ -35,6 +35,28 @@ class TestPrTimelineEvents(unittest.TestCase):
         self.assertEqual(ev["review_state"], "approved")
         self.assertEqual(ev["body"], "LGTM")
 
+    def test_reviewed_keeps_its_review_id(self):
+        ev = gh._normalize_timeline_event({
+            "event": "reviewed", "id": 123, "user": {"login": "alice"},
+            "submitted_at": "2024-02-01T00:00:00Z", "state": "changes_requested",
+        })
+        assert ev is not None
+        self.assertEqual(ev.get("review_id"), 123)
+
+    def test_review_dismissed_names_the_dismissed_review(self):
+        ev = gh._normalize_timeline_event({
+            "event": "review_dismissed", "actor": {"login": "maintainer"},
+            "created_at": "2024-02-03T00:00:00Z",
+            "dismissed_review": {"review_id": 123, "state": "changes_requested"},
+        })
+        self.assertEqual(
+            ev,
+            {
+                "kind": "review_dismissed", "actor": "maintainer",
+                "created_at": "2024-02-03T00:00:00Z", "review_id": 123,
+            },
+        )
+
     def test_committed_uses_author_date_and_first_message_line(self):
         ev = gh._normalize_timeline_event({
             "event": "committed", "sha": "abcdef1234",

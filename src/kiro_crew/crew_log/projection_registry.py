@@ -79,7 +79,12 @@ from kiro_crew.crew_log.projection_internal import (
     _outline_start,
     _outline_step,
 )
-from kiro_crew.crew_log.projection_ledger import _ledger_render, _ledger_start, _ledger_step
+from kiro_crew.crew_log.projection_ledger import (
+    _ledger_copy,
+    _ledger_render,
+    _ledger_start,
+    _ledger_step,
+)
 from kiro_crew.crew_log.projection_otel_session_tree import (
     OTEL_SESSION_TREE_FOLD_NAME,
     OTEL_SESSION_TREE_TYPES,
@@ -127,6 +132,7 @@ from kiro_crew.crew_log.projection_usage import (
 from kiro_crew.crew_log.projection_values import _rows_in
 from kiro_crew.crew_log.projection_work import (
     _work_bind_slot,
+    _work_copy,
     _work_render,
     _work_start,
     _work_step,
@@ -317,6 +323,64 @@ def _subagents_copy(state: dict[str, Any]) -> dict[str, Any]:
     grown = dict(state)
     grown["by_id"] = {agent_id: dict(row) for agent_id, row in state["by_id"].items()}
     grown["totals"] = dict(state["totals"])
+    return grown
+
+
+def _radar_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """An item's fields and its ``tried`` list are edited in place; so is each
+    ``phase_lines`` list. ``events``, ``skips`` and ``last_update`` gain and lose rows,
+    and a row in any of them is never edited. ``ci_state`` and ``labels_applied`` are
+    replaced whole, so they stay shared.
+    """
+    grown = dict(state)
+    grown["items"] = {
+        key: {**item, "tried": list(item["tried"])} for key, item in state["items"].items()
+    }
+    grown["phase_lines"] = {key: list(rows) for key, rows in state["phase_lines"].items()}
+    grown["events"] = list(state["events"])
+    grown["skips"] = dict(state["skips"])
+    grown["last_update"] = dict(state["last_update"])
+    return grown
+
+
+def _panel_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """An owner's fields and its ``history`` list are edited in place; ``data`` is
+    replaced whole and a history row is never edited."""
+    grown = dict(state)
+    grown["owners"] = {
+        key: {**own, "history": list(own["history"])} for key, own in state["owners"].items()
+    }
+    return grown
+
+
+def _agentic_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """``fields`` gains and loses rows; a row is replaced whole, never edited."""
+    grown = dict(state)
+    grown["fields"] = dict(state["fields"])
+    return grown
+
+
+def _mistakes_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A group's counters and its ``corrected_to`` list are edited in place."""
+    grown = dict(state)
+    groups: dict[str, Any] = {}
+    for key, group in state["groups"].items():
+        group = dict(group)
+        if "corrected_to" in group:
+            group["corrected_to"] = list(group["corrected_to"])
+        groups[key] = group
+    grown["groups"] = groups
+    return grown
+
+
+def _custom_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A failed run marks its writer's rows in place; a failure row and a row's
+    ``data`` are replaced whole. ``failures`` may be absent from an older state, and
+    the step then adds it, so an absent one is left absent."""
+    grown = dict(state)
+    grown["latest"] = {name: dict(row) for name, row in state["latest"].items()}
+    if "failures" in state:
+        grown["failures"] = dict(state["failures"])
     return grown
 
 
@@ -620,9 +684,9 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
     # returns on its first line for anything else -- so ``affects`` names that type and
     # the kernel skips both the copy and the step for every other entry. A slot's log
-    # is mostly message bodies and tool rows, so that is nearly all of it. They declare
-    # no ``copy_state`` and fall back to the deep copy, which every fold state here is
-    # bounded by construction for.
+    # is mostly message bodies and tool rows, so that is nearly all of it. Each declares
+    # a ``copy_state``: the deep-copy fallback cost one copy of every retained row per
+    # folded entry, which a resumed tail paid once per entry.
     #
     # ALL FOUR ARE EAGER, which is the default and so is written nowhere below. Each is
     # read by a loop that wakes on a timer and each wakes the worker for one entry type
@@ -635,6 +699,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _ledger_step,
         _ledger_render,
         affects=frozenset({LEDGER_ENTRY_TYPE}),
+        copy_state=_ledger_copy,
         count_rows=_ledger_rows,
     ),
     "radar": _Fold(
@@ -643,6 +708,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _radar_step,
         _radar_render,
         affects=frozenset({RADAR_ENTRY_TYPE}),
+        copy_state=_radar_copy,
         count_rows=_radar_rows,
     ),
     "work": _Fold(
@@ -660,6 +726,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
+        copy_state=_work_copy,
         count_rows=_work_rows,
         count_opaque=_work_opaque,
         # Two past the base. The state carries ``closed``, ``tombstones`` and
@@ -675,6 +742,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _panel_step,
         _panel_render,
         affects=frozenset({PANEL_ENTRY_TYPE}),
+        copy_state=_panel_copy,
         count_rows=_panel_rows,
     ),
     # The two dashboard folds, EAGER like their four siblings and for the same
@@ -689,6 +757,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _agentic_step,
         _agentic_render,
         affects=frozenset({DASHBOARD_AGENTIC_ENTRY_TYPE}),
+        copy_state=_agentic_copy,
         count_rows=_agentic_rows,
     ),
     MISTAKES_FOLD_NAME: _Fold(
@@ -697,6 +766,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _mistakes_step,
         _mistakes_render,
         affects=frozenset({DASHBOARD_REFUSED_ENTRY_TYPE}),
+        copy_state=_mistakes_copy,
         count_rows=_mistakes_rows,
     ),
     # The project report's fold, EAGER like every slot-keyed sibling. It is the widest
@@ -751,6 +821,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # A bound cron's FAILED run is folded here too, so its records read as failed
         # rather than current. Version moved: the stored state gained ``failures``.
         affects=frozenset({CUSTOM_ENTRY_TYPE, CUSTOM_FAILED_ENTRY_TYPE}),
+        copy_state=_custom_copy,
         count_rows=_custom_rows,
         state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),

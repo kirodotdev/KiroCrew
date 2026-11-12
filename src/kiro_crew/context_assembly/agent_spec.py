@@ -77,15 +77,17 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
 #: The project half of the resources kiro-cli adds to an agent's own while a
 #: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
 #: the project's steering and ``AGENTS.md``, when a project is bound. The global
-#: half is ``_GLOBAL_DEFAULT_RESOURCE``. The Claude Code backend reads none of
-#: them itself.
+#: half is ``_GLOBAL_DEFAULT_RESOURCE``. A harness this load serves reads none of
+#: them from the spec. Codex reads ``AGENTS.md`` from its working directory, so
+#: the load leaves that file out there (``harness_reads_agents_md``).
 _PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
 
 
 #: The global half: the operator's steering under the host ``~/.kiro``. It stays
 #: there under a relocated ``KIRO_HOME`` because the folder-steering dedup
 #: (``folder_steering._double_load_roots``) skips the host tree as delivered on
-#: this backend, and a root it skips must be the root this load reads.
+#: the harnesses this load serves, and a root it skips must be the root this load
+#: reads.
 _GLOBAL_DEFAULT_RESOURCE = "file://~/.kiro/steering/**/*.md"
 
 
@@ -109,8 +111,39 @@ def _steering_glob_anchor(pattern: str, project: Path | None) -> tuple[Path, str
     return Path(*parts[:split]), str(Path(*parts[split:]))
 
 
-def _load_steering_resources(project: str | None = None) -> str:
-    """Load steering files from the agent config's resources array.
+def _load_steering_resources(
+    project: str | None = None, *, harness_reads_agents_md: bool = False
+) -> str:
+    """The steering text :func:`steering_resource_documents` keeps, joined."""
+    parts = [
+        body
+        for _path, _resolved, body in steering_resource_documents(
+            project, harness_reads_agents_md=harness_reads_agents_md
+        )
+        if body is not None
+    ]
+    if parts:
+        logger.debug(
+            "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
+        )
+    return "\n".join(parts)
+
+
+def steering_resource_documents(
+    project: str | None = None, *, harness_reads_agents_md: bool = False
+) -> list[tuple[Path, Path, str | None]]:
+    """``(path, resolved, body)`` for each document the steering load admits.
+
+    The one reader behind :func:`_load_steering_resources` and the dashboard's
+    per-chat steering list, so the two cannot disagree. *body* is ``None`` for an
+    admitted document :func:`kiro_crew.folder_steering.every_session_body` withholds.
+
+    *harness_reads_agents_md* says the harness reads ``<project>/AGENTS.md`` itself
+    from its working directory. The load then leaves that file out, whether the
+    default or the spec's own entry names it, because the harness reads it
+    whatever the spec lists, and a second copy only doubles its tokens.
+
+    Loads steering files from the agent config's resources array.
 
     kiro-cli injects these automatically for its sessions; the dashboard
     must do it explicitly so that dashboard chat sessions also benefit
@@ -131,7 +164,7 @@ def _load_steering_resources(project: str | None = None) -> str:
     try:
         cfg_path = ctx.kiro_agents_dir() / "kirocrew.json"
         if not cfg_path.exists():
-            return ""
+            return []
         # The agents dir is user-writable and shared with other tools, so the
         # spec goes through the hardened agent-spec reader. ``safe_read_file``
         # screens the resolved target but reads it with an unbounded
@@ -149,7 +182,7 @@ def _load_steering_resources(project: str | None = None) -> str:
             source="unknown",
         )
         if cfg is None:
-            return ""
+            return []
         declared = cfg.get("resources", [])
         project_root = Path(project).expanduser() if project else None
         resources = [
@@ -157,11 +190,18 @@ def _load_steering_resources(project: str | None = None) -> str:
             _GLOBAL_DEFAULT_RESOURCE,
             *(_PROJECT_DEFAULT_RESOURCES if project_root is not None else ()),
         ]
+        # Matched by resolved path, as the de-duplication below is: an entry
+        # that reaches the same file another way is the same file.
+        read_by_harness = (
+            {(project_root / "AGENTS.md").resolve()}
+            if harness_reads_agents_md and project_root is not None
+            else set()
+        )
     except Exception as exc:
         logger.debug("steering load failed: %s", type(exc).__name__)
-        return ""
-    parts: list[str] = []
-    seen: set[Path] = set()
+        return []
+    documents: list[tuple[Path, Path, str | None]] = []
+    seen: set[Path] = set(read_by_harness)
     for res in resources:
         if not isinstance(res, str) or not res.startswith("file://"):
             continue
@@ -184,13 +224,8 @@ def _load_steering_resources(project: str | None = None) -> str:
                 logger.debug("steering document skipped: %s", type(exc).__name__)
                 continue
             seen.add(resolved)
-            if body is not None:
-                parts.append(body)
-    if parts:
-        logger.debug(
-            "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
-        )
-    return "\n".join(parts)
+            documents.append((p, resolved, body))
+    return documents
 
 
 def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
@@ -713,6 +748,7 @@ def _resolve_agent_prompt(
         agent_prompt = _read_prompt_file(pp)
     from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+    from kiro_crew.members import is_member_session_key
 
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
@@ -724,9 +760,14 @@ def _resolve_agent_prompt(
     # A crewmate's conductor dispatches to worker sessions and mounts no spawn
     # tools, so it gets its own delegation rule where the sub-agent span was.
     # Resolved before the capacity token below, which sits inside that span.
+    # A session without a member key never gets the session tools, so outside its
+    # own thread it is told to do the work itself. The key never changes within
+    # a session, so every render of the block agrees.
     if _sections.SUBAGENTS_BEGIN in agent_prompt or _sections.SUBAGENTS_END in agent_prompt:
         agent_prompt = _sections.subagent_section(
-            agent_prompt, conductor=agent == MATE_CONDUCTOR_AGENT
+            agent_prompt,
+            conductor=agent == MATE_CONDUCTOR_AGENT,
+            own_thread=is_member_session_key(session_key),
         )
     # Every shipped conductor talks to a person in the dashboard chat, so it gets
     # the widget pointer here, not as a token in its spec: kiro-cli loads that

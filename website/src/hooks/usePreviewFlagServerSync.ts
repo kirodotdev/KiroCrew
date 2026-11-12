@@ -3,14 +3,19 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 
 import { api } from '../api/client'
 import { setConfigPathValue } from '../pages/settings/useOptimisticConfigPaths'
+import { INSPECTOR_KEYS } from '../dev/scrollInspector'
+import { useConfigSchema } from '../components/settingRef/useConfigSchema'
+import type { SchemaEntry } from '../components/settingRef/resolveSettingRef'
+import { LOCKED_DEBUG_TOOLS, LOCKED_FEATURE_PREVIEWS, applyLockedControls, controlLocked } from '../utils/editionLocks'
 import {
-  PREVIEW_FLAGS, PREVIEW_INSTANCE_SESSIONS, cachePreviewFlag,
-  previewFlagConfigPath, previewFlagName, readPreviewFlag, setPreviewFlagPersister,
+  PREVIEW_FLAGS, PREVIEW_FLAG_EVENT, PREVIEW_INSTANCE_SESSIONS, cachePreviewFlag,
+  previewFlagConfigPath, previewFlagName, previewFlagsLocked, readPreviewFlag, setPreviewFlagPersister,
+  type PreviewFlagChange,
 } from '../utils/previewFlags'
-import { safeRemoveItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem } from '../utils/safeStorage'
 
 /** The slice of the `['kirocrewConfig']` body this sync reads. */
-export type PreviewFlagsConfigBody = { dashboard?: { feature_previews?: unknown } }
+export type PreviewFlagsConfigBody = { dashboard?: { feature_previews?: unknown }; locked_controls?: unknown }
 
 const CONFIG_KEY = ['kirocrewConfig'] as const
 
@@ -144,6 +149,51 @@ function persist(qc: QueryClient, flag: string, on: boolean): void {
 }
 
 /**
+ * Take the controls this build locks, and tell the readers of a control that
+ * changed: every preview flag's readers, and the Debug tools scroll inspector.
+ *
+ * - Feature Previews: locked when the config schema marks a preview path
+ *   `lockedByPolicy` (an LTS build marks every one).
+ * - Debug tools: locked when the config body lists `debug_tools` in
+ *   `locked_controls` (absent on oss).
+ *
+ * A source not read yet (`undefined`) keeps its control as it is, so one read
+ * landing before the other never lifts a lock the other one holds.
+ *
+ * While previews are locked, a browser key still saying on is removed, so a
+ * cleared lock cache cannot show a preview at the next first paint. The
+ * gateway's copy is untouched; an oss gateway puts it back through
+ * {@link reconcilePreviewFlags}.
+ */
+export function applyConfigLocks(
+  body: PreviewFlagsConfigBody | undefined,
+  schema: ReadonlyMap<string, SchemaEntry> | undefined,
+): void {
+  const raw = body?.locked_controls
+  const listed = Array.isArray(raw) && raw.includes(LOCKED_DEBUG_TOOLS)
+  const debugTools = body === undefined ? controlLocked(LOCKED_DEBUG_TOOLS) : listed
+  const previews = schema === undefined
+    ? controlLocked(LOCKED_FEATURE_PREVIEWS)
+    : PREVIEW_FLAGS.some(flag => schema.get(previewFlagConfigPath(flag))?.lockedByPolicy === true)
+  const next = [...(debugTools ? [LOCKED_DEBUG_TOOLS] : []), ...(previews ? [LOCKED_FEATURE_PREVIEWS] : [])]
+  const { added, removed } = applyLockedControls(next)
+  const flags = [...PREVIEW_FLAGS, PREVIEW_INSTANCE_SESSIONS]
+  if (previewFlagsLocked()) {
+    for (const key of flags) if (safeGetItem(key) === '1') safeRemoveItem(key)
+  }
+  if (added.includes(LOCKED_FEATURE_PREVIEWS) || removed.includes(LOCKED_FEATURE_PREVIEWS)) {
+    for (const key of flags) {
+      const detail: PreviewFlagChange = { key, on: readPreviewFlag(key) }
+      window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))
+    }
+  }
+  if (added.includes(LOCKED_DEBUG_TOOLS) || removed.includes(LOCKED_DEBUG_TOOLS)) {
+    // No boolean detail: the inspector re-reads its own key, which the lock gates.
+    window.dispatchEvent(new CustomEvent(INSPECTOR_KEYS.ENABLED_EVENT))
+  }
+}
+
+/**
  * Bring the browser cache in line with one config body: the gateway value wins.
  *
  * - Each flag takes the value the server holds, OFF when it holds none, unless
@@ -189,7 +239,9 @@ export function usePreviewFlagServerSync(): void {
     })
     return () => setPreviewFlagPersister(null)
   }, [qc])
+  const schema = useConfigSchema()
   useEffect(() => {
+    applyConfigLocks(data, schema)
     reconcilePreviewFlags(data)
-  }, [data])
+  }, [data, schema])
 }

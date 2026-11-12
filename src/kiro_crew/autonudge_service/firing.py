@@ -97,7 +97,12 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # not retain that chain or count its writes toward that transaction.
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
+    # A boot hold is a plain nap ahead of the countdown: the countdown itself can
+    # end early on a subject read, which would undo the boot spacing.
+    hold = self._boot_holds.pop(loop.id, 0.0)
     try:
+        if hold > 0:
+            await asyncio.sleep(hold)
         await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
@@ -970,8 +975,8 @@ def _ledger_backstop_secs() -> int:
 async def _extend_for_open_ledger(self: AutoNudgeService, loop: NudgeLoop, bound: str) -> bool:
     """Raise *loop*'s spent *bound* when it watches a ledger that still has open work.
 
-    A work-ledger patrol ends when every item closes; a bound running out first
-    would end it with items open and nothing to re-arm it. So the spent bound is
+    A bound running out while a work-ledger patrol still has open items would end
+    it with nothing to re-arm it. So the spent bound is
     raised and logged at WARNING: ``max_cycles`` to the count plus a quarter of the
     cap (at least ``_LEDGER_EXTEND_MIN_CYCLES``), ``max_runtime_secs`` to the age
     plus a quarter of the budget (at least ``_LEDGER_EXTEND_MIN_RUNTIME_SECS``).

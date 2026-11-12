@@ -33,7 +33,13 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Callable
 
-from kiro_crew.acp import batch_guard, disposed_session, launch_tuning, pi_steer_turn
+from kiro_crew.acp import (
+    batch_guard,
+    claude_background_calls,
+    disposed_session,
+    launch_tuning,
+    pi_steer_turn,
+)
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -106,6 +112,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
+from kiro_crew.tracing import turns as trace_turns
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -620,6 +627,14 @@ async def _prompt_loop(
             ):
                 self.last_prompt_stats.event_count -= 1
                 continue
+            # A Claude turn whose only unfinished calls are background agents' ends
+            # as the finished turn it is (see claude_background_calls).
+            if (
+                action == "error"
+                and self._is_claude
+                and (ended := await claude_background_calls.settle_background_only(self, msg))
+            ):
+                action, msg = "complete", ended
             # A harness that disposed this session's backend (see disposed_session):
             # a cancelled turn ends as cancelled, any other raises, and an approval
             # asked after the cancel is answered here rather than put to a person.
@@ -864,7 +879,9 @@ async def stream_events(
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
-    async with aclosing(self._dispatch_prompt_events(req_id, timeout)) as events:
+    async with aclosing(
+        trace_turns.traced(self, self._dispatch_prompt_events(req_id, timeout))
+    ) as events:
         async for event in events:
             yield event
 

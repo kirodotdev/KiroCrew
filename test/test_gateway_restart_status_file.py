@@ -129,9 +129,11 @@ def test_status_file_is_owner_only(tmp_path: Path) -> None:
 
 @needs_bash
 def test_dashboard_token_urls_are_redacted_from_the_log(tmp_path: Path) -> None:
-    # The restart verb prints a fresh dashboard token URL on success, and the
-    # skill instructs the resumed agent to QUOTE this log into a conversation
-    # other humans can read — the bearer must not survive into the file. The
+    # kirocrew restart prints a dashboard login link only to a terminal, and
+    # the script pipes it, so a real restart logs the kirocrew token hint. The
+    # stub prints token URLs anyway to pin the redaction guard: the skill
+    # instructs the resumed agent to QUOTE this log into a conversation other
+    # humans can read, so a bearer must not survive into the file. The
     # restart's own exit status must also survive the redaction pipeline.
     probe = 'echo "🔑 http://localhost:5476?token=SECRET123&x=1 and http://h/?a=1&token=T2"\n'
     proc, crew_home = _run_script(tmp_path, exit_status=5, stub_body_extra=probe)

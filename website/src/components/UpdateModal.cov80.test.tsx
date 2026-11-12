@@ -1,4 +1,5 @@
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { useQuery } from '@tanstack/react-query'
 import { renderWithProviders } from '../test/helpers'
 import UpdateModal from './UpdateModal'
 import { i18nT } from '../i18n/t'
@@ -9,6 +10,8 @@ type UpdateState = {
   notes?: string
   phase?: 'check' | 'download' | 'install'
   installHandoff?: 'windows-installer' | 'automatic-relaunch'
+  armed?: boolean
+  updatePrompts?: 'edition'
 }
 
 const install = vi.fn<() => Promise<unknown>>()
@@ -35,7 +38,8 @@ describe('UpdateModal', () => {
   beforeEach(() => {
     install.mockReset()
     install.mockResolvedValue(undefined)
-    ;(window as unknown as { updateAPI?: { install: () => Promise<unknown> } }).updateAPI = {
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = {
+      armsOnQuit: true,
       install,
     }
   })
@@ -67,8 +71,9 @@ describe('UpdateModal', () => {
     expect(dialog()).toBeInTheDocument()
     expect(screen.getByText('9.9.9')).toBeInTheDocument()
     expect(screen.getByText('zzq changelog')).toBeInTheDocument()
-    expect(dialog()?.textContent).toMatch(/several minutes/i)
-    expect(dialog()?.textContent).toMatch(/relaunch automatically/i)
+    // Install only arms: the copy promises an install on quit, never a restart.
+    expect(dialog()?.textContent).toContain(i18nT('components.updateModal.install_on_quit_timing'))
+    expect(dialog()?.textContent).not.toMatch(/relaunch automatically/i)
     expect(dialog()?.textContent).not.toMatch(/installation progress/i)
   })
 
@@ -140,14 +145,13 @@ describe('UpdateModal', () => {
   it('installs and stays disabled after the dispatch resolves', async () => {
     await mount({ state: 'downloaded', version: '9.9.11' })
     fireEvent.click(
-      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+      await screen.findByRole('button', { name: i18nT('components.updateModal.install_on_quit') }),
     )
     await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
 
-    const restarting = await screen.findByRole('button', {
-      name: i18nT('components.updateModal.restarting'),
-    })
-    expect(restarting).toBeDisabled()
+    // The dispatch resolved but the main process has not yet said the update is
+    // armed: the control holds its label and stays disabled.
+    expect(byName('components.updateModal.install_on_quit')).toBeDisabled()
     expect(byName('components.updateModal.later')).toBeDisabled()
 
     // Escape and the Later button must not dismiss while the install runs.
@@ -162,7 +166,7 @@ describe('UpdateModal', () => {
     install.mockRejectedValue(new Error('ipc failed'))
     await mount({ state: 'downloaded', version: '9.9.11' })
     fireEvent.click(
-      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+      await screen.findByRole('button', { name: i18nT('components.updateModal.install_on_quit') }),
     )
 
     const notice = await screen.findByTestId('update-modal-install-error')
@@ -174,7 +178,7 @@ describe('UpdateModal', () => {
     // The failure is the only status claim: no "ready to install", no "will close
     // and relaunch", and the primary action says it retries.
     expect(screen.queryByText(i18nT('components.updateModal.is_downloaded_and_ready_to_install'), { exact: false })).toBeNull()
-    expect(screen.queryByText(i18nT('components.updateModal.install_restart_timing'), { exact: false })).toBeNull()
+    expect(screen.queryByText(i18nT('components.updateModal.install_on_quit_timing'), { exact: false })).toBeNull()
     expect(byName('pages.settings.aboutPanel.try_again')).not.toBeDisabled()
   })
 
@@ -184,14 +188,15 @@ describe('UpdateModal', () => {
     // downloads. The one-way latch must not leave that build's button disabled.
     const { push } = await mount({ state: 'downloaded', version: '9.9.11' })
     fireEvent.click(
-      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+      await screen.findByRole('button', { name: i18nT('components.updateModal.install_on_quit') }),
     )
     await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
 
     await push({ state: 'available', version: '9.9.12' })
     await push({ state: 'downloaded', version: '9.9.12' })
 
-    expect(await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') })).not.toBeDisabled()
+    // The label no longer changes while the arm is in flight, so wait for the latch to release.
+    await waitFor(() => expect(byName('components.updateModal.install_on_quit')).not.toBeDisabled())
   })
 
   describe('installing overlay', () => {
@@ -211,7 +216,9 @@ describe('UpdateModal', () => {
         screen.getByText(i18nT('components.updateModal.installing_update_body')),
       ).toBeInTheDocument()
       expect(screen.getByRole('alert').textContent).toMatch(/several minutes/i)
-      expect(screen.getByRole('alert').textContent).toMatch(/relaunch automatically/i)
+      // The quit-time apply exits without relaunching, so the copy must not promise one.
+      expect(screen.getByRole('alert').textContent).not.toMatch(/relaunch/i)
+      expect(screen.getByRole('alert').textContent).toMatch(/open it again/i)
     })
 
     it('repeats the Windows installer-window handoff before the app closes', async () => {
@@ -297,6 +304,32 @@ describe('UpdateModal', () => {
       expect(screen.queryByTestId('update-modal-gateway-stop-command')).not.toBeInTheDocument()
     })
 
+    it('closing the ready dialog does not hide a later install takeover or its failure', async () => {
+      const { push } = await mount(downloaded)
+      expect(await screen.findByRole('dialog')).toBeInTheDocument()
+      fireEvent.click(byName('components.updateModal.later'))
+      expect(dialog()).not.toBeInTheDocument()
+      // The install is then started from Settings > About.
+      await push(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      expect(await screen.findByTestId('update-modal-install-failed')).toBeInTheDocument()
+    })
+
+    it('a retry after Back to dashboard shows the takeover again', async () => {
+      const { push } = await mount(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      fireEvent.click(
+        await screen.findByRole('button', { name: i18nT('components.updateModal.back_to_dashboard') }),
+      )
+      expect(overlay()).not.toBeInTheDocument()
+      await push(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      expect(await screen.findByTestId('update-modal-install-failed')).toBeInTheDocument()
+    })
+
     it('a non-install error does not hijack the screen with the failure overlay', async () => {
       const { container } = await mount({ state: 'error', phase: 'check', version: '9.9.9' })
       expect(container.firstChild).toBeNull()
@@ -314,7 +347,7 @@ describe('aborted install recovery', () => {
   beforeEach(() => {
     install.mockReset()
     install.mockResolvedValue(undefined)
-    ;(window as unknown as { updateAPI?: { install: () => Promise<unknown> } }).updateAPI = { install }
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install }
   })
   afterEach(() => {
     delete (window as unknown as { updateAPI?: unknown }).updateAPI
@@ -323,16 +356,131 @@ describe('aborted install recovery', () => {
   it('an aborted install does not brick the modal for the next downloaded version', async () => {
     const { push } = await mount({ state: 'downloaded', version: '9.9.9' })
     fireEvent.click(
-      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+      await screen.findByRole('button', { name: i18nT('components.updateModal.install_on_quit') }),
     )
     await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
     // Main process aborts the handoff (stage invalidated) — error/install state.
     await push({ state: 'error', phase: 'install', version: '9.9.9' })
     // The superseding version is later downloaded: the modal must reopen LIVE.
     await push({ state: 'downloaded', version: '9.9.10' })
-    const restart = await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') })
-    expect(restart).toBeEnabled()
-    fireEvent.click(restart)
+    await waitFor(() => expect(byName('components.updateModal.install_on_quit')).toBeEnabled())
+    fireEvent.click(byName('components.updateModal.install_on_quit'))
     await waitFor(() => expect(install).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('armed update', () => {
+  const relaunch = vi.fn<() => Promise<{ ok: boolean; error?: string }>>()
+  const armedState: UpdateState = { state: 'downloaded', version: '9.9.9', armed: true }
+  beforeEach(() => {
+    install.mockReset()
+    install.mockResolvedValue({ ok: true })
+    relaunch.mockReset()
+    relaunch.mockResolvedValue({ ok: true })
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install, relaunch }
+  })
+  afterEach(() => {
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+
+  it('does not stay stuck on Restarting after the click arms: it says it installs on quit and offers Restart now', async () => {
+    const { push } = await mount({ state: 'downloaded', version: '9.9.9' })
+    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.updateModal.install_on_quit') }))
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    // The lane re-emits the same version, now armed.
+    await push(armedState)
+
+    expect(await screen.findByTestId('update-modal-armed')).toHaveTextContent(
+      i18nT('components.updateModal.armed_installs_on_quit', { version: '9.9.9' }),
+    )
+    expect(screen.queryByRole('button', { name: i18nT('components.updateModal.restarting') })).toBeNull()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateModal.install_on_quit') })).toBeNull()
+    expect(byName('components.updateModal.restart_now')).toBeEnabled()
+    // Later, the close button and Escape work again.
+    expect(byName('components.updateModal.later')).toBeEnabled()
+    expect(byName('components.updateModal.dismiss')).toBeEnabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(dialog()).not.toBeInTheDocument()
+  })
+
+  it('Restart now calls updateAPI.relaunch', async () => {
+    await mount(armedState)
+    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.updateModal.restart_now') }))
+    await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
+    expect(install).not.toHaveBeenCalled()
+    expect(await screen.findByRole('button', { name: i18nT('components.updateModal.restarting') })).toBeDisabled()
+  })
+
+  it('says so when the restart is refused, and the update stays armed', async () => {
+    relaunch.mockResolvedValue({ ok: false, error: 'relaunch is only available from the local dashboard' })
+    await mount(armedState)
+    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.updateModal.restart_now') }))
+    const notice = await screen.findByTestId('update-modal-restart-error')
+    // Offers the agent hand-off like every other failure notice in the modal.
+    expect(within(notice).getByText(i18nT('components.askAgent.ask_the_agent'))).toBeInTheDocument()
+    expect(byName('components.updateModal.restart_now')).toBeEnabled()
+    expect(screen.getByTestId('update-modal-armed')).toBeInTheDocument()
+  })
+
+  it('offers no Restart now on a shell without relaunch, but still says it installs on quit', async () => {
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install }
+    await mount(armedState)
+    expect(await screen.findByTestId('update-modal-armed')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateModal.restart_now') })).toBeNull()
+  })
+})
+
+describe('a shell that predates arming', () => {
+  it('never offers Install when I quit, because that shell installs at once', async () => {
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { install }
+    await mount(downloaded)
+    expect(await screen.findByTestId('update-modal-app-too-old')).toHaveTextContent(
+      i18nT('components.updateModal.armed_app_too_old'),
+    )
+    expect(screen.queryByRole('button', { name: i18nT('components.updateModal.install_on_quit') })).toBeNull()
+    expect(install).not.toHaveBeenCalled()
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+})
+
+/**
+ * Prints the ['update-state'] payload UpdateModal reads, so a test can wait
+ * until a push has reached the component before asserting what it left closed.
+ */
+function StateProbe() {
+  const { data } = useQuery<UpdateState | null>({
+    queryKey: ['update-state'], queryFn: () => null, enabled: false, staleTime: Infinity,
+  })
+  return <span data-testid="update-state-probe">{data ? `${data.state} ${data.version ?? ''}${data.armed ? ' armed' : ''}` : ''}</span>
+}
+
+describe('an edition update widget that owns the prompts', () => {
+  const probe = () => screen.getByTestId('update-state-probe')
+  beforeEach(() => {
+    install.mockReset()
+    install.mockResolvedValue({ ok: true })
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install }
+  })
+  afterEach(() => {
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+
+  it('opens no ready dialog for a build its lane readied or for the arm the widget made', async () => {
+    const rendered = renderWithProviders(<><UpdateModal /><StateProbe /></>)
+    const push = async (next: UpdateState) => {
+      await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
+    }
+    await push({ ...downloaded, updatePrompts: 'edition' })
+    await waitFor(() => expect(probe()).toHaveTextContent('downloaded 9.9.9'))
+    expect(dialog()).toBeNull()
+    await push({ ...downloaded, armed: true, updatePrompts: 'edition' })
+    await waitFor(() => expect(probe()).toHaveTextContent('downloaded 9.9.9 armed'))
+    expect(dialog()).toBeNull()
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('still shows the install takeover while the quit applies the update', async () => {
+    await mount({ state: 'installing', version: '9.9.9', updatePrompts: 'edition' })
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
   })
 })

@@ -210,6 +210,9 @@ MCP_PROBE_TIMEOUT_MAX = 120
 # value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
 TITLE_REFRESH_EVERY_TURNS_MIN = 4
 TITLE_REFRESH_EVERY_TURNS_MAX = 1000
+# ``dashboard.privacy_ack_version``: the privacy notice version a user last
+# acknowledged. A small integer that only ever moves up by one per notice change.
+PRIVACY_ACK_VERSION_MAX = 1000
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
 # The sidebar's folder sort modes, spelled once for the same reason as the bounds
@@ -286,6 +289,16 @@ HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # 0 is meaningful (observe-only) and is the floor, so a negative clamps DOWN to it
 # and disables the arm rather than enabling it.
 RECONCILE_MAX_KILLS_MAX = 5
+# ``session.max_per_creator`` (default ``DEFAULT_MAX_PER_CREATOR``): how many live
+# sessions one creator may hold. Shared by the Settings write gate, the
+# ``_SECURITY_BOUNDED_FIELDS`` sweep and the read at each session create
+# (``dashboard.state.max_slots_per_creator``). The floor keeps a decomposed goal's
+# sessions startable. The ceiling is the live-session ceiling
+# (``dashboard.state.MAX_LIVE_SLOTS``, 500) minus a reserve of 50, so a creator at
+# the highest setting still leaves 50 sessions to everyone else. This module
+# cannot import the dashboard, so ``test_slot_cap_config.py`` pins that relation.
+MAX_PER_CREATOR_MIN = 10
+MAX_PER_CREATOR_MAX = 450
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which
@@ -386,8 +399,8 @@ def _limit_int(value: object, key: str, *, lo: int, hi: int | None = None) -> in
 class ResourceLimitsConfig:
     """Kernel confinement ceilings for spawned agent processes.
 
-    THREE mechanisms read this one block, and a key shared between two of them
-    does NOT mean the same thing on both. That is the whole reason this section
+    THREE mechanisms read this one block, and ``0`` does NOT mean the same
+    thing on each of them. That is the whole reason this section
     has a schema: without it every consumer parses the raw dict itself, leaving
     the incompatible domains written down nowhere and free to drift apart.
 
@@ -426,12 +439,26 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max processes",
-            "READ BY TWO MECHANISMS with different meanings for 0. As "
-            "RLIMIT_NPROC it caps processes for the child's real UID, and 0 "
-            "leaves the inherited limit unchanged (the default -- see the "
-            "per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup "
-            "TasksMax it counts TASKS (threads) in the scope, where 0 is "
-            "rejected by systemd, so 0 or unset means the module default.",
+            "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts "
+            "TASKS (threads), and the Job object ActiveProcessLimit on Windows. "
+            "0 is rejected by systemd, so 0 or unset means the module default. "
+            "It sets no POSIX rlimit; the per-user process cap is the separate "
+            "max_user_processes.",
+            nullable=True,
+        ),
+    )
+    max_user_processes: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max user processes",
+            "RLIMIT_NPROC on the tool and build processes the gateway spawns, "
+            "opt-in; the ACP session host and what it starts keep the "
+            "inherited limit. The kernel counts every process and thread of "
+            "the gateway's user, not one spawn's tree, so a cap below what "
+            "that user already runs stops those spawns from forking. 0 or "
+            "unset leaves the inherited limit unchanged (the default). Set it "
+            "only when the gateway runs as its own dedicated user. Not used by "
+            "the cgroup path.",
             nullable=True,
         ),
     )
@@ -439,12 +466,24 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max memory (MB)",
-            "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_AS "
-            "it caps virtual address space, and 0 leaves the inherited limit "
-            "unchanged (the default -- Node/V8 reserve huge VSZ, see the caveat "
-            "in security._RLIMIT_DEFAULTS). As the cgroup MemoryMax it is the "
-            "per-scope resident ceiling, where 0 is rejected by systemd, so 0 "
-            "or unset means the host-proportional module default.",
+            "Per-scope RESIDENT memory ceiling: the cgroup MemoryMax on Linux "
+            "and the Job object JobMemoryLimit on Windows. 0 is rejected by "
+            "systemd, so 0 or unset means the host-proportional module "
+            "default. It sets no POSIX rlimit; the virtual address-space cap "
+            "is the separate max_address_space_mb.",
+            nullable=True,
+        ),
+    )
+    max_address_space_mb: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max address space (MB)",
+            "RLIMIT_AS: VIRTUAL address space per spawned process, opt-in. 0 "
+            "or unset leaves the inherited limit unchanged (the default). "
+            "Node/V8 (kiro-cli, npx MCP servers) and GraalVM native binaries "
+            "reserve far more address space than they touch and can fail to "
+            "start below about 64 GiB, so use max_memory_mb to cap resident "
+            "memory. Not used by the cgroup path.",
             nullable=True,
         ),
     )
@@ -561,7 +600,13 @@ class ResourceLimitsConfig:
         return cls(
             max_open_files=_limit_int(section.get("max_open_files"), "max_open_files", lo=0),
             max_processes=_limit_int(section.get("max_processes"), "max_processes", lo=0),
+            max_user_processes=_limit_int(
+                section.get("max_user_processes"), "max_user_processes", lo=0
+            ),
             max_memory_mb=_limit_int(section.get("max_memory_mb"), "max_memory_mb", lo=0),
+            max_address_space_mb=_limit_int(
+                section.get("max_address_space_mb"), "max_address_space_mb", lo=0
+            ),
             max_cpu_seconds=_limit_int(section.get("max_cpu_seconds"), "max_cpu_seconds", lo=0),
             cpu_weight=_limit_int(section.get("cpu_weight"), "cpu_weight", lo=1, hi=10000),
             max_cpu_percent=_limit_int(section.get("max_cpu_percent"), "max_cpu_percent", lo=0),

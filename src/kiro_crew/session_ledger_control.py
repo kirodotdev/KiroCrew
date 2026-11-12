@@ -367,9 +367,12 @@ def _read_lines(
     coming back short: a caller that rewrites what it reads would otherwise persist the
     truncation, which is a silent loss rather than a bounded read.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     try:
         with path.open("r", encoding="utf-8") as fh:
-            text = fh.read(limit + 1)
+            text = bounded_read(fh, limit + 1)
     except FileNotFoundError:
         return ()
     if len(text) > limit:

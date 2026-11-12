@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import secrets
@@ -59,7 +60,7 @@ _GOOGLE: dict[str, Any] = {
     "grant_by_project": True,
 }
 #: The visible DCR cards Crew can own; their endpoints come from discovery.
-DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "gitlab"})
+DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "gitlab", "ticktick"})
 
 #: Per-provider OAuth endpoints, fixed per vendor (not discovered via RFC 8414).
 #: ``revoke_form`` names the form fields of a POST revoke (``token`` is the refresh
@@ -95,6 +96,9 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
 }
 #: The slugs Crew can own: those with endpoints, and the DCR cards.
 SUPPORTED_SLUGS = frozenset(_ENDPOINTS) | DCR_SLUGS
+#: Prefix of the key an owner-added remote MCP server's grant is held under.
+CUSTOM_PREFIX = "custom-"
+_CUSTOM_DIGEST_CHARS = 20
 #: Refresh this long before the recorded expiry.
 _REFRESH_SKEW_SECS = 120.0
 #: How long one consent may stay open.
@@ -129,32 +133,156 @@ def enabled() -> bool:
     value the dashboard's switch shows.
     """
     from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.edition_locks import feature_previews
 
     try:
-        previews = KiroCrewConfig.load().dashboard.feature_previews
+        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
     except Exception:  # noqa: BLE001 -- an unreadable config reads as off
         return False
     return isinstance(previews, dict) and previews.get(FLAG_KEY) is True
 
 
-def _chat_backend_is_kas() -> bool:
-    """Whether ordinary chats run on KAS, the one harness this MVP serves. Blocking."""
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+def serves_backend(backend: str) -> bool:
+    """Whether a session on *backend* reaches Crew's sign-in through the bridge.
+
+    Never kiro-cli: it runs the vendor's OAuth itself, so its native grant keeps
+    working beside a bridged session.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
+
+    return backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE
+
+
+def _chat_backend() -> str | None:
+    """The configured chat backend, ``None`` when the config cannot be read. Blocking."""
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+        return str(KiroCrewConfig.load().agent.acp_backend)
     except Exception:  # noqa: BLE001 -- an unreadable config keeps today's custody
+        return None
+
+
+def _chat_backend_bridged() -> bool:
+    """Whether ordinary chats run on a bridged backend. Blocking."""
+    backend = _chat_backend()
+    return backend is not None and serves_backend(backend)
+
+
+def strips_spec_secret(slug: str) -> bool:
+    """Whether the agent spec may drop *slug*'s pre-registered client secret. Blocking.
+
+    The spec is what kiro-cli reads, and kiro-cli runs the vendor's OAuth itself,
+    so the secret is dropped only when nobody reads it: chats on KAS (which
+    discards the block), or a deployment where no kiro-cli session can start.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, selectable_backends
+
+    if not custody_on(slug):
         return False
+    return _chat_backend() == ACP_BACKEND_KAS or ACP_BACKEND_KIRO not in selectable_backends()
+
+
+def custom_key(name: str, url: str) -> str:
+    """The key an owner-added server's grant is held under: its name AND url.
+
+    A re-pointed url gets a new key, so a token issued for one url is never sent
+    to another.
+    """
+    digest = hashlib.sha256(f"{name}\n{url}".encode("utf-8", "surrogatepass")).hexdigest()
+    return CUSTOM_PREFIX + digest[:_CUSTOM_DIGEST_CHARS]
+
+
+def is_custom_key(slug: str) -> bool:
+    """Whether *slug* is a :func:`custom_key`, never a registry slug."""
+    tail = slug[len(CUSTOM_PREFIX) :]
+    return (
+        slug.startswith(CUSTOM_PREFIX)
+        and len(tail) == _CUSTOM_DIGEST_CHARS
+        and all(c in "0123456789abcdef" for c in tail)
+    )
+
+
+def _held_key(slug: str) -> bool:
+    return slug in SUPPORTED_SLUGS or is_custom_key(slug)
+
+
+def custody_on(slug: str) -> bool:
+    """Whether Crew's sign-in may serve *slug* on this gateway at all. Blocking.
+
+    The flag alone, whatever the chat backend: which session reaches it is
+    :func:`serves_backend`'s question, asked per session.
+    """
+    return _held_key(slug) and enabled()
+
+
+def _is_registry_url(url: Any) -> bool:
+    """Whether *url* is a registry provider's MCP endpoint. Blocking.
+
+    Such an entry belongs to that provider's card (its client, port and vault
+    key), whatever name it was added under: the owner-server path never claims it.
+    """
+    from kiro_crew.connections.registry import get_all_registry_providers
+
+    if not isinstance(url, str):
+        return False
+    wanted = url.rstrip("/")
+    return any(str(p["mcp_url"]).rstrip("/") == wanted for p in get_all_registry_providers())
+
+
+def signs_in_custom(entry: Any) -> bool:
+    """Whether an owner-added server's dashboard sign-in runs through Crew. Blocking.
+
+    The caller has proved *entry* is the owner's recorded remote server. Needs the
+    flag and a bridged chat backend, as a card's Connect does; an entry that sends
+    its own credential header keeps its own path.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("type") != "sse"
+        and not _is_registry_url(entry.get("url"))
+        and not has_credential_header(entry.get("headers"))
+        and enabled()
+        and _chat_backend_bridged()
+    )
+
+
+def _custom_slug(name: str, entry: Any) -> str:
+    """The :func:`custom_key` when Crew holds this owner-added entry's grant, else ``""``.
+
+    Signing in through Crew is the opt-in: until then the entry keeps the
+    harness's own OAuth. The owner record (sealed ``config.json``) must name this
+    exact url, so a server an agent added or re-pointed is never bridged.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.owner_servers import is_owner_server, is_signable_name, remote_url
+
+    url = remote_url(entry)
+    # The bridge speaks streamable HTTP only: a legacy SSE server keeps its own path.
+    if (
+        url is None
+        or entry.get("type") == "sse"
+        or not is_signable_name(name)
+        or _is_registry_url(url)
+    ):
+        return ""
+    key = custom_key(name, url)
+    if holds_grant(key) is not True:
+        return ""
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return ""
+    return key if is_owner_server(config, name, entry) else ""
 
 
 def manages(slug: str) -> bool:
-    """Whether Crew owns *slug*'s OAuth on this gateway. Blocking.
+    """Whether Crew owns *slug*'s OAuth for the chat backend: Connect, status. Blocking.
 
-    Needs the flag AND KAS as the chat backend: on kiro-cli the native grant keeps
-    working as today, so Crew must not take custody away from it.
+    Needs the flag AND a bridged chat backend: on kiro-cli the native grant keeps
+    working as today, so the Connections card must not take custody away from it.
     """
-    return slug in SUPPORTED_SLUGS and enabled() and _chat_backend_is_kas()
+    return custody_on(slug) and _chat_backend_bridged()
 
 
 #: Header-name words that mark a header as carrying a credential.
@@ -171,18 +299,45 @@ def has_credential_header(headers: Any) -> bool:
     )
 
 
-def routed_slug(name: str, entry: Any, provider_for_server: Any) -> str:
+def routed_slug(name: str, entry: Any, provider_for_server: Any, backend: str | None = None) -> str:
     """The slug when Crew's sign-in serves this entry, else ``""``. Blocking.
 
-    A registry provider's own entry (slug AND url match) while :func:`manages`
-    holds. An entry that sends its own credential header keeps its own path.
+    A registry provider's own entry (slug AND url match), or an owner-added
+    remote server whose grant Crew holds (:func:`_custom_slug`), for a session on
+    *backend* (:func:`custody_on` and :func:`serves_backend`), or for the chat
+    backend (:func:`manages`) when none is given. An entry that sends its own
+    credential header keeps its own path.
     """
-    if name not in SUPPORTED_SLUGS or has_credential_header(entry.get("headers")):
+    if has_credential_header(entry.get("headers")):
         return ""
-    provider = _dcr_provider(name, entry) if name in DCR_SLUGS else provider_for_server(name, entry)
-    if provider is None or not manages(str(provider["slug"])):
+    if name in SUPPORTED_SLUGS:
+        provider = (
+            _dcr_provider(name, entry) if name in DCR_SLUGS else provider_for_server(name, entry)
+        )
+        if provider is None:
+            return ""
+        slug = str(provider["slug"])
+    else:
+        slug = _custom_slug(name, entry)
+        if not slug:
+            return ""
+    if backend is None:
+        return slug if manages(slug) else ""
+    if not (custody_on(slug) and serves_backend(backend)):
         return ""
-    return str(provider["slug"])
+    # A session is bridged only when Crew can hold the grant: the card offers
+    # Crew's Connect (a bridged chat backend), or Crew already holds the pair.
+    # Otherwise the bridge could only ever answer "reconnect it".
+    return slug if _chat_backend_bridged() or holds_grant(slug) is True else ""
+
+
+def bridges_chat_sessions() -> bool:
+    """Whether an ordinary chat session may be bridged. Blocking.
+
+    A warm-pool process is projected before it has a session key, so it carries
+    no bridge; the pool is skipped while this holds.
+    """
+    return enabled() and _chat_backend_bridged()
 
 
 def _dcr_provider(name: str, entry: Any) -> Any:
@@ -219,7 +374,7 @@ def holds_grant(slug: str) -> bool | None:
     ``None`` when the vault could not be read: not a confirmed absence, so a
     Disconnect still attempts the cleanup and reports it if that fails.
     """
-    if slug not in SUPPORTED_SLUGS:
+    if not _held_key(slug):
         return False
     try:
         return TokenStore().present(slug)
@@ -279,7 +434,10 @@ class Tokens:
         )
 
     def expiring(self, now: float) -> bool:
-        return self.expires_at is not None and self.expires_at - _REFRESH_SKEW_SECS <= now
+        # A pair with no refresh token (TickTick) has nothing to renew early: it is
+        # served up to its recorded expiry.
+        skew = _REFRESH_SKEW_SECS if self.refresh else 0.0
+        return self.expires_at is not None and self.expires_at - skew <= now
 
 
 def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
@@ -443,8 +601,11 @@ class SignIn:
     expired after :data:`SIGN_IN_TTL_SECS`).
     """
 
-    def __init__(self, slug: str, project_dirs: Any = None) -> None:
+    def __init__(self, slug: str, project_dirs: Any = None, custom: Any = None) -> None:
         self.slug = slug
+        # An owner-added server (``{"slug": name, "mcp_url", "entry"}``) signed in
+        # under its :func:`custom_key`; ``None`` for a registry card.
+        self._custom = custom
         # The open checkouts the harness-grant census reads; ``None``: unknown.
         self._project_dirs = project_dirs
         self._state = secrets.token_urlsafe(32)
@@ -464,18 +625,40 @@ class SignIn:
 
     async def start(self) -> str:
         """Bind the callback listener and return the consent URL."""
-        from aiohttp import web
-
         from kiro_crew.connections.registry import CALLBACK_PATH, get_provider, redirect_uri
 
-        if self.slug in DCR_SLUGS:
+        if self.slug in DCR_SLUGS or self._custom is not None:
             from kiro_crew.connections import crew_oauth_dcr as dcr
 
-            self._dcr = await dcr.prepare(self.slug)
-            # One port for every DCR sign-in; ``state`` routes the callback here.
-            self.bound_port = await dcr.listen(self._state, self._callback)
-            self._listening = True
+            if self._custom is None:
+                self._dcr = await dcr.prepare(self.slug)
+            else:
+                from kiro_crew.mcp_utils import kiro_entry_scopes
+
+                entry = self._custom["entry"]
+                self._dcr = await dcr.prepare_custom(
+                    self.slug,
+                    str(self._custom["mcp_url"]),
+                    entry.get("oauth"),
+                    # Either spelling, as the custom-server editor stores them.
+                    scopes=kiro_entry_scopes(entry, server=str(self._custom["slug"])),
+                )
             self._redirect = self._dcr.client.redirect_uri
+            own = dcr.own_listener(self._redirect)
+            if own is not None:
+                # The owner's app registered its own loopback redirect: bind that
+                # port, for this one consent only.
+                await self._bind(*own)
+            else:
+                # One port for every DCR sign-in (or the gateway's own public
+                # route); ``state`` routes the callback here.
+                self.bound_port = await dcr.listen(
+                    self._state,
+                    self._callback,
+                    slug=self.slug,
+                    loopback=not self._redirect.startswith("https://"),
+                )
+                self._listening = True
             self.url = dcr.authorize_url(self._dcr, self._state, self._challenge)
             return self.url
         provider = get_provider(self.slug)
@@ -484,13 +667,25 @@ class SignIn:
         if not redirect:
             raise CrewOAuthError("client_not_configured")
         auth = provider["auth"]  # type: ignore[index]
+        await self._bind(int(auth["redirect_port"]), CALLBACK_PATH)
+        self._client = client
+        self._redirect = redirect
+        self.url = authorize_url(
+            self.slug, client.client_id, redirect, self._state, self._challenge
+        )
+        return self.url
+
+    async def _bind(self, port: int, path: str) -> None:
+        """Hold this consent's own callback listener on loopback *port*."""
+        from aiohttp import web
+
         app = web.Application()
-        app.router.add_get(CALLBACK_PATH, self._callback)
+        app.router.add_get(path, self._callback)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         # Loopback only, the exact host and port the operator registered, and only
         # while this one consent is pending (RFC 4.7).
-        site = web.TCPSite(self._runner, "127.0.0.1", int(auth["redirect_port"]))
+        site = web.TCPSite(self._runner, "127.0.0.1", port)
         try:
             await site.start()
         except OSError:
@@ -498,12 +693,6 @@ class SignIn:
             self._runner = None
             raise CrewOAuthError("callback_port_busy") from None
         self.bound_port = int(self._runner.addresses[0][1])
-        self._client = client
-        self._redirect = redirect
-        self.url = authorize_url(
-            self.slug, client.client_id, redirect, self._state, self._challenge
-        )
-        return self.url
 
     async def _callback(self, request: Any) -> Any:
         from aiohttp import web
@@ -565,7 +754,15 @@ class SignIn:
                 tokens = dataclasses.replace(
                     tokens_from_response(doc, time.time()), client=issued_to
                 )
-                await asyncio.to_thread(target.replace, self.slug, tokens)
+                if self._custom is not None:
+                    from kiro_crew.connections.crew_oauth_dcr import keep_client
+
+                    # The client and the pair it issued land in one vault write.
+                    await asyncio.to_thread(
+                        keep_client, self.slug, self._dcr.client, tokens, target._vault
+                    )
+                else:
+                    await asyncio.to_thread(target.replace, self.slug, tokens)
 
         self._write = asyncio.ensure_future(_swap_and_write())
         await asyncio.shield(self._write)
@@ -577,14 +774,18 @@ class SignIn:
 
     async def _dcr_exchange(self, code: str) -> dict[str, Any]:
         """The DCR code swap; a client the vendor does not know is forgotten."""
-        from kiro_crew.connections.crew_oauth_dcr import exchange, forget_client
+        from kiro_crew.connections.crew_oauth_dcr import ClientStore, exchange, forget_client
 
         try:
             return await exchange(self._dcr.client, code, self._verifier)
         except CrewOAuthError as exc:
             if exc.code in ("invalid_client", "unauthorized_client"):
                 # The next Connect registers again instead of reusing the dead one.
-                await forget_client(self.slug)
+                # Only the stored client is forgotten: an owner's replacement that
+                # was never stored must not take the working one with it.
+                stored = (await asyncio.to_thread(ClientStore().read, self.slug))[0]
+                if self._custom is None or stored == self._dcr.client:
+                    await forget_client(self.slug)
             raise
 
     async def shutdown(self) -> None:
@@ -609,10 +810,16 @@ async def _refresh(slug: str, store: TokenStore, held: tuple[Tokens, str]) -> To
     """Rotate the pair once; commit before returning the new access token."""
     tokens, revision = held
     if not tokens.refresh:
+        if tokens.expiring(time.time()):
+            # Expired and unrenewable: drop it, so the card reads Not connected
+            # and offers Connect again (the registered client stays).
+            await store.delete_if(slug, revision)
         raise CrewOAuthError("needs_auth")
     from kiro_crew.connections import crew_oauth_dcr as dcr
 
-    client = None if slug in DCR_SLUGS else await asyncio.to_thread(_client, slug)
+    # A DCR card's or an owner-added server's client lives in the vault.
+    discovered = slug in DCR_SLUGS or is_custom_key(slug)
+    client = None if discovered else await asyncio.to_thread(_client, slug)
     try:
         if client is None:
             doc = await dcr.refresh(slug, tokens.refresh)
@@ -732,7 +939,7 @@ async def _revoke(slug: str, tokens: Tokens) -> bool:
     """Upstream revoke of *tokens* in the vendor's shape; best effort, never raises."""
     import aiohttp
 
-    if slug in DCR_SLUGS:
+    if slug in DCR_SLUGS or is_custom_key(slug):
         from kiro_crew.connections.crew_oauth_dcr import revoke
 
         return await revoke(slug, tokens)
@@ -840,7 +1047,9 @@ def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
         logger.debug("crew oauth audit failed", exc_info=True)
 
 
-async def start_mint_row(slug: str, project_dirs: Any = None) -> str:
+async def start_mint_row(
+    slug: str, project_dirs: Any = None, custom: Any = None, on_granted: Any = None
+) -> str:
     """Run a Crew-owned sign-in through the Connections card's mint row; the row token.
 
     The card's contract is unchanged: it polls ``GET /api/connections/mint`` for
@@ -849,22 +1058,30 @@ async def start_mint_row(slug: str, project_dirs: Any = None) -> str:
     so Cancel, a superseding Connect and the dead-holder check all reach them.
     One start per provider at a time: a superseding Connect waits until the
     attempt it replaces has registered its listener, so it can dispose of it.
+
+    *custom* is an owner-added server (``{"slug": name, "mcp_url", "entry"}``):
+    its row is keyed by the server name the MCP Servers page polls, and its grant
+    by *slug*, the :func:`custom_key`. *on_granted* (synchronous, no arguments,
+    run on the loop) runs once the pair is stored.
     """
     async with _startup_locks.setdefault(slug, asyncio.Lock()):
-        return await _start_mint_row(slug, project_dirs)
+        return await _start_mint_row(slug, project_dirs, custom, on_granted)
 
 
-async def _start_mint_row(slug: str, project_dirs: Any) -> str:
+async def _start_mint_row(
+    slug: str, project_dirs: Any, custom: Any = None, on_granted: Any = None
+) -> str:
     from kiro_crew.connections import mint
 
-    token, prior = await mint.reserve_mint_row(slug)
+    row = str(custom["slug"]) if custom is not None else slug
+    token, prior = await mint.reserve_mint_row(row)
     if prior is not None:
         await mint._dispose_mint(prior)
-    sign_in = SignIn(slug, project_dirs)
+    sign_in = SignIn(slug, project_dirs, custom)
     try:
         url = await sign_in.start()
     except CrewOAuthError as exc:
-        await _set_row(slug, token, {"state": "failed", "reason": f"crew_oauth_{exc.code}"})
+        await _set_row(row, token, {"state": "failed", "reason": f"crew_oauth_{exc.code}"})
         _audit("connections_crew_oauth_sign_in", "error", slug, exc.code)
         return token
     from kiro_crew.security import oauth_url_contains_credential
@@ -879,13 +1096,30 @@ async def _start_mint_row(slug: str, project_dirs: Any) -> str:
         vetted = dcr_authorize_url(sign_in._dcr, fixed, fixed)
     else:
         vetted = authorize_url(slug, sign_in._client.client_id, sign_in._redirect, fixed, fixed)
+    if custom is not None:
+        # An owner-added server's consent host is on no builtin list. The sign-in
+        # itself just discovered this endpoint from the owner-recorded url (the
+        # challenge's ``resource_metadata`` included), so that verified result is
+        # what the gate is told to admit.
+        from kiro_crew.security import record_discovered_oauth_endpoint
+
+        parts = urllib.parse.urlsplit(sign_in._dcr.client.authorize)
+        await asyncio.to_thread(
+            record_discovered_oauth_endpoint,
+            parts.hostname or "",
+            parts.path,
+            # The query-free url discovery used, never the configured one.
+            mcp_url=sign_in._dcr.client.resource,
+        )
     if await asyncio.to_thread(oauth_url_contains_credential, vetted):
         await sign_in.shutdown()
-        await _set_row(slug, token, {"state": "failed", "reason": "mint_url_rejected"})
+        await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token
-    watcher = asyncio.get_running_loop().create_task(_await_consent(slug, token, sign_in))
+    watcher = asyncio.get_running_loop().create_task(
+        _await_consent(row, token, sign_in, on_granted)
+    )
     if not await _set_row(
-        slug, token, {"state": "waiting", "oauth_url": url, "client": sign_in, "watcher": watcher}
+        row, token, {"state": "waiting", "oauth_url": url, "client": sign_in, "watcher": watcher}
     ):
         watcher.cancel()
         await sign_in.shutdown()
@@ -893,26 +1127,33 @@ async def _start_mint_row(slug: str, project_dirs: Any) -> str:
     return token
 
 
-async def _set_row(slug: str, token: str, fields: dict[str, Any]) -> bool:
-    """Update *slug*'s row only while it is still this attempt's."""
+async def _set_row(row: str, token: str, fields: dict[str, Any]) -> bool:
+    """Update mint row *row* only while it is still this attempt's."""
     from kiro_crew.connections import mint
 
     async with mint._mints_lock:
-        entry = mint._mints.get(slug)
+        entry = mint._mints.get(row)
         if entry is None or entry.get("token") != token:
             return False
         entry.update(fields)  # type: ignore[typeddict-item]
         return True
 
 
-async def _await_consent(slug: str, token: str, sign_in: SignIn) -> None:
+async def _await_consent(row: str, token: str, sign_in: SignIn, on_granted: Any = None) -> None:
     from kiro_crew.connections import mint
 
+    slug = sign_in.slug
     outcome: dict[str, Any]
     try:
         await sign_in.finish()
         outcome = {"state": "granted"}
         _audit("connections_crew_oauth_sign_in", "ok", slug)
+        if on_granted is not None:
+            try:
+                # On the loop, like the dashboard writer's own marks.
+                on_granted()
+            except Exception:  # noqa: BLE001 -- the grant is stored; a refresh is best effort
+                logger.debug("post-grant hook failed for %s", slug, exc_info=True)
     except asyncio.CancelledError:
         await sign_in.shutdown()
         raise
@@ -925,7 +1166,7 @@ async def _await_consent(slug: str, token: str, sign_in: SignIn) -> None:
         _audit("connections_crew_oauth_sign_in", "error", slug, type(exc).__name__)
     await sign_in.shutdown()
     async with mint._mints_lock:
-        entry = mint._mints.get(slug)
+        entry = mint._mints.get(row)
         if entry is not None and entry.get("token") == token:
             entry.pop("client", None)
             entry.pop("watcher", None)

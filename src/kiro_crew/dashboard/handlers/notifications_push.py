@@ -11,6 +11,10 @@ considerations"):
   and the app must currently be enabled; deny-by-default otherwise.
 - Pushes are rate limited per app (token bucket); violations are SEL-logged
   and rejected with 429.
+
+``/api/notifications/own`` (GET, and POST ``ack``) lets an app read and acknowledge
+the notes it pushed and nothing else: the source is matched against the host-stamped
+``app:<name>``, never a body field an app could choose.
 """
 
 from __future__ import annotations
@@ -23,8 +27,13 @@ from aiohttp import web
 
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import RESERVED_APP_NAMES
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.notification_coordinator import unread_count
+from kiro_crew.dashboard.ws_event_scope import notification_source_app
 from kiro_crew.notifications import vapid_keys
 from kiro_crew.notifications.bus import (
     NotificationPayload,
@@ -251,6 +260,81 @@ async def api_push_notification(request: web.Request) -> web.Response:
         resources=full_channel,
     )
     return web.json_response({"ok": True, "note": note})
+
+
+# ── An app's own notes (the list behind its sidebar badge) ──────────────────
+
+
+async def _own_app(request: web.Request, named: object) -> str | web.Response:
+    """The app whose notes this caller may read and acknowledge, or a refusal.
+
+    An app caller is always its own app: the identity token auth verified, whatever
+    the request names. The owner's dashboard, where the app's page runs, names the app.
+    """
+    app_name = str(request.get("app") or "")
+    if not app_name:
+        denied = await require_owner_dashboard_request(request, "notifications_own")
+        if denied is not None:
+            return denied
+        app_name = named if isinstance(named, str) else ""
+        if not app_name:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="notifications_own",
+                outcome="denied",
+                source="notifications_api",
+                error="app is required",
+            )
+            return web.json_response(
+                {"error": "app is required", "code": "own_notifications_app_required"},
+                status=400,
+            )
+    return app_name
+
+
+def _is_own(note: dict[str, Any], app_name: str) -> bool:
+    """Whether the host stamped *note* with *app_name*'s push source."""
+    return notification_source_app(str(note.get("source", ""))) == app_name
+
+
+async def api_own_notifications(request: web.Request) -> web.Response:
+    """GET /api/notifications/own — the notes the host stamped with the caller's app."""
+    app_name = await _own_app(request, request.query.get("app"))
+    if isinstance(app_name, web.Response):
+        return app_name
+    notes = [n for n in request.app["state"]._notification_log if _is_own(n, app_name)]
+    return web.json_response({"notifications": notes, "unread": unread_count(notes)})
+
+
+async def api_own_notification_ack(request: web.Request) -> web.Response:
+    """POST /api/notifications/own/ack — mark one of the caller app's notes read."""
+    body, cap_err = await read_bounded_json(request)
+    if cap_err is not None:
+        return cap_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    app_name = await _own_app(request, body.get("app"))
+    if isinstance(app_name, web.Response):
+        return app_name
+    state = request.app["state"]
+    ts = body.get("ts")
+    # The note the bell's own ack marks for this ts is the first one carrying it.
+    note = next((n for n in state._notification_log if ts and n.get("ts") == ts), None)
+    if note is None or not _is_own(note, app_name):
+        # Another source's note reads the same as no note: nothing to confirm.
+        sel().log_api_access(
+            caller=str(request.get("app") or "dashboard"),
+            operation="notifications_own_ack",
+            outcome="denied",
+            source="notifications_api",
+            resources=str(ts),
+            error="not the caller app's note",
+        )
+        return web.json_response(
+            {"error": "no such notification", "code": "own_notification_not_found"},
+            status=404,
+        )
+    await state.ack_notification(ts)
+    return web.json_response({"ok": True})
 
 
 # ── Web Push subscription management (dashboard-user routes) ────────────────

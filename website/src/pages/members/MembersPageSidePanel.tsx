@@ -32,7 +32,8 @@ import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
-import { suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { mergePaneDraft, suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { sendCardReply } from './sendCardReply'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -352,10 +353,13 @@ export function useMembersPageSidePanel({
     setActionError(message)
     if (!besideRef.current) setOverlayOpen(false)
   }, [setOverlayOpen])
+  // Every caller just opened a tab for the person to look at, so an open reply
+  // thread, drawn opaque over the whole panel, steps aside for it.
   const revealPanelAfterOpen = useCallback(() => {
+    closeReplyThread()
     if (besideRef.current) setDockedOpen(true)
     else setOverlayOpen(true)
-  }, [setDockedOpen, setOverlayOpen])
+  }, [closeReplyThread, setDockedOpen, setOverlayOpen])
   const { openFile, openWorkingTreeDiff, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -401,6 +405,15 @@ export function useMembersPageSidePanel({
   const openFileGuarded = useCallback((...args: Parameters<typeof openFile>) => {
     void openFile(...args)
   }, [openFile])
+  // A folder a crewmate names in its reply opens as the panel's folder tab
+  // against the DM slot, the way the chat page's folder chips do. Without it
+  // the chip fell back to the OS file manager, which a remote or headless
+  // gateway can only answer by copying the path.
+  const { openFolder: openFolderTab } = tabsCtl
+  const openFolderGuarded = useCallback((path: string) => {
+    openFolderTab(path, activeSlotRef.current)
+    revealPanelAfterOpen()
+  }, [openFolderTab, revealPanelAfterOpen])
   // Same shape for an artifact a crewmate names in its reply: the panel's own
   // Artifacts opener (a document tab against the DM slot), fire-and-forget
   // like the file one. Without it the `/artifacts/<slug>` link opened the
@@ -484,7 +497,7 @@ export function useMembersPageSidePanel({
     threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId,
     dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
-    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
+    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openFolderGuarded, openArtifactGuarded,
     openSessionGuarded, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
   }
@@ -562,7 +575,19 @@ export function MembersPageSidePanel({
           // chat box; the person sends it. The composer is revealed (focused on
           // desktop) so the result of the click is where the reader looks.
           onAct={activeSlot ? (text: string) => { suggestPaneDraft(activeSlot, text); revealComposer() } : undefined}
-          // Badge click opens the Profile tab directly so the person can unlock.
+          // A late-refused reply, when a newer one is already in the box: added, never swapped in.
+          onActKeep={activeSlot ? (text: string) => { mergePaneDraft(activeSlot, text, []); revealComposer() } : undefined}
+          // One click sends it into THIS crewmate's thread, only when the person turned
+          // "Send replies in one click" on for it (off, the default: no send is offered,
+          // so a page's `send` fills the composer exactly as `act` does and nothing
+          // reaches the gateway), and only once the open was confirmed (a send cannot be
+          // recalled by the unbind that follows a refused open); never a target the page
+          // names; a refusal falls back to the line above. The gateway's own
+          // `card_send_off` check stays the enforcement point.
+          onSend={confirmedSlot && active.dashboard_card_send === true
+            ? (text: string) => sendCardReply(confirmedSlot, text)
+            : undefined}
+          // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.
           onOpenProfileTab={() => {

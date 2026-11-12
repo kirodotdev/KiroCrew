@@ -27,6 +27,7 @@ from kiro_crew.dashboard import members_roster_goals
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members_access import (
     _audit_owner_read,
+    _audit_teammate_read,
     _deny_app_caller,
     _member_name_is_addressable,
 )
@@ -341,6 +342,14 @@ async def api_members(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.list")
     if denied is not None:
         return denied
+    # A team Crew teammate the Kiro relay verified reads the roster too, with every
+    # owner-private field left out (`_teammate_roster`). Checked before the owner
+    # gate so the owner's read below stays exactly what it was.
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if _relay_teammate(request):
+        _audit_teammate_read(request, "members.list.read")
+        return await _teammate_roster()
     # Owner gate, the briefing and rules endpoints' boundary: every row carries the
     # owner's view of a crewmate (its last DM line, its slot, its projections), and
     # a non-owner dashboard session holds the same empty app claim the app-caller
@@ -448,6 +457,9 @@ async def api_members(request: web.Request) -> web.Response:
                 "starred": bool(agent_cfg.starred),
                 # The row's place in the left dock (1 = top, 0 = not placed).
                 "star_order": int(agent_cfg.star_order),
+                # Whether a Dashboard-tab button may send its reply in one click
+                # (card_send); the Profile tab's switch reads and writes it.
+                "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create
@@ -860,6 +872,50 @@ async def api_members(request: web.Request) -> web.Response:
     # scheduled run), as a messages app orders its conversations. Being listed
     # is `has_dm_message`: the thread holds a message.
 
+    return web.json_response({"members": rows})
+
+
+async def _teammate_roster() -> web.Response:
+    """The roster a relay teammate reads: who each Bot is, and nothing of the owner's.
+
+    Built from the config alone. The owner's row also carries the owner's view of
+    each Bot -- its DM binding and slot (``slot_key``, ``running``), the last DM
+    line and whether one exists, the member-log projections and recency, goals,
+    the owner's star and dock order, Mate's welcome state, and the local workspace,
+    memory store, agent spec, model and settings -- and none of that is read or
+    sent here. A read that touches no binding, transcript or member log also writes
+    nothing, so the owner read's reconcile never runs for a teammate.
+
+    Only Bots a person created here (``dashboard_created``) are listed: the rest of
+    the config (package-synced specs, the reserved ``default`` member) reaches the
+    owner's list only once the owner has talked to it, which is the owner's DM
+    history and not this caller's to read. Every value but the identity is masked
+    as the owner's row masks it.
+    """
+    from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
+
+    cfg, _stamp = await asyncio.to_thread(load_config_with_content_stamp)
+    rows: list[dict] = []
+    for name, agent_cfg in cfg.agents.items():
+        if not _member_name_is_addressable(name):
+            continue
+        if not members_mod.is_person_created_crewmate(name, agent_cfg):
+            continue
+        try:
+            slug = members_mod.member_slug(name, cfg)
+        except MemberSlugError:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "slug": slug,
+                "display_name": _roster_mask(agent_cfg.display_name),
+                "description": _roster_mask(agent_cfg.description),
+                "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
+                "source": normalize_member_source(agent_cfg.source),
+                "dashboard_created": True,
+            }
+        )
     return web.json_response({"members": rows})
 
 

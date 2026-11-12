@@ -250,6 +250,11 @@ def _spawn(args: argparse.Namespace) -> None:
     print("Usage: kirocrew spawn {run|list}")
 
 
+#: Seconds the gateway holds one status read of a blocking ``spawn run``, and the
+#: interval between reads it answered without holding.
+_SPAWN_WAIT_SECS = 2.0
+
+
 def _spawn_run(args: argparse.Namespace, base: str) -> None:
     """Spawn a subagent via the dashboard API.
 
@@ -338,20 +343,35 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         )
     else:
         print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
-    poll_url = f"{base}/api/spawn/{agent_id}"
+    # The gateway holds each read until the run ends or the interval passes, so the
+    # result prints when the run ends. A read answered sooner with the run not done
+    # (it is queued, or the gateway did not hold) is repeated on the interval.
+    poll_url = f"{base}/api/spawn/{agent_id}?wait_secs={_SPAWN_WAIT_SECS:g}"
     secret = _internal_secret(args.port)
     told_awaiting = False
     while True:
-        _time.sleep(2)
+        asked = _time.monotonic()
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with _gateway_send(poll_req, args.port, 5, "cli_spawn_poll") as resp:
+            with _gateway_send(poll_req, args.port, 5 + _SPAWN_WAIT_SECS, "cli_spawn_poll") as resp:
                 status = json.loads(resp.read())
         except _peer_refusal() as e:
             print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
             sys.exit(1)
-        except Exception:
-            print("Error: lost connection to gateway", file=sys.stderr)
+        except Exception as e:
+            # A timeout is a busy gateway, not a lost one, and the subagent it
+            # accepted may still be running. Imported in-function for the
+            # cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if deadline_expired(e):
+                print(
+                    "Error: gateway on port %d is up but did not answer in time (busy); "
+                    "the subagent may still be running -- check `kirocrew spawn list`" % args.port,
+                    file=sys.stderr,
+                )
+            else:
+                print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
         # Say WHY the wait is not progressing. A spawn with no parent session
         # raises its approval prompt unowned, so it appears only on the global
@@ -366,11 +386,28 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
                 file=sys.stderr,
             )
         if status.get("done"):
-            if status.get("error"):
-                print(f"Error: {status['error']}", file=sys.stderr)
+            # An empty ``error`` does not mean success: a user-stopped run (or a
+            # parent turn that ended) carries ``outcome: "stopped"`` with no
+            # error, the same shape ``_spawn_done_status`` reads for ``spawn
+            # list``. Exit 0 only for ``completed``, or for a gateway that sends
+            # no ``outcome`` and no error; any other terminal state prints the
+            # partial result and exits non-zero, so ``spawn run '…' && next``
+            # stops.
+            outcome = status.get("outcome")
+            error = status.get("error")
+            if outcome == "completed" or (outcome is None and not error):
+                print(status.get("result", ""))
+                return
+            if outcome == "stopped":
+                print(status.get("result", ""))
+                print("Stopped before completion.", file=sys.stderr)
                 sys.exit(1)
-            print(status.get("result", ""))
-            return
+            if error:
+                print(f"Error: {error}", file=sys.stderr)
+            else:
+                print(f"Error: run ended {outcome}", file=sys.stderr)
+            sys.exit(1)
+        _time.sleep(max(0.0, _SPAWN_WAIT_SECS - (_time.monotonic() - asked)))
 
 
 def _artifact(args: argparse.Namespace) -> None:
@@ -400,7 +437,21 @@ def _artifact(args: argparse.Namespace) -> None:
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
-            return {"error": str(exc)}
+            # A timeout means the gateway may have taken the request and still be
+            # working: it is up but busy. A write may land after this client gives
+            # up, so its line asks for a check, not a re-run. Imported in-function
+            # for the cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if not deadline_expired(exc):
+                return {"error": str(exc)}
+            busy = f"gateway on port {port} is up but did not answer in time (busy)"
+            if method == "GET":
+                return {"error": f"{busy}; try again in a moment"}
+            return {
+                "error": f"{busy}; the change may have been applied -- "
+                "check `kirocrew artifact list` before re-running"
+            }
 
     def _read_content(args: argparse.Namespace) -> str:
         if getattr(args, "content_file", None):

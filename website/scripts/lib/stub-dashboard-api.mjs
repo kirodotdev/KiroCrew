@@ -233,6 +233,13 @@ export async function stubDashboardApi(page, opts = {}) {
         default_agent: 'kirocrew',
       })
     }
+    // The crewmates roster, as an owner with no crewmates gets it. The
+    // catch-all's `[]` carries no `members` list, so the roster read would fail
+    // in every stubbed page, and a failed roster read re-reads every 30s
+    // (`refetchWhileFailed`): the render bench would measure a gateway that is
+    // down in every idle window. A capture that needs crewmates, or a failing
+    // read, answers this path in its own `extra`.
+    if (path === '/api/members') return json(route, { members: [] })
     // Named BEFORE the catch-all: both paths match its `config` test, and the
     // `{}` it would return blanks the whole Developer > Config surface (see
     // KIROCREW_CONFIG_FIXTURE for why).

@@ -144,6 +144,60 @@ def test_a_shared_template_crewmate_carries_its_kit_and_nothing_the_base_has(lay
     assert (user / "builder.json").is_file()  # kept, so the binding can point back
 
 
+def test_a_server_the_old_agent_mounted_through_a_star_stays_mounted(layout, persisted):
+    """``tools: ["*"]`` already mounted the agent's own server: its ``@server`` is no gain."""
+    user, mates = layout
+    _write(user, "builder", {"name": "builder", "tools": ["*"], "mcpServers": {"jira": JIRA}})
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == ["zxc"]
+
+    assert "@jira" in _file(mates, "zxc")["tools"]
+    adds = mate_worker.worker_additions(BASE, _file(mates, "zxc"))
+    assert "@jira" in mate_worker.merge_worker_spec(BASE, adds)["tools"]
+
+
+def test_a_narrower_selector_than_the_old_agent_s_own_is_no_gain(layout, monkeypatch):
+    """Old ``@jira`` covers a file's ``@jira/search``: the plan keeps it and withholds nothing."""
+    from kiro_crew import mate_config_migration as migration
+
+    old = _template("builder", tools=["@jira"], mcpServers={"jira": JIRA})
+    real = migration.migration_file
+
+    def narrower(name, base, source):
+        planned = real(name, base, source)
+        planned["tools"] = [r for r in planned["tools"] if r != "@jira"] + ["@jira/search"]
+        return planned
+
+    monkeypatch.setattr(migration, "migration_file", narrower)
+    planned, diff, withheld = migration.plan_move("zxc", BASE, old)
+
+    assert withheld == set() and diff.gained == set()
+    assert planned["tools"] == ["@jira/search"]
+
+
+def test_a_prompt_that_does_not_resolve_keeps_a_server_its_star_mounted(layout, persisted):
+    """The default-template move keeps ``@jira`` when the old agent's ``*`` mounted jira."""
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew", tools=["@jira"], mcpServers={"jira": JIRA}))
+    _write(
+        user,
+        "starry",
+        _template(
+            "starry", prompt="file://missing-prompt.md", tools=["*"], mcpServers={"jira": JIRA}
+        ),
+    )
+    cfg = _cfg(rfv=KiroCrewAgentConfig(member_id="rfv", kiro_agent="starry"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.moved_from_default == ["rfv"]
+    written = _file(mates, "rfv")
+    assert "jira" in written["mcpServers"] and "@jira" in written["tools"]
+
+
 def test_a_template_switched_during_the_pass_is_not_overwritten(layout, persisted, monkeypatch):
     user, _ = layout
     _write(user, "builder", _template("builder", prompt="Follow the release SOP."))

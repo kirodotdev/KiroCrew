@@ -8,8 +8,9 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_path``,
-``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
+Instance fields written: ``_capability_projection_gaps``, ``_claude_worker_builtin_tools``,
+``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``, ``_loaded_capability_template``,
+``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
 ``_member_stub_allowlist``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
@@ -73,7 +74,10 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+    ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+)
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -103,8 +107,9 @@ def spec_is_toolless(spec: object) -> bool:
     ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
     then start every server in the user-level ``mcp.json``). An empty ``tools``
     alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens the visible tools
-    (``acp.kas_agents`` forwards both), in a turn that must run none.
+    hook still runs a command, and either include flag widens what the turn can
+    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
+    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
 
     Fails closed: a non-dict and any key of the wrong type answer False.
     """
@@ -392,12 +397,22 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_mcp_unhonoured = projection.unhonoured_servers
     self._session_harness_deny_rules = projection.harness_deny_rules
     self._spec_zero_tools = projection.zero_tools
+    self._claude_worker_builtin_tools = projection.builtin_tools
     # Kept beside the array it describes, so the post-consume check judges the
     # generation these elements were built from and not a later read of the file.
     self._session_mcp_snapshot = projection.derived_spec_snapshot
     self._session_agent_spec = projection.agent_spec
     servers = projection.params.get("mcpServers") or []
     out = list(servers) if isinstance(servers, list) else []
+    if self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        from kiro_crew.acp import kas_env_launch
+
+        # A Crew-owned Connection reaches the vendor through the gateway bridge;
+        # the snapshots it wrote go when this process ends (``_reset_state``).
+        out, written = kas_env_launch.bridge_array(
+            out, backend=self.backend, session_key=self._session_key or "", agent_id=self._agent
+        )
+        self._crew_bridge_snapshots = [*getattr(self, "_crew_bridge_snapshots", []), *written]
     if _claude_worker_settings_lag(self, projection.agent_spec):
         logger.warning(
             "session MCP: withholding the whole mcpServers array -- the claude settings "
@@ -598,9 +613,45 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
+    out = members
     if records_zero_tools and is_member_session_key(self._session_key):
-        return self._broker_only_spec_mounts(projection) + members
-    return members
+        out = self._broker_only_spec_mounts(projection) + members
+    if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        out = _with_crew_connections(self, projection, out)
+    return out
+
+
+def _with_crew_connections(
+    client: AcpClient, projection: SessionMcpProjection, out: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """*out* led by the spec's Crew-owned Connections as bridge elements (pi).
+
+    A BROKER_ONLY host receives no spec server otherwise; a Crew-owned Connection
+    is the one exception (RFC row 3f). Withheld when a tool of it is switched off,
+    as :meth:`_broker_only_spec_mounts` withholds. A same-named server in pi's own
+    ``mcp.json`` is the gate extension's to refuse and report (its registration
+    receipt names ``mcp_json``), as for every other server Crew hands pi.
+    """
+    from kiro_crew.acp import kas_env_launch
+
+    narrowed = {server for server, _tool in projection.disabled_tools}
+    # Every remote element is offered: bridge_array keeps only those Crew owns
+    # (a registry card, or an owner-added server whose grant Crew holds).
+    wanted = [
+        e for e in projection.servers if isinstance(e, dict) and e.get("name") not in narrowed
+    ]
+    if not wanted:
+        return out
+    bridged, written = kas_env_launch.bridge_array(
+        wanted,
+        backend=client.backend,
+        session_key=client._session_key or "",
+        agent_id=client._agent,
+    )
+    client._crew_bridge_snapshots = [*getattr(client, "_crew_bridge_snapshots", []), *written]
+    shims = [s for s, e in zip(bridged, wanted) if s is not e]
+    names = {s["name"] for s in shims}
+    return [*shims, *(e for e in out if e.get("name") not in names)]
 
 
 def _broker_only_spec_mounts(
@@ -1542,10 +1593,14 @@ def _placed_mcp_server_names(self: AcpClient) -> tuple[str, ...]:
     ``__init__``, which has no array cache to read.
     """
     if getattr(self, "_session_mcp_cache", None) is None:
-        return ()
+        # A settings re-seed after ``session/new`` drops the projection, but the
+        # live session still runs the array it was sent: name that one.
+        elements = getattr(self, "_mcp_mount_servers", None) or []
+    else:
+        elements = self._session_mcp_servers()
     return tuple(
         element["name"]
-        for element in self._session_mcp_servers()
+        for element in elements
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     )
 

@@ -383,7 +383,11 @@ def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
 
 
 def test_slack_pip_failure_logs_keep_the_redacted_tail() -> None:
-    """Both pip-failure logs in the Slack gateway bound the REDACTED text at its tail."""
+    """The pip-failure log in the Slack gateway bounds the REDACTED text at its tail.
+
+    The unattended apply's second pip-failure log left the gateway with the apply itself
+    (the update now runs at the next start, in a child whose output is redacted first).
+    """
     import kiro_crew.slack.gateway as slack_gateway
 
     facade = Path(slack_gateway.__file__)
@@ -392,6 +396,5 @@ def test_slack_pip_failure_logs_keep_the_redacted_tail() -> None:
         for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
     )
     assert 'logger.error("Dep repair failed: %s", dep_err[-500:])' in text
-    assert 'redact_log_via_context(fb_err.decode(errors="replace"))[-300:]' in text
     assert 'fb_err.decode(errors="replace")[:300]' not in text
     assert "dep_err[:500]" not in text

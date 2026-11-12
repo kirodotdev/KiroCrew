@@ -22,7 +22,10 @@
  *   (`/api/status`) every `INTERVAL_MS`. The response carries the standard
  *   auth headers, so:
  *     - 200: gateway is back up AND auth is valid → call `forceReconnect()`
- *       on the WS hook to reset the backoff timer and reconnect immediately.
+ *       on the WS hook, which brings the backed-off reconnect forward to at most
+ *       a second when the last socket was refused at its handshake. After a
+ *       socket that opened and dropped before it proved healthy the backoff
+ *       stands (see `SocketConnection.forceReconnect`).
  *     - 403 with `X-Auth-Required: true`: gateway is back up but the cookie
  *       is invalid. The existing `checkSessionExpired` helper in
  *       `api/client.ts` already injects the in-tab auth banner, so the user
@@ -78,9 +81,9 @@ export function useDashboardHealthProbe(forceReconnect: () => void): void {
       try {
         await api.status()
         // Success path: gateway is up, cookie is valid. Wake the WS up
-        // immediately rather than waiting for its backoff tick. The 200
-        // response also auto-dismisses any stale auth banner via the j
-        // wrapper in api/client.ts.
+        // rather than waiting for its backoff tick (forceReconnect decides
+        // whether the backoff stands). The 200 response also auto-dismisses
+        // any stale auth banner via the j wrapper in api/client.ts.
         //
         // Set `cancelled = true` BEFORE forceReconnect so the interval fires
         // at most once per disconnect cycle. Without this, if the WS handshake

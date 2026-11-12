@@ -461,6 +461,11 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_native_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's native-tool excludes are honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""
@@ -773,6 +778,12 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def swaps_conversation_in_place(self) -> bool:
+        """True when a fresh conversation can start on this session's live process
+        now, keeping the sub-agent sessions that process hosts. Default False."""
+        return False
+
+    @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
         """The capabilities this session's registered agent batch auto-approves.
 
@@ -1033,6 +1044,23 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """Have *hook* told the server name when an MCP sign-in Crew started ends unconnected.
+
+        Only a KAS session starts one (``AcpRuntime.begin_mcp_sign_in``), and its
+        link dies with the attempt. A provider that starts none ignores this.
+        """
+        return None
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """Whether the MCP sign-in Crew started for *server_name* has already ended.
+
+        Read when its link is drawn: an attempt can end before then, while the
+        link waits in the session's queue, and the hook above had no row to
+        retire. A provider that starts no sign-in answers False.
+        """
+        return False
+
     def note_user_message(self, text: str) -> None:
         """Hand the user's own message, as typed, to the MCP sign-in trigger.
 
@@ -1056,9 +1084,26 @@ class LLMProvider(ABC):
         provider with no effort control."""
         return []
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The slash commands the live session advertised, as ``name`` and ``description``.
+
+        Default empty: only a harness that runs its own commands keeps the list.
+        """
+        return []
+
     def supports_effort(self) -> bool:
         """True when the current model accepts a reasoning-effort level. Default False."""
         return False
+
+    def ultracode_enabled(self) -> bool | None:
+        """Whether the session's ultracode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    async def set_ultracode(self, enabled: bool) -> bool | None:
+        """Turn the session's ultracode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
 
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,

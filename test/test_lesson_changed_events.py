@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from body_stream_helpers import attach_body
 
 from kiro_crew import lesson_events
@@ -63,6 +64,7 @@ class TestSignal:
             ("inserted", False, "added"),
             ("inserted", True, "added"),
             ("enriched", False, "updated"),
+            ("replaced", False, "updated"),
             ("unchanged", False, None),
             ("deduped", False, None),
             ("refused", False, None),
@@ -75,16 +77,21 @@ class TestSignal:
 
     def test_no_observer_and_a_failing_observer_are_both_silent(self):
         lesson_events.set_lessons_changed_hook(None)
-        lesson_events.emit_lessons_changed("added", "user_explicit")
+        assert lesson_events.emit_lessons_changed("added", "user_explicit") is None
 
-        def boom(_payload: dict) -> None:
+        reached: list[dict] = []
+
+        def boom(payload: dict) -> None:
+            reached.append(payload)
             raise RuntimeError("observer down")
 
         lesson_events.set_lessons_changed_hook(boom)
         try:
-            lesson_events.emit_lessons_changed("removed", "user_explicit")
+            # The observer's failure stays inside the emit: the caller gets None.
+            assert lesson_events.emit_lessons_changed("removed", "user_explicit") is None
         finally:
             lesson_events.set_lessons_changed_hook(None)
+        assert reached == [{"action": "removed", "source": "user_explicit", "count": 1}]
 
 
 @pytest.mark.asyncio
@@ -371,6 +378,7 @@ class TestAppTokenReachesTheLessonAndSkillReads:
         )
         app.router.add_get("/api/lessons", reached)
         app.router.add_get("/api/skills", reached)
+        mark_apps_live(monkeypatch, {self.APP})
         credential = token_auth.generate_token(self.APP, app=self.APP)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(path, params={"token": credential})

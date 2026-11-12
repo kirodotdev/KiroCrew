@@ -93,6 +93,9 @@ _TYPING_REFRESH_S = 4.0
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
+#: What the progress bubble becomes when the reply has no text to replace it with.
+_PROGRESS_DONE_TEXT = "✅ Done"
+
 # Refusal lines appended to one answer before they are summarized. A reply that
 # referenced a dozen unusable paths must explain itself without burying the answer.
 _MAX_REJECTION_LINES = 3
@@ -223,6 +226,9 @@ class TeamsRenderer(Renderer):
         # activity: without this flag a failed open would be retried on every
         # subsequent tool call, posting a fresh bubble each time.
         self._progress_opened = False
+        # Whether an approval card was posted after the progress message, so the
+        # answer goes out as a new message below the card instead of editing it.
+        self._progress_above_card = False
         self._tool_title = ""
         # Approved root for outbound file extraction: the provider's working
         # directory. Absolute or nothing -- a relative root is no boundary at all.
@@ -364,6 +370,8 @@ class TeamsRenderer(Renderer):
         # A prompt whose buttons stay live after it was answered invites a second
         # click that resolves nothing.
         self._pending_prompts[rid] = (activity_id, title)
+        # An edit does not move a message, so the bubble now sits above this card.
+        self._progress_above_card = self._progress_above_card or bool(self._progress_id)
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("Teams: compaction status %.0f%%", context_usage_pct)
@@ -397,10 +405,17 @@ class TeamsRenderer(Renderer):
             self.capabilities.max_message_chars,
             _default_redactor,
         ) or ([] if (kept or files) else ["…"])
+        if self._progress_id and (not chunks or self._progress_above_card):
+            # Settle the bubble when no text chunk takes it over: a reply of only
+            # chips or images has none, and a bubble above an approval card must
+            # not carry the answer, which would land above the card.
+            await self._client.update_message(
+                self._conversation_id, self._progress_id, _PROGRESS_DONE_TEXT, self._service_url
+            )
         for index, chunk in enumerate(chunks):
             # Reuse the progress bubble for the first chunk so a turn that showed
             # "🔧 …" does not leave it stranded above the answer.
-            if index == 0 and self._progress_id:
+            if index == 0 and self._progress_id and not self._progress_above_card:
                 if await self._client.update_message(
                     self._conversation_id, self._progress_id, chunk, self._service_url
                 ):

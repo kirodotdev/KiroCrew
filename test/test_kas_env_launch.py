@@ -132,7 +132,7 @@ class TestProjection:
         assert CANARY not in " ".join(launched["args"]), "nor rides on argv"
         assert launched["args"][-8:] == [
             "--session",
-            SESSION,
+            kas_env_launch.SHARED_SESSION,
             "--agent",
             "kirocrew",
             "--server",
@@ -178,6 +178,26 @@ class TestProjection:
         assert result.returncode == 0, result.stderr
         assert CANARY in result.stdout
 
+    def test_a_placeholder_set_only_in_agent_env_reaches_the_server(
+        self, home, script, monkeypatch
+    ):
+        """kiro-cli would fill ``${VAR}`` from ``agent.env``; the launcher snapshot does too."""
+        from types import SimpleNamespace
+
+        monkeypatch.delenv("KC33089_ENDPOINT", raising=False)
+        loaded = SimpleNamespace(agent=SimpleNamespace(env={"KC33089_ENDPOINT": CANARY}))
+        monkeypatch.setattr(
+            "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: loaded), raising=True
+        )
+        server = {**_server_spec(script), "env": {"CANARY_26256_ENDPOINT": "${KC33089_ENDPOINT}"}}
+        entry = _project(_spec(mcpServers={"canary": server}))
+        doc = json.loads(_snapshot(home, entry["mcpServers"]["canary"]).read_text(encoding="utf-8"))
+        assert doc["env"] == {"CANARY_26256_ENDPOINT": CANARY}
+        assert CANARY not in _wire_text(entry)
+        result = _run_entry(entry["mcpServers"]["canary"])
+        assert result.returncode == 0, result.stderr
+        assert CANARY in result.stdout
+
     def test_a_relayed_flag_stays_on_the_entry_and_the_snapshot_takes_the_rest(self, home, script):
         entry = _project(_spec(mcpServers={"c": _server_spec(script, FEATURE_ENABLED="true")}))
         launched = entry["mcpServers"]["c"]
@@ -193,13 +213,14 @@ class TestProjection:
     def test_a_session_batch_without_a_key_still_starts_the_server_with_its_env(
         self, home, script, tmp_path
     ):
-        """A background or pooled runtime has no session key yet; the batch names
-        the snapshot with a random key, so the server still gets its env."""
+        """A background or pooled runtime has no session key yet; the batch still
+        names the shared snapshot, so the server gets its env."""
         spec = _spec(mcpServers={"c": _server_spec(script)})
         entry = build_kas_custom_agents(tmp_path, "kirocrew", spec, session_key="")[0]
         launched = entry["mcpServers"]["c"]
         assert CANARY not in _wire_text(entry)
-        assert launched["args"][launched["args"].index("--session") + 1].startswith("unkeyed-")
+        ref = launched["args"][launched["args"].index("--session") + 1]
+        assert ref == kas_env_launch.SHARED_SESSION
         result = _run_entry(launched)
         assert result.returncode == 0, result.stderr
         assert CANARY in result.stdout
@@ -245,24 +266,58 @@ class TestProjection:
 
 
 class TestLifecycle:
-    def test_each_projection_writes_its_own_file(self, home, script):
-        # Two providers of one session (a cold-start race) never share a file.
+    def test_two_sessions_declare_the_server_identically(self, home, script):
+        """KAS keeps one MCP pool per process and restarts a server whose
+        declaration changed, so each new session on a shared runtime killed the
+        server mid-start for every session. Two sessions' projections of the
+        same server must therefore be the same declaration, and the same file."""
         spec = _spec(mcpServers={"c": _server_spec(script)})
-        first = _project(spec)["mcpServers"]["c"]
-        second = _project(spec)["mcpServers"]["c"]
-        assert first["args"][-1] != second["args"][-1]
-        assert _snapshot(home, first) != _snapshot(home, second)
-        assert _snapshot(home, first).exists() and _snapshot(home, second).exists()
+        first = _project(spec, session_key="session-one")["mcpServers"]["c"]
+        second = _project(spec, session_key="session-two")["mcpServers"]["c"]
+        assert first == second
+        assert SESSION not in first["args"] and "session-one" not in first["args"]
+        assert _snapshot(home, first).exists()
 
-    def test_discarding_one_batch_leaves_the_other_running(self, home, script):
+    def test_another_launch_gets_another_reference(self, home, script):
         spec = _spec(mcpServers={"c": _server_spec(script)})
-        loser, winner = _project(spec), _project(spec)
+        other = _spec(mcpServers={"c": _server_spec(script, EXTRA="1")})
+        first, second = _project(spec)["mcpServers"]["c"], _project(other)["mcpServers"]["c"]
+        assert first["args"][-1] != second["args"][-1]
+        assert _project(spec, agent="another")["mcpServers"]["c"]["args"][-1] != first["args"][-1]
+
+    def test_the_reference_does_not_reveal_the_values(self, home, script, monkeypatch):
+        # The version is keyed with a secret held only by this process, so the
+        # engine's stored batch carries no plain digest of the env values.
+        spec = _spec(mcpServers={"c": _server_spec(script)})
+        before = _project(spec)["mcpServers"]["c"]["args"][-1]
+        monkeypatch.setattr(kas_env_launch, "_SHARE_KEY", b"\0" * 32)
+        assert _project(spec)["mcpServers"]["c"]["args"][-1] != before
+
+    def test_the_file_stays_until_its_last_holder_discards_it(self, home, script):
+        spec = _spec(mcpServers={"c": _server_spec(script)})
+        loser = _project(spec, session_key="session-one")
+        winner = _project(spec, session_key="session-two")
+        snapshot = _snapshot(home, winner["mcpServers"]["c"])
         kas_env_launch.discard_batch([loser])
-        assert not _snapshot(home, loser["mcpServers"]["c"]).exists()
-        assert _snapshot(home, winner["mcpServers"]["c"]).exists()
+        assert snapshot.exists(), "another session still launches from it"
         result = _run_entry(winner["mcpServers"]["c"])
         assert result.returncode == 0, result.stderr
         assert CANARY in result.stdout
+        kas_env_launch.discard_batch([winner])
+        assert not snapshot.exists()
+
+    def test_each_recorded_projection_is_released_once(self, home, script):
+        # A handle swap accumulates every projection's names, so a holder that
+        # projected twice releases twice; its batch adds no third release.
+        spec = _spec(mcpServers={"c": _server_spec(script)})
+        mine = [_project(spec, session_key="mine") for _ in range(2)]
+        other = _project(spec, session_key="other")
+        written = kas_env_launch.batch_snapshot_names(mine)
+        kas_env_launch.discard_batch([mine[-1]], written)
+        snapshot = _snapshot(home, other["mcpServers"]["c"])
+        assert snapshot.exists()
+        kas_env_launch.discard_batch([other])
+        assert not snapshot.exists()
 
     def test_a_batch_without_launcher_entries_removes_nothing(self, home, script):
         entry = _project(_spec(mcpServers={"c": _server_spec(script)}))
@@ -284,8 +339,8 @@ class TestLifecycle:
         assert CANARY in result.stdout
 
     def test_the_boot_sweep_removes_only_old_snapshots(self, home, script):
-        spec = _spec(mcpServers={"c": _server_spec(script)})
-        old, fresh = _project(spec), _project(spec)
+        old = _project(_spec(mcpServers={"c": _server_spec(script)}))
+        fresh = _project(_spec(mcpServers={"c": _server_spec(script, EXTRA="1")}))
         stale = _snapshot(home, old["mcpServers"]["c"])
         eight_days_ago = time.time() - 8 * 24 * 3600
         os.utime(stale, (eight_days_ago, eight_days_ago))
@@ -324,6 +379,7 @@ class TestLifecycle:
         boot = time.time() - 8 * 24 * 3600
         spec = _spec(mcpServers={"c": _server_spec(script)})
         after_boot = _snapshot(home, _project(spec)["mcpServers"]["c"])
+        spec = _spec(mcpServers={"c": _server_spec(script, EXTRA="1")})
         written = boot + 12 * 3600
         os.utime(after_boot, (written, written))
         before_boot = _snapshot(home, _project(spec)["mcpServers"]["c"])

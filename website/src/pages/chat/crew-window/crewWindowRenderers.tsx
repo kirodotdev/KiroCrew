@@ -22,6 +22,7 @@ import UserMessage from '../UserMessage'
 import { renderUserContent } from '../ChatPageMessageContent'
 import { fmtMessageTimeFull } from '../messageTime'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { ChatMessage } from '../../../types'
 
 /** The slot key the window's shared rows and composer are mounted under. It
@@ -63,8 +64,9 @@ export function createCrewWindowRenderers(o: {
     {
       id: 'user',
       roles: ['user'],
-      // The local chat's bubble and hover row (Quote, Copy, More). No copy
-      // link or pin: each names a session or record on THIS machine.
+      // The local chat's bubble and hover row (Quote, Copy, and Edit & Resend
+      // while it can rewind; More only for app actions). No copy link or pin:
+      // each names a session or record on THIS machine.
       render: (m, ctx) => ctx.wrapper(
         <UserMessage
           content={m.content}
@@ -75,6 +77,7 @@ export function createCrewWindowRenderers(o: {
           canEdit={o.canRewind(m)}
           slotRunning={ctx.running}
           messageIndex={ctx.index}
+          continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           messageTs={m.ts || ''}
           onEditResend={(_i, ts, content) => o.onRewind(ts, content)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}

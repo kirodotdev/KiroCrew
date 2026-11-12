@@ -117,7 +117,7 @@ Evidence, strongest first (`identity.derive_principal`):
 
 | Request | Principal | Provenance |
 |---|---|---|
-| A request the Crew's relay client handed over and the relay ingress verified (`kiro_relay.caller.published_relay_caller`), checked first in `identity._derive_actor` and never followed by a `whois` | a teammate: `human` under provider `kiro`, issuer `kiro-relay`, keyed by the exact Kiro user ID (no case folding), labelled with the relay's name, else its email, else `Kiro user ...` and the ID's last 6 characters; the relayed owner of a personal Crew: the local operator's own principal id for the admitted owner subject, so the machine tab and the relay tab are one person | `kiro_relay` |
+| A request the Crew's relay client handed over and the relay ingress verified (`kiro_relay.caller.published_relay_caller`), checked first in `identity._derive_actor` and never followed by a `whois` | a teammate: `human` under provider `kiro`, issuer `kiro-relay`, keyed by the exact Kiro user ID (no case folding), labelled with the relay's name, else its email (only the part before the `@` when the whole domain is listed in `tunnel.relay_handle_email_domains`), else `Kiro user ...` and the ID's last 6 characters; the relayed owner of a personal Crew: the local operator's own principal id for the admitted owner subject, so the machine tab and the relay tab are one person | `kiro_relay` |
 | An app identity (an app token, or an internal caller the middleware derived an app for) | `system`, component `app:<name>` | `internal` |
 | The internal loopback secret (kiro-cli, MCP, doctor) | `system`, component `internal` | `internal` |
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
@@ -129,7 +129,11 @@ Evidence, strongest first (`identity.derive_principal`):
 
 A relayed principal's email and name are display only. Its display `login` is always
 empty: an author stamp read back from a transcript loses its provenance, so a login there
-could reach an audit record. The email is only the label when the relay sent no name, and
+could reach an audit record. The email is only the label when the relay sent no name.
+`tunnel.relay_handle_email_domains` (empty by default, read at gateway start into the
+`RelayIngress`) lists domains whose addresses are labelled by their handle: the domain
+after the last `@` must equal a listed one ignoring case, so `a@sub.example.com` and
+`a@example.com.example.io` keep the full address when only `example.com` is listed.
 `audit.audit_principal` blanks the login of any `kiro_relay` principal as a backstop.
 People records the relayed owner under the local operator's provenance
 (`identity._people_principal`), so the owner's one entry never flips with whichever tab
@@ -375,7 +379,9 @@ cached 15 s (`CACHE_TTL_SECS`); a failure yields no such rows and never fails th
 route. `directory.state` is `unavailable` because this build has no
 authoritative assigned-user directory. Per-person `usage` is `null`, and
 `usage_available` false, until the admission layer registers a reader
-(`people.register_usage_source`).
+(`people.register_usage_source`). A row reports the usage charged to its principal
+id; an owner local-token row reports the sum over every id in
+`owner.local_owner_principal_ids`, counted once after the fold.
 
 ### People and setup modes
 
@@ -979,7 +985,8 @@ never what a client reported.
 
 ### Requests and idempotency
 
-`AdmissionRequest.budget_key` is the initiator's principal id. It is never the session
+`AdmissionRequest.budget_key` is the initiator's principal id (`identity.budget_id`:
+the owner's one id for every local token subject of theirs). It is never the session
 creator and never a per-device token, so tabs, devices, reconnects and child tasks of
 one person share one budget. Work in a shared session is charged to whoever started
 it.
@@ -1002,8 +1009,9 @@ coroutine unrun.
 ### Responses
 
 A lost send race is settled before admission and is not an admission refusal:
-it answers 409 `send_race` with the winner (section 5, First submit wins) and
-creates no `AcceptedWork`. The race-versus-queue boundary is open; the POC
+it answers 409 `send_race` with the winner (section 5, First submit wins), or 409
+`send_pending` with no winner when another send was still pending past the settle
+wait, and creates no `AcceptedWork`. The race-versus-queue boundary is open; the POC
 settles races by revision compare-and-set and leaves capacity to admission.
 
 A refusal or conflict answers `admission.error_body`: the dashboard's
@@ -1050,7 +1058,9 @@ stops the child (`_stop_child`), wakes every waiter and logs a warning. The work
 keeps its slot and stays tracked with its last durable record
 (`_Live.unpersisted`); every ticker pass retries the terminal write
 (`admission_settle.persist_pending`) and frees the slot only once the store
-records it, so capacity is never released ahead of the durable transition. A
+records it, so capacity is never released ahead of the durable transition. The
+in-memory end is the one the retry writes: when the durable state cannot reach
+`failed` (a `queued` record), memory and store both say `cancelled`. A
 merged queued message whose settlement write fails is kept the same way. A
 deadline whose `cancelling` write fails still stops the
 child. A caller cancelled before its work starts (a queued chat closed while it
@@ -1107,10 +1117,16 @@ within its run deadline, so the wall-clock wait is at most
 expires `queue_expired`, reported, never hidden.
 
 Who is charged. The initiator, read from `request[ACTOR_REQUEST_KEY]`
-(`admission_gate.actor_budget`); never the session creator. Every caller without a
-principal is `p_unknown`, one shared bucket. A child inherits the budget and root of
-the work running in its parent session (`budget_for_session`), so a collaborator
-steering or spawning inside someone else's turn charges that turn's initiator. Cron
+(`admission_gate.actor_budget`); never the session creator. The owner's local token
+subjects (`local-app`, `local-startup`, the configured owner id), at the machine or
+over the relay, are charged to the owner subject's id (`identity.budget_id`), so the
+owner's tabs share one budget; their principal ids and provenances are unchanged.
+A drained queued message is charged to its author's `budget_id` too
+(`turn_gate.queued_initiator`), so it runs as the work it was parked as.
+Every caller without a principal is `p_unknown`, one shared bucket. A child inherits
+the budget and root of the work running in its parent session
+(`budget_for_session`), so a collaborator steering or spawning inside someone else's
+turn charges that turn's initiator. Cron
 and loopback automation with no recorded initiator charge `Principal.system("automation")`,
 which has the same limits as anyone. Work an agent starts from inside a turn reaches
 the gateway on the internal transport naming its calling session (`X-Session-Key`,
@@ -1378,13 +1394,25 @@ Nothing else the owner set receives reaches a collaborator socket. `GET /api/sha
 
 Message attribution. The session's creator is its default owner, shown on the
 session row in the list (`SessionCreatorByline`). In the transcript a user message
-the viewer wrote carries no extra label; a message anyone else wrote, the session's
-creator included, carries the sender's name (`MessageByline`,
-`sharedCrewUi.bylineFor`), so a right-aligned message without a name is always the
-reader's own. Until the viewer read lands, the session's recorded creator stands in
+the viewer wrote carries no extra label and keeps the filled bubble; a message
+anyone else wrote, the session's creator included, is drawn in an outlined bubble
+(`OtherSenderBubble`) and carries the sender's name (`MessageByline`,
+`sharedCrewUi.bylineFor`), so a filled message without a name is always the
+reader's own. The name is shown once per run of one person's consecutive messages
+(`sharedCrewUi.continuesAuthorRun`): a different author, a steer, or any drawn row
+between them, such as an agent reply, starts a new run. Until the viewer read lands, the session's recorded creator stands in
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
+A message an app sent is the exception: in every mode, and on a steered row too,
+it reads "Sent by the <app> app" (`MessageByline.AppSenderByline`, the
+`components.mcpApp.from_app` string), keyed on the gateway's `meta.turnActor:
+"app"`, because an app holding a session grant writes into the owner's own chats
+and its message would otherwise read as the owner's typing. The app is named from
+its `app:<name>` system author, else from `meta.appLabel` (a steered answer), and
+shown by the installed app's display name. A row carrying the mark without either
+(a send that went through the busy-slot queue or the parked hold) reads "Sent by an
+app".
 
 ### Typing lease
 
@@ -1505,7 +1533,8 @@ and before the responsive, steer, busy-queue, sub-agent-hold and new-turn branch
 so a losing send reaches none of them. `SendRaceRegistry.claim` decides, in order:
 
 1. while another claim on the session is pending, wait for it to settle (bounded by
-   `SETTLE_WAIT_SECONDS`; past it the pending sender wins);
+   `SETTLE_WAIT_SECONDS`; past it this send is refused as `send_pending`: no winner
+   and nothing accepted, since the pending send may still be released);
 2. a key this principal already won with is a replay: the admission replay answers
    when it has one, else `{ok, replayed, send_revision, message_id}`; nothing is
    accepted again, so a retry after a lost winner response never runs twice;
@@ -1524,8 +1553,9 @@ the revision by one and records `{revision, principal, message_id, accepted_at}`
 `message_id` is the user row's `mid`, else the queue id, else the client `sendId`.
 
 A loser answers 409 `{"error", "code": "send_race", session_key, current_revision,
-winner: {revision, principal (public), message_id, accepted_at}}`. Nothing was
-accepted: no row, no queue entry, no steer, no turn.
+winner: {revision, principal (public), message_id, accepted_at}}`; a send refused
+past the settle wait answers the same shape with `"code": "send_pending"` and
+`winner: null`. Nothing was accepted: no row, no queue entry, no steer, no turn.
 
 The browser restores a refused `send_race` or `composer_locked` draft to its
 session's draft store. `StableChatInput` subscribes to that store and passes the
@@ -1554,7 +1584,7 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
 | `POST /api/shared-crew/work/{work_id}/cancel` `{expected_revision}` | the next `AcceptedWork`, or 409 with `current`; a planned task or schedule run is owner only (403 `owner_only`), as on its own cancel route |
-| a chat send | 200 when admitted, 202 with `work` when queued, 429 / 413 / 503 with `error_body` |
+| a chat send | 200 when admitted, 202 with `work` when queued, 429 / 413 / 503 with `error_body`; 409 `send_pending` (`winner: null`) when another send to the session is still pending past the settle wait |
 | an approval or answer, with `response_id` | the `SharedDecision`; 409 `already_resolved` with it on a lost race |
 | `GET /api/shared-crew/presence?session_key=` | the session's `PresenceEntry` list (dashboard users only) |
 | `GET /api/shared-crew/decisions?session_key=` | the session's `SharedDecision` list (dashboard users only) |
@@ -1770,10 +1800,13 @@ person is a current member.
 
 ✎ opens a name-and-picture dialog. Any admitted person may change any person's
 display name and picture, their own included (`routes_people`): equal rights
-among the callers the People read admits. Those are a person the direct listener
-admitted after checking the access set (`routes_identity._tailnet_person`), and
-the owner. A non-owner dashboard link session (a Telegram, Teams or Webex
-allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
+among the people a sharing path admitted by its own check
+(`routes_identity._tailnet_person`: the direct listener after checking the access
+set, or the SSM listener on a live invite), and the owner. The People,
+sessions and mode reads also admit a team Crew teammate the Kiro relay verified
+(`routes_identity._relay_teammate`), as does a narrowed Bots roster read
+(`GET /api/members`, see member-event-log); the name-and-picture edit does not. A
+non-owner dashboard link session (a Telegram, Teams or Webex allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
 as it is for the read. The record is keyed by stable Tailscale user id in the invite store's
 `display` map, so it follows a renamed login and works for a person who was never
 invited (the user id comes from the daemon's whois, `tailnet_live_allowlist`).

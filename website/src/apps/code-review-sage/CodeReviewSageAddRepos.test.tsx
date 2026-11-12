@@ -160,6 +160,20 @@ describe('AddReposModal', () => {
     ))
   })
 
+  it.each([
+    'git@github.com:other/thing.git',
+    'git@gitlab.example.com:group/thing.git',
+  ])('sends the git remote %s as typed, not glued onto github.com', async (remote) => {
+    // The remote names its own host; the backend parses it and refuses a host
+    // Code Review Sage cannot review.
+    api.pinRepoUrl.mockResolvedValue({ repos: [] })
+    mount()
+    const input = await screen.findByLabelText(/Repository or pull request URL/i)
+    await userEvent.type(input, remote)
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/i }))
+    await waitFor(() => expect(api.pinRepoUrl).toHaveBeenCalledWith(remote))
+  })
+
   it('filters the lists', async () => {
     mount()
     await screen.findByText('acme/dormant')

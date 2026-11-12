@@ -10,6 +10,7 @@
 // - a failed pass surfaces an error and does not claim anything was updated
 // - the button disables itself while a pass is in flight, so a second press
 //   cannot start the duplicate the backend would refuse with a 409 anyway
+// - the row says what pre-installing does, and the button is described by it
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -62,6 +63,18 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('McpManagement pre-resolve', () => {
+  it('explains what pre-installing does, beside the button it describes', async () => {
+    // A label and a button alone leave the operator guessing which servers it
+    // touches and why a chat would start faster.
+    stubPage()
+
+    mount()
+    const button = await screen.findByRole('button', { name: M('resolve_update_now') })
+
+    expect(screen.getByText(M('resolve_description'))).toBeInTheDocument()
+    expect(button).toHaveAccessibleDescription(M('resolve_description'))
+  })
+
   it('reports how many servers now launch without resolving', async () => {
     stubPage()
     vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({

@@ -298,6 +298,41 @@ function fakeFetch(status = 200, body = { app: "kitty", cwd: PROJECT }) {
   return { fetchFn, calls };
 }
 
+/**
+ * A promise that settles only when `signal` aborts, rejecting with its reason.
+ * It holds a ref'd handle until then, as an open socket would: AbortSignal's
+ * own timer is unref'd, so without one the event loop can drain first.
+ */
+function untilAborted(signal) {
+  return new Promise((_resolve, reject) => {
+    // No signal: nothing would ever clear a handle, so hold none.
+    if (!signal) return;
+    const keepAlive = setInterval(() => {}, 1_000);
+    signal.addEventListener("abort", () => {
+      clearInterval(keepAlive);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
+
+test("a gateway that never answers the redemption resolves null at the timeout", { timeout: 5_000 }, async () => {
+  // Like a wedged gateway that took the connection: it answers only when the
+  // request is aborted. Without a signal the redemption would never settle.
+  const fetchFn = (_url, init) => untilAborted(init.signal);
+  assert.equal(
+    await redeemGrant(GRANT, { backendUrl: BACKEND, getSecret: () => "s", fetchFn, timeoutMs: 1 }),
+    null,
+  );
+});
+
+test("a redemption whose body never arrives resolves null at the timeout", { timeout: 5_000 }, async () => {
+  const fetchFn = async (_url, init) => ({ status: 200, json: () => untilAborted(init.signal) });
+  assert.equal(
+    await redeemGrant(GRANT, { backendUrl: BACKEND, getSecret: () => "s", fetchFn, timeoutMs: 1 }),
+    null,
+  );
+});
+
 test("a grant is redeemed at this shell's gateway with the internal secret", async () => {
   const f = fakeFetch();
   const approved = await redeemGrant(GRANT, { backendUrl: BACKEND, getSecret: () => "s3cret", fetchFn: f.fetchFn });

@@ -398,6 +398,13 @@ class WhatsAppTransport(MessagingTransport):
             on_sent=lambda message_id: self.echo.remember(jid, message_id),
         )
 
+    async def edit_text(self, conversation_id: str, message_id: str, text: str) -> bool:
+        """Edit a message this channel sent, echo-tracking the edit's own id."""
+        jid = normalize_jid(conversation_id)
+        return await self._client.edit_text(
+            jid, message_id, text, on_sent=lambda edit_id: self.echo.remember(jid, edit_id)
+        )
+
     async def react(
         self, conversation_id: str, sender_id: str, message_id: str, emoji: str
     ) -> None:

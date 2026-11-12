@@ -8,7 +8,7 @@
  * Redaction of peer text happens in the hub proxy and is pinned there
  * (test/test_instances_proxy_handler.py, TestProxyRedactsPeerReplies).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -71,6 +71,9 @@ import {
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
 import { crewModePreviewOn } from './crewModePreview'
+import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
+import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
+import { queryClient as globalQueryClient } from '../api/queryClient'
 
 class FakeEventSource {
   static all: FakeEventSource[] = []
@@ -107,21 +110,16 @@ function renderWindow() {
 
 const posted = () => mocks.crewPeerPost.mock.calls.map(c => [c[1], c[2]])
 
-/** The user bubble's More menu (Quote holds the row seat, as locally). */
-async function openMore(row = 0) {
-  await waitFor(() => expect(screen.getAllByTestId('user-more-actions').length).toBeGreaterThan(row), PEER_ROW_WAIT)
-  fireEvent.pointerDown(screen.getAllByTestId('user-more-actions')[row], { button: 0, ctrlKey: false, pointerType: 'mouse' })
-}
+/** Edit & Resend follows Copy on the user row while the row can be edited. */
+const editButtons = () => screen.queryAllByRole('button', { name: 'Edit & Resend' })
 async function openEdit(row = 0) {
-  await openMore(row)
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit & Resend' }))
+  await waitFor(() => expect(editButtons().length).toBeGreaterThan(row), PEER_ROW_WAIT)
+  fireEvent.click(editButtons()[row])
 }
 /** Whether the first user row offers Edit & Resend. */
 async function editOffered() {
-  await openMore()
-  const offered = !!screen.queryByRole('menuitem', { name: 'Edit & Resend' })
-  fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
-  return offered
+  await waitFor(() => expect(screen.getAllByLabelText('Copy').length).toBeGreaterThan(0), PEER_ROW_WAIT)
+  return editButtons().length > 0
 }
 
 /** Edit & Resend on the user bubble, the way the local chat rewinds: the
@@ -202,22 +200,80 @@ describe('CrewChatWindow', () => {
     expect(mic).not.toHaveAttribute('aria-keyshortcuts')
   })
 
-  // #23928: the dock is the local page's bare box, not a band of its own. A band
-  // wrapper fails the children assertion (it is not a `dock-inert` wrapper); a
-  // notices column without `empty:hidden` fails the column assertion.
+  // The dock is the local page's bare box, not a band of its own: no box from
+  // the composer's own root up to the dock root draws glass, a top border or
+  // vertical padding, and the notices column takes no room while it is empty.
   it('floats the composer in the local dock shape, with an empty notices column that takes no room', async () => {
     renderWindow()
     // Connected: until the version read lands, the column carries the offline line.
     const box = await screen.findByRole('textbox', PEER_ROW_WAIT)
     await waitFor(() => expect(box).not.toBeDisabled())
     const dock = screen.getByTestId('crew-window-dock')
-    expect(dock.className).toContain('pointer-events-none')
-    expect(dock.className).not.toMatch(/border-t|py-/)
-    expect([...dock.children].map(c => c.className)).toEqual(['dock-inert', 'relative z-10 dock-inert'])
+    expect(dock).toHaveClass('pointer-events-none')
+    expect([...dock.children].map(c => c.classList.contains('dock-inert'))).toEqual([true, true])
+    const chrome: Element[] = []
+    for (let el: Element | null = box.closest('.input-area')?.parentElement ?? null; el && el !== dock.parentElement; el = el.parentElement) chrome.push(el)
+    expect(chrome).toContain(dock.children[1])
+    expect(chrome).toContain(dock)
+    for (const el of chrome) expect(el.className).not.toMatch(/(^|\s)(liquid-glass|border-t|p[ytb]?-\S+)(?=\s|$)/)
     const notices = screen.getByTestId('crew-window-notices')
-    expect(notices.className).toContain('empty:hidden')
+    expect(notices).toHaveClass('empty:hidden')
     await waitFor(() => expect(notices.childElementCount).toBe(0))
-    expect(within(dock.children[1] as HTMLElement).getByRole('textbox')).toBeTruthy()
+  })
+
+  // The dock stops short of the transcript's scrollbar column, as the local
+  // dock does: the composer's shelf fade spans the dock's own box, so a dock
+  // over the gutter would paint over the thumb.
+  it("stops the dock short of the transcript's scrollbar gutter", async () => {
+    // happy-dom lays nothing out: give the scroller (the box the dock follows)
+    // a 6px scrollbar column, and every other box the zero width it reports anyway.
+    const isScroller = (el: Element) => el.nextElementSibling?.getAttribute('data-testid') === 'crew-window-dock'
+    const offsetWidth = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 806 : 0 })
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 800 : 0 })
+    onTestFinished(() => { offsetWidth.mockRestore(); clientWidth.mockRestore() })
+    renderWindow()
+    await screen.findByRole('textbox', PEER_ROW_WAIT)
+    expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
+  })
+
+  // A frameless line stands on the notices' glass chip, never bare over the
+  // transcript. Until the version read lands, the window is not connected.
+  it('shows the offline line on the notices chip while the crew is not connected', async () => {
+    mocks.instancesCapabilities.mockReturnValue(new Promise(() => {}))
+    renderWindow()
+    const line = await screen.findByText('devbox is not connected. Reconnect it to send.')
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+    expect(screen.getByRole('textbox')).toBeDisabled()
+  })
+
+  it('shows a failed effort-options read on the notices chip', async () => {
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => (
+      path === 'api/chat/slots?crew=all' ? Promise.resolve([slotRow])
+        : path.endsWith('/selection-capabilities') ? Promise.reject(new Error('peer unreachable'))
+          : Promise.resolve(detail)))
+    renderWindow()
+    // Behind the version read, then one retry of the failed capability read.
+    const line = await screen.findByText(/Could not verify this session's reasoning effort options/, {}, PEER_ROW_WAIT)
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+  })
+
+  // A card notice draws its own frame, so it stands in the column on no glass of
+  // its own; the frameless lines beside it keep the chip.
+  it('keeps a card notice off the glass chip that holds the frameless lines', async () => {
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    await editAndResend('hi again')
+    const line = await screen.findByText('Rewinding: sending replaces the conversation from this message on.')
+    const card = (await screen.findByText(/refused that action/)).closest('[role="alert"]')
+    const notices = screen.getByTestId('crew-window-notices')
+    expect(card).not.toBeNull()
+    expect(notices).toContainElement(card as HTMLElement)
+    expect(card?.closest('.liquid-glass')).toBeNull()
+    expect(notices).toContainElement(line.closest('.liquid-glass') as HTMLElement)
   })
 
   it('keeps Stop reachable while an approval is pending', async () => {
@@ -523,6 +579,56 @@ describe('CrewChatWindow', () => {
     fireEvent.change(box, { target: { value: 'steer me' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(box).toHaveValue('steer me'))
+  })
+
+  // `stt.dictation_note` is this machine's setting, as the dictation is; the
+  // note rides the text the peer receives. The Voice atom's own marking is
+  // pinned in useComposerVoiceDictationNote.test; `markDictated` stands in.
+  it('ends a dictated message with the dictation note, and hands a refused one back without it', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      mocks.crewPeerPost.mockRejectedValueOnce(new Error('peer refused'))
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      fireEvent.change(box, { target: { value: 'book the room' } })
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }]))
+      await waitFor(() => expect(box).toHaveValue('book the room'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted().filter(p => p[0] === 'api/chat?ws=1')).toHaveLength(2))
+      expect(posted().filter(p => p[0] === 'api/chat?ws=1')[1]).toEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }])
+      // The next message, typed by hand, carries nothing.
+      fireEvent.change(box, { target: { value: 'typed after' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed after', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
+  })
+
+  it('emptying the composer forgets the dictation, so a fresh typed message gets no note', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.change(box, { target: { value: 'spoken then deleted' } })
+      fireEvent.change(box, { target: { value: '' } })
+      expect(isDictated(crewWindowSlot('cd-1', 'k1'))).toBe(false)
+
+      fireEvent.change(box, { target: { value: 'typed instead' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed instead', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
   })
 
   it('shows the peer\'s stop in flight and its compaction, not a live Stop', async () => {
@@ -989,13 +1095,15 @@ describe('CrewChatWindow', () => {
     // The outgoing session-message card names the recipient (and opens it) from
     // THIS hub's session roster, where a peer's session keys mean nothing: a
     // peer's window draws that row through the store-free default too.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool'])
+    // A restart's Trust reset row picks a mode through THIS hub's route, never the peer's.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
     expect(crew).not.toContain('subagent_run_tool')
     expect(crew).not.toContain('conversation_card')
     expect(crew).not.toContain('elicitation')
+    expect(crew).not.toContain('trust_reset_notice')
   })
 
   it('draws a peer code fence copy-only, with no Run into this machine', async () => {

@@ -7,6 +7,7 @@ neither route is reachable through the relay, and every answer is ``no-store``.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 from types import SimpleNamespace
@@ -152,9 +153,24 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
             "presence": "CONNECTED",
             "relayConnectionStatus": "CONNECTED",
             "crewUrl": CREW.crew_url,
+            "lastSeenAt": None,
         }
     ]
     assert BEARER not in text and BEARER not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_crews_gives_last_seen_in_whole_epoch_seconds(viewer, monkeypatch) -> None:
+    seen = dataclasses.replace(CREW, presence="NOT_CONNECTED", last_seen_at=1762470000.75)
+
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        return (seen, dataclasses.replace(CREW, endpoint_id=OTHER))
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        crews = (await resp.json())["crews"]
+    assert [c["lastSeenAt"] for c in crews] == [1762470000, None]
 
 
 @pytest.mark.asyncio
@@ -178,6 +194,51 @@ async def test_a_cps_refusal_passes_its_code_through(viewer, monkeypatch) -> Non
         body = await resp.json()
     assert (resp.status, body["code"], body["retryAfter"]) == (429, "THROTTLED", 7.0)
     assert resp.headers["Retry-After"] == "7"
+    assert "requestId" not in body
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "retry_after"),
+    [(cps.SERVICE_ERROR, 502, None), (cps.THROTTLED, 429, 3.0)],
+)
+@pytest.mark.asyncio
+async def test_a_crews_refusal_carries_the_cps_request_id(
+    viewer, monkeypatch, code, status, retry_after
+) -> None:
+    async def _refused(url, bearer, *, crew_domain, token_type=""):
+        raise cps.CpsRefused(
+            code, "refused", status=503, retry_after=retry_after, request_id="req-1"
+        )
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _refused)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        body = await resp.json()
+    assert (resp.status, body["code"], body["requestId"]) == (status, code, "req-1")
+
+
+@pytest.mark.asyncio
+async def test_a_crews_refusal_with_no_request_id_leaves_the_field_out(viewer, monkeypatch) -> None:
+    async def _refused(url, bearer, *, crew_domain, token_type=""):
+        raise cps.CpsRefused(cps.SERVICE_ERROR, "refused", status=503)
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _refused)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        body = await resp.json()
+    assert body == {"error": "refused", "code": cps.SERVICE_ERROR}
+
+
+@pytest.mark.asyncio
+async def test_a_token_refusal_carries_the_cps_request_id(viewer, monkeypatch) -> None:
+    async def _refused(url, bearer, endpoint_id, *, token_type=""):
+        raise cps.CpsRefused(cps.CREW_OFFLINE, "refused", status=409, request_id="req-2")
+
+    monkeypatch.setattr(cps, "create_crew_access_token", _refused)
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert (resp.status, body["code"], body["requestId"]) == (403, cps.CREW_OFFLINE, "req-2")
 
 
 @pytest.mark.asyncio

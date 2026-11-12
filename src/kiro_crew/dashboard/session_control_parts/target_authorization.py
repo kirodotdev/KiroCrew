@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.session_control_parts.app_reach import (
+    app_admits_reach,
+    app_reach_caller_refusal,
+)
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
@@ -898,7 +902,9 @@ def _check_caller_slot_fields(
     return caller_slot
 
 
-def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
+def _live_target_refusal(
+    slot: "_ChatSlot", *, app_reachable: bool = False
+) -> tuple[str, str] | None:
     """The target-side containment refusal a LIVE slot earns, or ``None``.
 
     One spelling of the four fields that decide whether a live session may be
@@ -908,6 +914,11 @@ def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
     drift. The outbound-mirror probe and the workspace compare sit beside it in
     each caller: the first needs the state and a thread choice, the second the
     caller's slot.
+
+    *app_reachable* skips the app-scope clause alone, for a target whose app lets
+    the owner's chats run this operation on it (:func:`app_admits_reach`). The
+    clauses after it still run, so an app session that is also channel-linked is
+    refused as linked. Revive never passes it.
 
     A channel-linked session's conversation is mirrored to Slack/Telegram, so
     reaching it crosses a surface boundary in both directions: a message would
@@ -922,7 +933,7 @@ def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
         return ("unattended sessions (scheduled runs) cannot be controlled", "unattended_target")
     if getattr(slot, "memory_mode", "persistent") != "persistent":
         return ("incognito and temporary sessions are not addressable", "ephemeral_target")
-    if getattr(slot, "_app", ""):
+    if getattr(slot, "_app", "") and not app_reachable:
         return ("app-scoped sessions are not addressable", "app_scoped_target")
     if getattr(slot, "linked_session_key", ""):
         return ("channel-linked sessions are not addressable", "linked_session_target")
@@ -1038,7 +1049,9 @@ def authorize_target(
 
     if slot.key == caller_key and not allow_self:
         raise deny("a session cannot control itself", "self_target")
-    if (refusal := _live_target_refusal(slot)) is not None:
+    # Reads the verdict `prewarm_app_reach` resolved off the loop, never a file.
+    app_reachable = app_admits_reach(slot, operation)
+    if (refusal := _live_target_refusal(slot, app_reachable=app_reachable)) is not None:
         raise deny(refusal[0], refusal[1])
     if _has_channel_mirror(state, slot):
         # Same boundary as the channel-link refusal, reached by the other
@@ -1048,6 +1061,14 @@ def authorize_target(
         raise deny("sessions mirrored to a channel are not addressable", "mirrored_target")
 
     caller_slot = refuse_caller_surface(state, caller_key=caller_key, deny=deny)
+
+    if app_reachable and (why := app_reach_caller_refusal(state, caller_key, caller_slot)):
+        # After the caller-side gate, so a caller it refuses keeps that refusal's code.
+        # The opt-in reaches the owner's own chats and no other caller it admits.
+        raise deny(
+            f"app-scoped sessions are not addressable from this session: {why}",
+            "app_scoped_target",
+        )
 
     if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
         # Workspaces are the memory boundary; reaching across one would let a

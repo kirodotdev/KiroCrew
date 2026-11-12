@@ -392,6 +392,17 @@ UNKNOWN_AGENT_AUTH = AgentAuthDeclaration(
 )
 
 
+#: Where a dashboard user finds the terminal a harness's own sign-in runs in. It
+#: follows the sentence naming "a terminal on the gateway host". Conditional on
+#: purpose: the Terminal panel is owner-only, absent from first-run setup, and off
+#: when a security policy (``boot.allow_terminal``) or ``dashboard.terminal.enabled``
+#: turns it off.
+HOST_TERMINAL_NOTE = (
+    "After setup, the gateway owner can open such a terminal from the dashboard's "
+    "Terminal panel, where that panel is on."
+)
+
+
 #: kiro-cli's action, and its signed-out statement, kept separate for the reason on
 #: the two fields. The statement is the string the auth-required path raises: that
 #: path reaches it on the harness's own stderr evidence. Both end at sending again:
@@ -412,11 +423,13 @@ _KIRO_SIGNED_OUT = (
 # sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
 # name the route of the running engine in front of it once a spawn has chosen one.
 # Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
-_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again."
-_KAS_SIGNED_OUT = (
-    "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, "
-    "then send your message again."
-)
+# The path names the Kiro Agent row, because the card lives inside that row's detail.
+_KAS_CARD = "Settings → Agent Harness → Kiro Agent → Kiro sign-in"
+_KAS_REMEDY = f"Sign in from {_KAS_CARD}, then send your message again."
+_KAS_SIGNED_OUT = f"Not signed in to Kiro. Sign in from {_KAS_CARD}, then send your message again."
+#: The same sign-in as a terminal names it: the command first, because a host
+#: reached by ssh may have no browser to open the dashboard in.
+KAS_TERMINAL_SIGN_IN = f"Sign in with `kirocrew kas login` (or in the dashboard: {_KAS_CARD})"
 
 
 #: Every harness this build knows, and how it signs in. Table order is projection
@@ -484,17 +497,17 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         adapter_own_leaves=(),
         sign_in_remedy=(
             "The Strands harness reaches its model with the provider settings Kiro Crew "
-            "holds for it. Save a key under Settings → Secrets and map it in "
-            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
-            "OPENAI_API_KEY, GEMINI_API_KEY, ...). For Bedrock, map "
-            "AWS_BEARER_TOKEN_BEDROCK and AWS_REGION: the harness runs sandboxed "
-            "without ~/.aws or the host's AWS environment."
+            "holds for it. Pick a provider and save what it needs under Settings → "
+            "Agent Harness → Strands → Model provider, which keeps each key in "
+            "Settings → Secrets. For Bedrock, that is AWS_BEARER_TOKEN_BEDROCK and "
+            "AWS_REGION: the harness runs sandboxed without ~/.aws or the host's AWS "
+            "environment."
         ),
         signed_out_message=(
-            "The Strands harness has no model credential. Save a key under Settings > "
-            "Secrets and map it in `agent.strands_env` (for example "
-            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`; for Bedrock, "
-            "`AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`), then start a new chat."
+            "The Strands harness has no model credential. Pick a provider and save its "
+            "key under Settings > Agent Harness > Strands > Model provider, which keeps "
+            "it in Settings > Secrets (for Bedrock, `AWS_BEARER_TOKEN_BEDROCK` and "
+            "`AWS_REGION`), then start a new chat."
         ),
         # Its credential is not the host's: a kiro-cli logout cannot bear on it.
         host_logout_retires_children=False,
@@ -513,13 +526,14 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         sign_in_remedy=(
             "Codex is a separate tool that signs in on its own — complete its "
             "sign-in, or name a model provider in ~/.codex/config.toml "
-            "(CODEX_HOME moves that folder). Neither is checked here: the adapter "
-            "reads them."
+            "(CODEX_HOME moves that folder), in a terminal on the gateway host. "
+            f"{HOST_TERMINAL_NOTE} Neither is checked here: the adapter reads them."
         ),
         signed_out_message=(
-            "Codex is not signed in. Complete Codex's own sign-in, or name a "
-            "model provider in ~/.codex/config.toml (CODEX_HOME moves that "
-            "folder), then start a new chat."
+            "Codex is not signed in. In a terminal on the gateway host, complete "
+            "Codex's own sign-in, or name a model provider in ~/.codex/config.toml "
+            "(CODEX_HOME moves that folder), then start a new chat. "
+            f"{HOST_TERMINAL_NOTE}"
         ),
         # Excluded deliberately: it signs in through its own credentials file, so
         # a ``kiro-cli logout`` says nothing about whether a running codex session
@@ -539,11 +553,12 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         adapter_own_leaves=(),
         sign_in_remedy=(
             "Claude Code is a separate app you sign into yourself — run claude in "
-            "your terminal and complete its sign-in. It is not checked here."
+            "a terminal on the gateway host and complete its sign-in. "
+            f"{HOST_TERMINAL_NOTE} It is not checked here."
         ),
         signed_out_message=(
-            "Claude Code is not signed in. Run `claude` in your terminal and "
-            "complete its sign-in, then start a new chat."
+            "Claude Code is not signed in. Run `claude` in a terminal on the gateway "
+            f"host and complete its sign-in, then start a new chat. {HOST_TERMINAL_NOTE}"
         ),
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
@@ -572,14 +587,16 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # own machine needs no sign-in at all.
         sign_in_remedy=(
             "OpenCode signs in on its own — run opencode auth login in a terminal "
-            "to reach a hosted model. A model served locally on this machine needs "
+            f"on the gateway host to reach a hosted model. {HOST_TERMINAL_NOTE} "
+            "A model served locally on this machine needs "
             "no sign-in: name it in the project's opencode.json instead. Neither is "
             "checked here: the harness reads them."
         ),
         signed_out_message=(
-            "OpenCode is not signed in. Run `opencode auth login` in your terminal "
-            "and complete its sign-in, or name a locally served model in the "
-            "project's opencode.json, then start a new chat."
+            "OpenCode is not signed in. Run `opencode auth login` in a terminal on "
+            "the gateway host and complete its sign-in, or name a locally served "
+            "model in the project's opencode.json, then start a new chat. "
+            f"{HOST_TERMINAL_NOTE}"
         ),
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running opencode session
@@ -618,8 +635,9 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # to assert: a model served locally on the operator's own machine needs no
         # provider secret at all.
         sign_in_remedy=(
-            "goose signs in on its own — run goose configure in a terminal to name a "
-            "provider and store its key. A model served locally on this machine "
+            "goose signs in on its own — run goose configure in a terminal on the "
+            "gateway host to name a provider and store its key. "
+            f"{HOST_TERMINAL_NOTE} A model served locally on this machine "
             "needs no key: name it as the provider instead. Neither is checked here: "
             "the harness reads them."
         ),
@@ -634,9 +652,9 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         signed_out_message=(
             "goose has no provider it can use here: none is configured, or its key "
             "is in the system keyring, which Kiro Crew's sandbox cannot open. Run "
-            "`GOOSE_DISABLE_KEYRING=true goose configure` in your terminal so the key "
-            "is saved to goose's secrets.yaml, or configure a locally served model, "
-            "then start a new chat."
+            "`GOOSE_DISABLE_KEYRING=true goose configure` in a terminal on the gateway "
+            "host so the key is saved to goose's secrets.yaml, or configure a locally "
+            f"served model, then start a new chat. {HOST_TERMINAL_NOTE}"
         ),
         # Excluded deliberately: it resolves its own provider secret, so a
         # ``kiro-cli logout`` says nothing about whether a running goose session can
@@ -669,15 +687,16 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # Action only, no state: a model served locally on the operator's own
         # machine needs no sign-in, only a provider entry.
         sign_in_remedy=(
-            "Pi signs in on its own — run pi in a terminal and use its /login command "
-            "to reach a hosted model. A model served locally on this machine needs no "
+            "Pi signs in on its own — run pi in a terminal on the gateway host and use "
+            f"its /login command to reach a hosted model. {HOST_TERMINAL_NOTE} "
+            "A model served locally on this machine needs no "
             "sign-in: name it in pi's models.json instead. Neither is checked here: "
             "the harness reads them."
         ),
         signed_out_message=(
-            "Pi is not signed in. Run `pi` in your terminal and complete `/login`, or "
-            "name a locally served model in `~/.pi/agent/models.json`, then start a "
-            "new chat."
+            "Pi is not signed in. Run `pi` in a terminal on the gateway host and "
+            "complete `/login`, or name a locally served model in "
+            f"`~/.pi/agent/models.json`, then start a new chat. {HOST_TERMINAL_NOTE}"
         ),
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running pi session is
@@ -814,14 +833,15 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # (``COPILOT_PROVIDER_BASE_URL``) needs no GitHub sign-in at all.
         sign_in_remedy=(
             "GitHub Copilot CLI signs in on its own — run copilot login in a "
-            "terminal, or sign the GitHub CLI in with gh auth login, which Copilot "
-            "CLI falls back to. A model provider of your own "
+            "terminal on the gateway host, or sign the GitHub CLI in there with gh "
+            f"auth login, which Copilot CLI falls back to. {HOST_TERMINAL_NOTE} "
+            "A model provider of your own "
             "(COPILOT_PROVIDER_BASE_URL) needs no GitHub sign-in."
         ),
         signed_out_message=(
-            "GitHub Copilot CLI is not signed in. Run `copilot login` in your "
-            "terminal (or `gh auth login`, which Copilot CLI falls back to), then "
-            "start a new chat."
+            "GitHub Copilot CLI is not signed in. Run `copilot login` in a terminal "
+            "on the gateway host (or `gh auth login`, which Copilot CLI falls back "
+            f"to), then start a new chat. {HOST_TERMINAL_NOTE}"
         ),
         # Excluded deliberately: it signs in with a GitHub credential of its own, so a
         # ``kiro-cli logout`` says nothing about whether a running session can still
@@ -1019,14 +1039,27 @@ def bedrock_auth_remedy(backend: str) -> str:
     sign-in, or ``""`` for the shared one.
 
     Strands runs under the enforced sandbox, whose mask hides ``~/.aws``, so the
-    host's AWS profiles never reach it: the remedy is the vault mapping, named.
+    host's AWS profiles never reach it: the remedy is the Strands Model provider card,
+    which keeps the Bedrock key in the vault.
+
+    kiro-cli and KAS sign in with Kiro's own login, never the host's AWS profile,
+    so no AWS step can fix their refusal. The frame does not say whether the
+    account lacks the chosen model or the Kiro sign-in expired (an expired login
+    is also ``AccessDeniedException: "Invalid token"``), so both remedies are named.
     """
+    if backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+        return (
+            "Kiro refused access to the model. Either the selected model is not "
+            "available to this account, or the Kiro sign-in has expired. Pick a "
+            "different model in the model picker. If every model is refused, sign in "
+            f"to Kiro again. {sign_in_remedy(backend)}"
+        )
     if backend == ACP_BACKEND_STRANDS:
         return (
             "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
-            "profiles: store a Bedrock API key in the vault and map it with "
-            'agent.strands_env ({"AWS_BEARER_TOKEN_BEDROCK": "secret://<name>", '
-            '"AWS_REGION": "secret://<name>"}), then start a new chat.'
+            "profiles: pick Bedrock under Settings > Agent Harness > Strands > Model "
+            "provider and save its AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and "
+            "AWS_REGION there, then start a new chat."
         )
     return ""
 
@@ -1050,6 +1083,17 @@ def signed_out_message(
         environ,
         platform_name,
     )
+
+
+def for_terminal(text: str) -> str:
+    """*text* as a terminal prints it: a KAS sign-in names ``kirocrew kas login`` first.
+
+    The messages above name the dashboard's sign-in card, and the panel matches
+    that exact sentence to translate it, so the sentence stays as it is and a
+    terminal surface swaps in :data:`KAS_TERMINAL_SIGN_IN`. Any other text is
+    returned unchanged.
+    """
+    return text.replace(f"Sign in from {_KAS_CARD}", KAS_TERMINAL_SIGN_IN)
 
 
 def kas_signed_out_route(text: str) -> Optional[str]:

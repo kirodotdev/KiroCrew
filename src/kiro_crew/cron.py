@@ -190,6 +190,7 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     _job_from_record,
     _read_job_records,
     _record_is_enabled,
+    _record_parked_by_run,
     _record_user_paused,
     cron_store_lock,
     decode_jobs,
@@ -309,7 +310,8 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
     ``last_status="error"`` too; auto-pause wins, since re-triggering a paused job
     does not un-pause it. A user-paused job is in NEITHER bucket: a deliberate
     pause is not a health signal. Both pause flags can be set at once (enabling
-    is what clears ``auto_paused``), and the user pause wins.
+    is what clears ``auto_paused``), and the user pause wins. A one-shot its own
+    run parked is not a user pause (``_record_parked_by_run``) and is scanned.
     """
     auto_paused: list[tuple[str, str]] = []
     errored: list[tuple[str, str]] = []
@@ -321,10 +323,9 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
             # report behind it. The predicate that clears `loadable` decides here.
             continue
         entry = (str(j.get("id") or "no-id"), str(j.get("name") or "(unnamed)"))
-        if _record_user_paused(j):
-            # No exemption for an errored `at` record: a parked fired at-job and a
-            # user pause are both enabled=False + user_paused=True on disk
-            # (`fire_time_denied` is not persisted), so they cannot be told apart.
+        if _record_user_paused(j) and not _record_parked_by_run(j):
+            # A fired one-shot is parked with the user-pause flags, but its run
+            # stamped `last_run_ts`: that park is the run's, so its error counts.
             continue
         if j.get("auto_paused", False):
             auto_paused.append(entry)
@@ -335,8 +336,9 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
 
 
 def job_pause_state_from_disk(job_id: str) -> str | None:
-    """``"paused by the user"`` / ``"auto-paused"`` / ``"enabled"`` for *job_id*,
-    or None when the store has no such job.
+    """``"parked after its one-shot run"`` / ``"paused by the user"`` /
+    ``"auto-paused"`` / ``"enabled"`` for *job_id*, or None when the store has
+    no such job.
 
     A sibling of :func:`unhealthy_jobs_from_disk` for the doctor's stall
     attribution: once a dump is attributed to a job, the next question is
@@ -347,6 +349,8 @@ def job_pause_state_from_disk(job_id: str) -> str | None:
     for j in records:
         if str(j.get("id") or "") != job_id:
             continue
+        if _record_parked_by_run(j):
+            return "parked after its one-shot run"
         if _record_user_paused(j):
             return "paused by the user"
         if j.get("auto_paused", False):
@@ -367,6 +371,46 @@ _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
 #: registered after the last round is a kill failure, audited ``failed``. Each
 #: round spends at most ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds.
 _ENDING_ROUNDS = 2
+#: How long ``stop()`` waits for the notices of the runs it interrupted
+#: (``set_interrupt_alert``) before it returns. Bounded because it spends the
+#: gateway's graceful-shutdown budget; the bell note comes first, so a slow
+#: Slack or channel post is what a cut loses.
+_INTERRUPT_ALERT_WAIT_SECS = 3.0
+#: How long a planned in-app restart waits for ``stop()``
+#: (``stop_cron_before_restart``): the runs' unwind, then the notices' own
+#: ``_INTERRUPT_ALERT_WAIT_SECS``, so it is above that bound.
+_RESTART_STOP_SECS = 5.0
+
+
+async def stop_cron_before_restart(crons: CronService | None) -> None:
+    """Stop the gateway's cron service for a planned in-app restart. Never raises.
+
+    The dashboard Restart (and update apply), the gateway's update restart and
+    the Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
+    gateway's ``_shutdown``, where ``stop()`` runs on a SIGTERM, never runs. A
+    run in flight would end with the process image: no history row, no notice
+    (``set_interrupt_alert``), and, as an exec keeps the pid, an in-flight marker
+    whose writer still reads as alive. Each of those restarts calls this past
+    its last refusal and before its ``close_all()``, the order ``_shutdown``
+    takes. Bounded by ``_RESTART_STOP_SECS``: a stop still running then is
+    cancelled, not awaited, and the restart goes on. ``None`` is a no-op.
+    """
+    if crons is None:
+        return
+    try:
+        stop = asyncio.ensure_future(crons.stop())
+    except Exception:
+        logger.warning("Cron: could not stop the service before the restart", exc_info=True)
+        return
+    done, _ = await asyncio.wait({stop}, timeout=_RESTART_STOP_SECS)
+    if stop not in done:
+        stop.cancel()
+        logger.warning(
+            "Cron: the stop before the restart ran past %.0fs; restarting anyway",
+            _RESTART_STOP_SECS,
+        )
+    elif not stop.cancelled() and stop.exception() is not None:
+        logger.warning("Cron: the stop before the restart failed", exc_info=stop.exception())
 
 
 async def _sleep_out_jitter(jitter: float) -> None:
@@ -585,6 +629,9 @@ class CronService:
         # fires once per deferral episode, not once per deferred tick.
         self._admission_deferring: bool = False
         self._admission_last_log: float = 0.0
+        # The previous timer tick's clock, which bounds the cron minutes a late
+        # tick catches up (_on_timer). None until this process's first tick.
+        self._last_tick_ts: float | None = None
         # job_id -> ordered live session keys, each attributed to the run
         # (_RunClaim) that registered it. One job can hold several: an older
         # stateless run kept alive for pending sub-agents, or one key per agent
@@ -612,6 +659,10 @@ class CronService:
         # and the alerts in flight: the loop keeps only weak references to tasks.
         self._timeout_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
         self._timeout_alerts: set[asyncio.Task[None]] = set()
+        # The gateway's notice for a run stop() cut short (set_interrupt_alert),
+        # and the notices in flight, which stop() waits for before it returns.
+        self._interrupt_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
+        self._interrupt_alerts: set[asyncio.Task[None]] = set()
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # History is BEST-EFFORT: a raise here would take down the whole cron
@@ -720,6 +771,7 @@ class CronService:
     running_since = _run_registry.running_since
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert
+    set_interrupt_alert = _run_registry.set_interrupt_alert
     trigger_run = _run_registry.trigger_run
     run_job = _run_registry.run_job
     _run_claimed_manual = _run_registry._run_claimed_manual
@@ -733,6 +785,7 @@ class CronService:
     _run_job_isolated = _run_execution._run_job_isolated
     _execute_with_timeout = _run_execution._execute_with_timeout
     _alert_timeout = _run_execution._alert_timeout
+    _alert_interrupt = _run_execution._alert_interrupt
     _execute = _run_execution._execute
     # Landing a run's result: ``kiro_crew.cron_service.service.run_merge``.
     _hold_run_record = _run_merge._hold_run_record
@@ -1022,6 +1075,7 @@ class CronService:
                     ):
                         job.user_pause_generation += 1
                     job.user_paused = not enabled
+                    job.user_pause_requested = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
                     # job auto-paused after failures would be re-derived as

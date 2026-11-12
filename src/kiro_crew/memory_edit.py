@@ -467,6 +467,21 @@ def _after(store: Any, before: dict, operation: dict) -> dict | None:
     after = dict(before)
     episode = before["kind"] == "episode"
     value = before["text"] if episode else json.loads(before["value_json"])
+    if not episode:
+        # The stored value can hold NaN or Infinity (an imported fact) that
+        # ``json.loads`` reads back as a float but ``_json`` (allow_nan=False)
+        # cannot write: every path below re-serializes ``value`` through it, so
+        # refuse the edit here with a clean 409 instead of raising ValueError into
+        # a 500. The snapshot-restore read guards the same way.
+        try:
+            _json(value)
+        except (TypeError, ValueError):
+            raise MemoryEditError(
+                "This record's stored value is not valid JSON (it holds NaN or "
+                "Infinity) and cannot be edited. Delete it and recreate it.",
+                "memory_record_unreadable",
+                409,
+            ) from None
     if mode in {"set", "restore"}:
         if mode == "restore":
             new_value = _restored_value(store, before, operation["revision_id"])

@@ -109,24 +109,29 @@ def validate(raw: str) -> Path:
         checkout = Path(raw).expanduser().resolve()
     except (OSError, ValueError, RuntimeError) as exc:
         return _reject(f"the live target is not a resolvable path: {exc}")
-    if not checkout.is_dir():
-        return _reject(f"the live target is not a directory: {checkout}")
     kcbin = target_bin(checkout)
-    if not kcbin.is_file():
-        return _reject(
-            f"the live target has no {kcbin.name} in its .venv — provision it first "
-            f"(expected {kcbin})"
-        )
-    # A present-but-non-executable entry point is worse than a missing one: it
-    # would pass a naive existence check and then fail the exec, so the caller
-    # must be able to distinguish it.
-    if not os.access(kcbin, os.X_OK):
-        return _reject(f"the live target's {kcbin} is not executable")
-    if not (checkout / "src" / "kiro_crew").is_dir():
-        return _reject(
-            f"the live target does not look like a Kiro Crew checkout "
-            f"(no src/kiro_crew): {checkout}"
-        )
+    # On Python 3.12 ``is_dir``/``is_file`` re-raise an access error instead of
+    # returning False, and escaping as OSError would crash every gateway start.
+    try:
+        if not checkout.is_dir():
+            return _reject(f"the live target is not a directory: {checkout}")
+        if not kcbin.is_file():
+            return _reject(
+                f"the live target has no {kcbin.name} in its .venv — provision it first "
+                f"(expected {kcbin})"
+            )
+        # A present-but-non-executable entry point is worse than a missing one: it
+        # would pass a naive existence check and then fail the exec, so the caller
+        # must be able to distinguish it.
+        if not os.access(kcbin, os.X_OK):
+            return _reject(f"the live target's {kcbin} is not executable")
+        if not (checkout / "src" / "kiro_crew").is_dir():
+            return _reject(
+                f"the live target does not look like a Kiro Crew checkout "
+                f"(no src/kiro_crew): {checkout}"
+            )
+    except OSError as exc:
+        return _reject(f"the live target cannot be read: {checkout}: {exc}")
     return checkout
 
 

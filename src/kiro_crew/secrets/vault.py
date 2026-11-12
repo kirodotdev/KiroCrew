@@ -84,6 +84,21 @@ class SecretVault:
         self._key_path = self._config_dir / ".vault_key"
         self._lock = asyncio.Lock()
 
+    def _store_exists(self) -> bool:
+        """Whether ``secrets.enc`` exists. Raises when that cannot be determined.
+
+        ``Path.exists`` answers False for a file it may not look at (always on
+        CPython 3.14, which delegates to ``os.path.exists``), so an unreadable
+        store -- macOS "Operation not permitted" -- read as empty and a delete
+        over it was a silent no-op that let a sign-out report success while the
+        credential stayed on disk. Only a missing file is absent.
+        """
+        try:
+            os.stat(self._store_path)
+        except FileNotFoundError:
+            return False
+        return True
+
     # ── Public API ──
 
     def get(self, name: str) -> Optional[SecretValue]:
@@ -162,6 +177,20 @@ class SecretVault:
         in this process (each acquisition uses its own fd).
         """
         self._set_sync(name, value)
+
+    def set_many_sync(self, values: dict[str, str]) -> None:
+        """Store every ``name -> value`` in *values* in ONE store write, synchronously.
+
+        Either all land or none does: entries that must agree with each other
+        (an OAuth client and the token pair it issued) are never left half-replaced.
+        Same locking rationale as ``set_sync``.
+        """
+        self._write_store(
+            lambda entries: {
+                **entries,
+                **{n: self._encrypt_entry(n, v.encode("utf-8")) for n, v in values.items()},
+            }
+        )
 
     def delete_sync(self, name: str) -> None:
         """Remove a secret synchronously. No-op if it does not exist.
@@ -270,7 +299,7 @@ class SecretVault:
             return await asyncio.to_thread(self._delete_if_revision_sync, name, revision)
 
     def _delete_if_revision_sync(self, name: str, revision: str) -> bool:
-        if not self._store_path.exists():
+        if not self._store_exists():
             return False
         deleted = False
 
@@ -293,7 +322,7 @@ class SecretVault:
     def _delete_sync(self, name: str) -> None:
         # Early return when no store exists — prevents creating an empty
         # store (and hitting the mixed-key guard on a fresh vault).
-        if not self._store_path.exists():
+        if not self._store_exists():
             return
         self._write_store(lambda entries: {k: v for k, v in entries.items() if k != name})
 
@@ -386,7 +415,7 @@ class SecretVault:
                 return {k: v for k, v in entries.items() if k != name}
             return {**entries, name: dict(restored_entry)}
 
-        if not self._store_path.exists():
+        if not self._store_exists():
             return False
         self._write_store(_mutate)
         return restored
@@ -419,7 +448,12 @@ class SecretVault:
         Refuses to create a new key when secrets.enc already exists (prevents
         mixed-key vault from a restored backup without its key).
         """
-        if self._key_path.exists():
+        try:
+            os.stat(self._key_path)
+            key_exists = True
+        except FileNotFoundError:
+            key_exists = False
+        if key_exists:
             # Enforce restrictive permissions on every read (catches restored
             # backups or manual copies with wrong mode).
             restrict_to_owner(self._key_path)
@@ -427,7 +461,7 @@ class SecretVault:
 
         # Refuse to create a new key if a store already exists — that would
         # make existing entries undecryptable.
-        if self._store_path.exists():
+        if self._store_exists():
             raise ValueError(
                 f"Vault store exists at {self._store_path} but key is missing at "
                 f"{self._key_path}. Cannot create a new key without losing existing "
@@ -516,7 +550,7 @@ class SecretVault:
 
     def _load_entries(self) -> dict[str, dict[str, str]]:
         """Load and decode the on-disk entry map (empty if no store yet)."""
-        if not self._store_path.exists():
+        if not self._store_exists():
             return {}
 
         raw = self._store_path.read_text(encoding="utf-8")

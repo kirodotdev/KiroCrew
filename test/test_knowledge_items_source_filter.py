@@ -216,6 +216,75 @@ async def test_source_counts_respects_namespace_filter(seeded):
 
 
 @pytest.mark.asyncio
+async def test_a_source_holding_only_located_items_lists_what_its_badge_counts(seeded):
+    """After a duplicate collapse a source can hold items it does not own. Its
+    group must list them, or the badge says 2 over an empty list."""
+    store, alpha, _beta = seeded
+    gamma = store.add_source("gamma", "local_folder", "/tmp/gamma")
+    held = [
+        r["id"]
+        for r in store.db.execute(
+            "SELECT id FROM items WHERE source_id = ? ORDER BY id LIMIT 2", (alpha,)
+        ).fetchall()
+    ]
+    for item_id in held:
+        store.add_source_location(item_id, gamma)
+
+    counts = await _counts(store, {})
+    scoped = await _call(store, {"source_id": gamma})
+    assert counts["counts"][gamma] == 2
+    assert scoped["total"] == 2
+    assert sorted(i["id"] for i in scoped["items"]) == sorted(held)
+    # Its owner still lists them too.
+    assert (await _call(store, {"source_id": alpha}))["total"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_located_item_never_shows_the_owner_file_name(seeded):
+    """Under gamma's scope an item it holds by location must not carry alpha's
+    file name: that is the owner's document, not gamma's."""
+    store, alpha, _beta = seeded
+    gamma = store.add_source("gamma", "local_folder", "/tmp/gamma")
+    held = store.db.execute(
+        "SELECT id FROM items WHERE source_id = ? LIMIT 1", (alpha,)
+    ).fetchone()["id"]
+    store.db.execute(
+        "INSERT INTO folder_file_state (source_id, file_path, last_seen, status, item_ids) VALUES (?, ?, ?, ?, ?)",
+        (alpha, "/tmp/alpha/winner.md", "2026-01-01", "done", json.dumps([held])),
+    )
+    store.db.commit()
+    store.add_source_location(held, gamma)
+    scoped = await _call(store, {"source_id": gamma})
+    assert [i["id"] for i in scoped["items"]] == [held]
+    assert "_file_path" not in scoped["items"][0]
+    owner = await _call(store, {"source_id": alpha})
+    assert {i.get("_file_path") for i in owner["items"] if i["id"] == held} == {"/tmp/alpha/winner.md"}
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_search_finds_a_located_item(seeded):
+    store, alpha, _beta = seeded
+    gamma = store.add_source("gamma", "local_folder", "/tmp/gamma")
+    held = store.db.execute(
+        "SELECT id FROM items WHERE source_id = ? LIMIT 1", (alpha,)
+    ).fetchone()["id"]
+    store.add_source_location(held, gamma)
+    results = [
+        {"id": i["id"], "score": 1.0, "match_type": "fts"}
+        for i in store.db.execute("SELECT id FROM items").fetchall()
+    ]
+    retriever = MagicMock()
+    retriever.search.return_value = results
+    req = _request(store, {"q": "content", "source_id": gamma})
+    with (
+        patch("kiro_crew.dashboard.handlers.knowledge._store", return_value=store),
+        patch("kiro_crew.dashboard.handlers.knowledge.HybridRetriever", return_value=retriever),
+    ):
+        data = json.loads((await list_items(req)).body.decode())
+    assert [i["id"] for i in data["items"]] == [held]
+
+
+@pytest.mark.asyncio
 async def test_source_counts_matches_scoped_list_items_total(seeded):
     """The badge count and the group's own pager total must agree."""
     store, alpha, _beta = seeded
@@ -233,7 +302,7 @@ async def test_scoped_search_escalates_until_retrieval_is_exhausted(seeded):
     retriever = MagicMock()
     # Full windows until the pool exceeds 400, then a short read.
 
-    def _search(_q, limit):
+    def _search(_q, limit, status):
         return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
             limit if limit <= 400 else limit - 1
         )
@@ -256,7 +325,7 @@ async def test_scoped_search_stops_at_the_escalation_cap(seeded):
     """A corpus that never short-reads must not escalate without bound."""
     store, _alpha, beta = seeded
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, status: [
         {"id": "x", "score": 1.0, "match_type": "fts"}
     ] * limit
     req = _request(store, {"q": "content", "source_id": beta, "limit": "20"})
@@ -286,7 +355,7 @@ async def test_filtered_search_widens_the_window_while_the_page_is_short(seeded,
     store, _alpha, _beta = seeded
     retriever = MagicMock()
 
-    def _search(_q, limit):
+    def _search(_q, limit, status):
         return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
             limit if limit <= 400 else limit - 1
         )
@@ -312,7 +381,7 @@ async def test_default_status_search_keeps_one_narrow_call(seeded):
     store, _alpha, _beta = seeded
     real_ids = [r["id"] for r in store.db.execute("SELECT id FROM items").fetchall()]
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, status: [
         {"id": real_ids[i % len(real_ids)], "score": 1.0, "match_type": "fts"}
         for i in range(limit)
     ]

@@ -185,6 +185,34 @@ class TestInboundDownloadAuth:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_401_with_the_token_retires_the_cached_token(self, tmp_path) -> None:
+        """A 401 can mean the cached token went stale while the host slept, so the
+        next caller mints a fresh one instead of reusing it."""
+        client, _session = _client([_FakeResponse(status=401), _FakeResponse(chunks=[PNG_BYTES])])
+        await client.download_inbound_file(
+            "https://smba.trafficmanager.net/img", str(tmp_path / "a.png"), authenticated=True
+        )
+        assert client._token_expiry == 0.0
+
+    @pytest.mark.asyncio
+    async def test_a_401_does_not_retire_a_token_already_replaced(self, tmp_path) -> None:
+        """A request that carried an older token must not expire a newer one."""
+        client, _session = _client([_FakeResponse(status=401), _FakeResponse(chunks=[PNG_BYTES])])
+        real_get = _session.get
+
+        def _get_then_replace(url: str, **kwargs: Any) -> _FakeResponse:
+            resp = real_get(url, **kwargs)
+            client._token = "minted-meanwhile"
+            return resp
+
+        _session.get = _get_then_replace  # type: ignore[method-assign]
+        expiry = client._token_expiry
+        await client.download_inbound_file(
+            "https://smba.trafficmanager.net/img", str(tmp_path / "a.png"), authenticated=True
+        )
+        assert client._token_expiry == expiry
+
+    @pytest.mark.asyncio
     async def test_a_redirect_off_a_trusted_host_drops_the_token(self, tmp_path) -> None:
         client, session = _client(
             [

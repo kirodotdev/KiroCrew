@@ -87,6 +87,7 @@ if TYPE_CHECKING:
         _detach_appended_context,
         _folder_steering_turn,
         _startup_query_prewarm_applies,
+        drop_session_notes_out_of_reach,
         resolve_turn_transcript_identity,
         take_turn_context,
     )
@@ -107,6 +108,22 @@ if TYPE_CHECKING:
 # backend's post-dispatch stall detector (``_STALE_TURN_TIMEOUT``, 90s), so a
 # saturated pool reads as a clear turn error here rather than later as a stall.
 _BUILD_ADMISSION_TIMEOUT_SECS = 60.0
+
+
+def _turn_runtime_source(turn: _ChatTurn) -> str:
+    """The interface that carried this turn's words, for ``[RUNTIME]`` and source-keyed rules.
+
+    A message typed in a linked Slack thread runs in the dashboard slot, but its
+    reader is in Slack, which renders no tool cards. Only the Slack intercept
+    stamps ``_directive_source_channels`` on a channel-origin turn, so the pair
+    names Slack positively; every other turn keeps ``dashboard``.
+
+    shortcut: other channel hand-offs (``channel_handoff``) stamp no channel type
+    on the turn, so they still read ``dashboard``; upgrade when they carry one.
+    """
+    if turn._directive_channel_origin and turn._directive_source_channels:
+        return "slack"
+    return "dashboard"
 
 
 async def _session_replay_history(
@@ -789,6 +806,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # queued on another slot of this session is this turn's as well; the
         # transcript identity that admits it is read off the loop first.
         _turn_identity = await resolve_turn_transcript_identity(state, slot)
+        # After the await, so a link gained while it waited is compared too.
+        drop_session_notes_out_of_reach(state, slot)
         _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
         _ctx_prefix = _turn_context.prefix
         turn._drained_merge_contexts = _turn_context.consumed
@@ -1019,7 +1038,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
                 provider_type=provider_name,
-                runtime_source="dashboard",
+                runtime_source=_turn_runtime_source(turn),
                 request_prefix_context=_request_prefix_context or None,
                 exclude_last_n=1,
                 conversation_reset=bool(_conversation_reset),

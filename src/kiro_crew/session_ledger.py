@@ -197,14 +197,17 @@ def crew_log_units(
             excluded |= _excluded_units(alias)
         if excluded:
             units = tuple(unit for unit in units if unit not in excluded)
-        recorded = _recorded_unit_order(slot_key)
-        if recorded:
-            # The order log keeps the NEWEST ids, so a unit absent from it is older
-            # than all of them and applies BEFORE the kept tail; after it, an evicted
-            # old unit would write its stale goal and phase over the current ones.
-            known = [unit for unit in recorded if unit in units]
-            rest = [unit for unit in units if unit not in recorded]
-            units = tuple(rest + known)
+        # The order log keeps the NEWEST ids, so a unit absent from it is older than all
+        # of them and applies BEFORE the kept tail; after it, an evicted old unit would
+        # write its stale goal and phase over the current ones. The one exception is the
+        # slot's newest unit by succession: a reset's new session that has not recorded
+        # yet holds no ledger entry, so its place does not change the record, and
+        # listing it last keeps a read's unit list the one the writer folds (live unit
+        # last). Listed first, its own appends retire the warm cell and the savepoint
+        # and every read after a restart folds the slot cold.
+        from kiro_crew.session_ledger_control import _causal_units as _ordered_units
+
+        units = _ordered_units(slot_key, units, _recorded_unit_order(slot_key))
         if live_session_id and live_session_id in units:
             # The LIVE unit applies LAST, whatever the clock says: units sort by header
             # wall clock, and a clock that moved backward would put a retired

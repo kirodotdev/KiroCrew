@@ -14,8 +14,9 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from model_registry_row_helpers import add_claude_only_row
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.model_registry import acp_id_correction
 
 
@@ -602,9 +603,12 @@ class TestSavePathRefusesAnUnusablePin:
         assert KiroCrewConfig.load().agents[seeded_agent].model != "claude-opus-4-8"
 
     @pytest.mark.asyncio
-    async def test_update_refuses_a_pin_kiro_has_no_id_for_without_a_catalog(self, seeded_agent):
+    async def test_update_refuses_a_pin_kiro_has_no_id_for_without_a_catalog(
+        self, seeded_agent, monkeypatch
+    ):
         from kiro_crew.config.loader import KiroCrewConfig
 
+        pin = add_claude_only_row(monkeypatch)
         cfg = KiroCrewConfig.load()
         cfg.agent.acp_backend = ACP_BACKEND_KIRO
         cfg.save()
@@ -613,13 +617,38 @@ class TestSavePathRefusesAnUnusablePin:
         app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: []))
 
         async with TestClient(TestServer(app)) as client:
-            resp = await client.put(
-                f"/api/agents/{seeded_agent}", json={"model": "claude-fable-5-1"}
-            )
+            resp = await client.put(f"/api/agents/{seeded_agent}", json={"model": pin})
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_model"
 
         assert KiroCrewConfig.load().agents[seeded_agent].model == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_fable_5_1_is_stored_on_kiro_without_a_catalog(
+        self, seeded_agent, method: str
+    ) -> None:
+        """kiro-cli serves claude-fable-5.1, so no live catalog is no reason to refuse it."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = ACP_BACKEND_KIRO
+        cfg.save()
+        app = _crud_app()
+        app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: []))
+        name = "fable" if method == "post" else seeded_agent
+        body = {"model": "claude-fable-5.1"}
+        if method == "post":
+            body.update({"name": name, "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{name}",
+                json=body,
+            )
+            assert response.status == 200, await response.text()
+
+        assert KiroCrewConfig.load().agents[name].model == "claude-fable-5.1"
 
     @pytest.mark.asyncio
     async def test_a_usable_pin_is_accepted(self, seeded_agent):
@@ -718,19 +747,127 @@ class TestSavePathRefusesAnUnusablePin:
         assert cfg.agents[seeded_agent].model != "pending-model"
 
 
+def _kas_session(backend: str = ACP_BACKEND_KAS) -> SimpleNamespace:
+    """A live session shaped like the registered provider, advertising no ``models`` list."""
+    return SimpleNamespace(client=SimpleNamespace(backend=backend), available_models=lambda: [])
+
+
+@pytest.fixture()
+def kas_account(monkeypatch):
+    """Record a KAS select for account ``acct-a`` and sign the vault in as *who*.
+
+    Goes through the real ``record_catalog`` so the rows are the ones a KAS
+    ``session/new`` records; the module's recording is restored afterwards.
+    """
+    from kiro_crew.agent_sdk import kas_model_catalog
+
+    monkeypatch.setattr(kas_model_catalog, "_recorded", None)
+    monkeypatch.setattr(kas_model_catalog, "_recorded_identity", "")
+    select = {
+        "type": "select",
+        "id": "model",
+        "currentValue": "auto",
+        "options": [{"value": i, "name": i} for i in ("auto", "claude-sonnet-4.5")],
+    }
+    assert kas_model_catalog.record_catalog(
+        {"configOptions": [select]}, ACP_BACKEND_KAS, identity="acct-a"
+    )
+
+    def _sign_in(who: str) -> None:
+        monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda: who)
+
+    _sign_in("acct-a")
+    return _sign_in
+
+
+def _app_with(*providers: object) -> web.Application:
+    app = _crud_app()
+    app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: providers))
+    return app
+
+
+class TestKasSelectJudgesASavedPin:
+    """KAS lists its models only in the select, so the select judges a saved pin."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    @pytest.mark.parametrize("model, status", [("claude-sonnet-4.5", 200), ("gpt-x", 400)])
+    async def test_the_kas_select_decides(
+        self, seeded_agent, kas_account, method: str, model: str, status: int
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        name = "kaspin" if method == "post" else seeded_agent
+        body = {"model": model}
+        if method == "post":
+            body.update({"name": name, "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(_app_with(_kas_session()))) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{name}",
+                json=body,
+            )
+            assert response.status == status, await response.text()
+            if status == 400:
+                payload = await response.json()
+                assert payload["code"] == "invalid_model"
+                assert "claude-sonnet-4.5" in payload["error"]
+
+        agents = KiroCrewConfig.load().agents
+        stored = agents[name].model if name in agents else None
+        assert (stored == model) is (status == 200)
+
+    @pytest.mark.asyncio
+    async def test_another_accounts_select_is_no_evidence(self, seeded_agent, kas_account) -> None:
+        """After a sign-in switch the retained select belongs to the old account."""
+        kas_account("acct-b")
+
+        async with TestClient(TestServer(_app_with(_kas_session()))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+            assert response.status == 200, await response.text()
+
+    @pytest.mark.asyncio
+    async def test_the_registered_acp_provider_wrapper_is_read_through(
+        self, seeded_agent, kas_account
+    ) -> None:
+        """The session registry holds ``AcpProvider``, whose backend is on its client."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = object.__new__(AcpProvider)
+        provider._client = _kas_session().client
+        provider._client.available_models = lambda: []
+
+        async with TestClient(TestServer(_app_with(provider))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+            assert response.status == 400, await response.text()
+            assert (await response.json())["code"] == "invalid_model"
+
+    @pytest.mark.asyncio
+    async def test_another_harness_session_reads_no_kas_select(
+        self, seeded_agent, kas_account
+    ) -> None:
+        """Only a live KAS session lets the KAS select judge; kiro's empty list stays unknown."""
+        async with TestClient(TestServer(_app_with(_kas_session(ACP_BACKEND_KIRO)))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+
+        assert response.status == 200
+
+
 class TestNoCatalogRefusesAPinKiroHasNoIdFor:
-    def test_names_the_spelling_and_suggests_no_other_id(self):
+    def test_names_the_spelling_and_suggests_no_other_id(self, monkeypatch):
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        reason = _validate_role_model("claude-fable-5-1", SimpleNamespace(app={}), backend="")
+        pin = add_claude_only_row(monkeypatch)
+        reason = _validate_role_model(pin, SimpleNamespace(app={}), backend="")
 
-        assert reason is not None and "'claude-fable-5-1'" in reason
-        assert "claude-" not in reason.replace("'claude-fable-5-1'", "")
+        assert reason is not None and f"'{pin}'" in reason
+        assert "claude-" not in reason.replace(f"'{pin}'", "")
 
-    def test_a_live_kiro_catalog_that_serves_it_is_asked_first(self):
+    def test_a_live_kiro_catalog_that_serves_it_is_asked_first(self, monkeypatch):
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        provider = _catalog_provider(ACP_BACKEND_KIRO, "claude-fable-5.1")
+        pin = add_claude_only_row(monkeypatch)
+        provider = _catalog_provider(ACP_BACKEND_KIRO, pin)
         request = SimpleNamespace(
             app={
                 "state": SimpleNamespace(
@@ -739,14 +876,22 @@ class TestNoCatalogRefusesAPinKiroHasNoIdFor:
             }
         )
 
-        assert _validate_role_model("claude-fable-5.1", request, backend=ACP_BACKEND_KIRO) is None
+        assert _validate_role_model(pin, request, backend=ACP_BACKEND_KIRO) is None
 
-    def test_the_claude_backend_serves_it_without_a_catalog(self):
+    def test_the_claude_backend_serves_it_without_a_catalog(self, monkeypatch):
         from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        reason = _validate_role_model(
-            "claude-fable-5-1", SimpleNamespace(app={}), backend=ACP_BACKEND_CLAUDE
-        )
+        pin = add_claude_only_row(monkeypatch)
+        reason = _validate_role_model(pin, SimpleNamespace(app={}), backend=ACP_BACKEND_CLAUDE)
+
+        assert reason is None
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    def test_fable_5_1_is_not_refused_without_a_catalog(self, backend):
+        # kiro-cli advertises claude-fable-5.1, so the registry row carries it as its acp id.
+        from kiro_crew.dashboard.handlers.core import _validate_role_model
+
+        reason = _validate_role_model("claude-fable-5.1", SimpleNamespace(app={}), backend=backend)
 
         assert reason is None

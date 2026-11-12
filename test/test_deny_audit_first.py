@@ -62,6 +62,8 @@ class _Slot:
 class _Event:
     request_id = "req-1"
     tool_call_id = "call-1"
+    tool_purpose = ""
+    tool_input = ""
     title = "bash"
     tool_kind = "execute"
 

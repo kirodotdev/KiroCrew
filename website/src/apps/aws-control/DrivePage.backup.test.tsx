@@ -5,7 +5,7 @@
  * src/test/DrivePageTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -739,6 +739,83 @@ describe('DrivePage sections: per-install backup attribution', () => {
     fireEvent.change(input, { target: { value: 'Renamed Mac' } })
     fireEvent.click(screen.getByTestId('backup-install-save'))
     await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledWith('Renamed Mac'))
+  })
+
+  it('keeps focus on Save name while the write runs and ignores a second press', async () => {
+    // Native `disabled` while the label write is out drops a keyboard user's
+    // focus to the document body for the whole round-trip. The button announces
+    // unavailable with `aria-disabled` instead, stays in the tab order, keeps
+    // focus, and refuses a second press.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    let finish: (v: { install: { id: string; label: string } }) => void = () => {}
+    vi.mocked(awsControlApi.installLabel).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.installLabel>,
+    )
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    const input = await screen.findByTestId('backup-install-name')
+    fireEvent.change(input, { target: { value: 'Renamed Mac' } })
+
+    const save = screen.getByTestId('backup-install-save')
+    save.focus()
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    await act(async () => finish({ install: { id: INSTALL_ID, label: 'Renamed Mac' } }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('backup-install-name')).not.toBeInTheDocument(),
+    )
+    expect(awsControlApi.installLabel).toHaveBeenCalledTimes(1)
+  })
+
+  it('Enter on the name field does not start a second write while one is out', async () => {
+    // Enter and the Save button share one submission guard: a press then an
+    // Enter (or two Enters) while the first write flies must not fire twice.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    let finish: (v: { install: { id: string; label: string } }) => void = () => {}
+    vi.mocked(awsControlApi.installLabel).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.installLabel>,
+    )
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    const input = await screen.findByTestId('backup-install-name')
+    fireEvent.change(input, { target: { value: 'Renamed Mac' } })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledTimes(1))
+
+    await act(async () => finish({ install: { id: INSTALL_ID, label: 'Renamed Mac' } }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('backup-install-name')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('keeps Save name usable after a failed write', async () => {
+    // On failure the editor stays open and the button re-enables. The guard must
+    // reset so a corrected name can be saved.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    vi.mocked(awsControlApi.installLabel).mockRejectedValueOnce(new Error('write failed'))
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    fireEvent.change(await screen.findByTestId('backup-install-name'), { target: { value: 'Renamed Mac' } })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    await screen.findByTestId('backup-install-error')
+
+    vi.mocked(awsControlApi.installLabel).mockResolvedValueOnce({
+      install: { id: INSTALL_ID, label: 'Renamed Mac' },
+    })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledTimes(2))
   })
 
   it('Enter saves the install name and Escape abandons it, like the drive rename editors', async () => {

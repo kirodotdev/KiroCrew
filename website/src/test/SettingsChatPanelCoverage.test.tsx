@@ -485,6 +485,22 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() => expect(localStorage.getItem('mc-chat-copy-on-select')).toBe('0'))
   })
 
+  it('stores one-click follow-up send under its own device-only key, off by default and never backed up', async () => {
+    wrap('composer')
+    const sw = await screen.findByRole('switch', { name: 'Send follow-ups with one click' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-followup-start-sends')).toBe('1'))
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}')).not.toHaveProperty('followupStartSends')
+    // The uiPrefs host backup lives in the agent-writable data home, so a
+    // restorable value would let an agent turn on one-click running of its own
+    // prompts in the person's next fresh browser.
+    expect(DURABLE_PREF_KEYS).not.toContain('mc-followup-start-sends')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-followup-start-sends')).toBe('0'))
+  })
+
   it('inverts the stored collapse flag behind Show Thinking Inline', async () => {
     wrap()
     // The row shows the INVERSE of collapseAllSteps, so turning it on must
@@ -592,6 +608,18 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({
         folder_suggestions_enabled: false,
+      })
+    )
+  })
+
+  it('shows project tags on by default and persists turning them off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Project tags')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        project_tags_enabled: false,
       })
     )
   })

@@ -572,7 +572,7 @@ class GitHubPullRequestProvider:
                 resolved[member.raw] = ((), False, None)
                 continue
             target = member.target
-            payload, failure = self._rest(
+            payload, _ = self._rest(
                 gh,
                 host,
                 _REST_COMMIT_STATUS_PATH.format(
@@ -583,13 +583,13 @@ class GitHubPullRequestProvider:
                 ),
             )
             if payload is None:
-                # Both buckets refused this subject, so there is no third
-                # transport to degrade to and the failure is charged as a failure.
-                resolved[member.raw] = (
-                    (),
-                    False,
-                    failure[0] if failure else ProviderErrorKind.TRANSIENT,
-                )
+                # Both buckets refused this subject, so there is no third transport
+                # to degrade to. Every member here was first refused by GraphQL for
+                # a rate limit, and this is a SECOND diagnosis: it must not swap that
+                # retryable charge for a terminal one (a REST 404 or 403 would retire
+                # the watch on its first tick), the same rule
+                # ``_degrade_primary_to_rest`` keeps for the primary read.
+                resolved[member.raw] = ((), False, ProviderErrorKind.RATE_LIMITED)
                 continue
             try:
                 normalized = _normalize_checks(_rest_status_rows(payload))
@@ -1227,6 +1227,15 @@ def _bounded_checks(checks: tuple[GitHubCheck, ...]) -> tuple[tuple[GitHubCheck,
     complete = True
     for state in PULL_REQUEST_CHECK_FIELDS:
         matching = [check for check in checks if check.state == state]
+        if state == "passed":
+            # A passed row carries no blocking verdict, so a large passed list
+            # leaves the board measured: calling it incomplete held a green board
+            # with over 100 passing checks pending forever. It is not cut here
+            # either -- the total row cap bounds it, and the projection is the one
+            # place that cuts a bucket and says so, so the count it reports is
+            # never a cut list read as a whole one.
+            bounded.extend(matching)
+            continue
         if len(matching) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET:
             complete = False
         bounded.extend(matching[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET])

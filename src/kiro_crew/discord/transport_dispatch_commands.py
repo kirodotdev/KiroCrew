@@ -233,9 +233,9 @@ async def _handle_compact(
                 )
 
         final = result_text or "✅ Context compacted."
-        if status_id:
-            await self.client.edit_message(channel_id, status_id, final)
-        else:
+        # The status line is only a placeholder: when it cannot be edited (deleted
+        # during the wait, or the edit failed) the result goes out as a new message.
+        if not (status_id and await self.client.edit_message(channel_id, status_id, final)):
             await self.client.send_message(channel_id, final)
     finally:
         self.sessions.release(session_key)

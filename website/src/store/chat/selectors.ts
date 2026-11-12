@@ -60,6 +60,10 @@ export const selectSlotStreamState = (state: RootState, slot: string): SlotState
  *  settlement captures so a late answer about one turn cannot idle the next. */
 export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
   state.chat.runEpoch?.[safeKey(slot)] ?? 0
+/** Whether `slot` has a local send still awaiting server confirmation, on
+ *  screen (`pendingTurnSlot`) or not (its run entry's `pendingTurn`). */
+export const selectPendingTurn = (state: RootState, slot: string): boolean =>
+  state.chat.pendingTurnSlot === slot || !!state.chat.slotRun?.[safeKey(slot)]?.pendingTurn
 
 const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */
@@ -136,6 +140,7 @@ const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   user_replay: true,
   automation_notice: true,
   workflow: true,
+  heartbeat: true,
 }
 const TURN_INJECT_KINDS: ReadonlySet<unknown> = new Set<string>(
   (Object.keys(TURN_INJECT_DISPATCHED) as InjectKind[]).filter((k) => TURN_INJECT_DISPATCHED[k]),
@@ -199,7 +204,7 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
   const other = key && key !== c.activeSlot ? key : null
   const dashSlot = slotRowByKey(state.dashboard.slots, key)
   if (other) {
-    if (selectSlotStreamState(state, other) !== 'idle' || c.pendingTurnSlot === other || dashSlot?.running || dashSlot?.stopping) return false
+    if (selectSlotStreamState(state, other) !== 'idle' || selectPendingTurn(state, other) || dashSlot?.running || dashSlot?.stopping) return false
   } else if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
   if (dashSlot?.subagents_running) return false
   // A relay archive has NO continue: `relay_archive_refusal` rejects
@@ -231,6 +236,10 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
       if ((m.meta as { restored?: boolean } | undefined)?.restored && selectTurnInterrupted(state, key)) continue
       return false
     }
+    // A heartbeat prompt delivered to an unused chat is the only request there,
+    // so a first turn that fails to start stays resumable from it. Mirrors
+    // `_has_conversation` (`src/kiro_crew/dashboard/chat_handlers.py`).
+    if (m.role === 'inject' && m.content && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'heartbeat') return true
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       // System notices (compaction, session reload) are assistant-role status

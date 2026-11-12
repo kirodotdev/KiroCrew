@@ -14,4 +14,8 @@ from kiro_crew.wakatime.client import (
     WakaTimeUnavailableError,
 )
 
-__all__ = ["WakaTimeClient", "WakaTimeAuthError", "WakaTimeUnavailableError"]
+__all__ = [
+    "WakaTimeClient",
+    "WakaTimeAuthError",
+    "WakaTimeUnavailableError",
+]

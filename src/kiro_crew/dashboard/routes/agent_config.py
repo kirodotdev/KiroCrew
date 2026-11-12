@@ -106,6 +106,12 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/connections/test", handlers.api_connections_test)
     app.router.add_post("/api/connections/cancel", handlers.api_connections_cancel)
     app.router.add_post("/api/connections/disconnect", handlers.api_connections_disconnect)
+    # GET only (no HEAD): token auth lets just GET through; ``state`` is the gate.
+    app.router.add_get(
+        "/api/connections/oauth/callback",
+        handlers.api_connections_oauth_callback,
+        allow_head=False,
+    )
     app.router.add_get("/api/connections/oauth-clients", handlers.api_connections_oauth_clients)
     app.router.add_put(
         "/api/connections/oauth-clients/{slug}", handlers.api_connections_oauth_client_put

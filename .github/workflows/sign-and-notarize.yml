@@ -92,7 +92,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -396,7 +396,7 @@ jobs:
       # appends its arch (KiroCrew-arm64 / KiroCrew-x64): the stem of the
       # notarized/ and desktop/ keys, the shipping DMG and the latest-DMG
       # alias, so three legs of one channel+version never share a key.
-      ARTIFACT_BASENAME: ${{ format('KiroCrew{0}', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }} # brand-ok
+      ARTIFACT_BASENAME: ${{ format('KiroCrew{0}{1}', inputs.channel == 'lts' && '-LTS' || '', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }} # brand-ok
       # The stapled app zip as it travels in the gated artifact and in the
       # stable promotion bundle: notarized.zip on the universal leg,
       # notarized-<arch>.zip on a single-arch one. The bundle holds every
@@ -710,7 +710,7 @@ jobs:
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       # Pinned published basename -- see the notarize job's env comment.
-      ARTIFACT_BASENAME: ${{ format('KiroCrew{0}', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }} # brand-ok
+      ARTIFACT_BASENAME: ${{ format('KiroCrew{0}{1}', inputs.channel == 'lts' && '-LTS' || '', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }} # brand-ok
       # Directory the channel file lives in: feed/<channel> for the universal
       # DMG, feed/<channel>/<arch> for a single-arch one. The file name inside
       # it is always latest-mac.yml -- electron-updater derives that from the

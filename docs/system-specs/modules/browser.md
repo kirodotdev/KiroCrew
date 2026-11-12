@@ -50,6 +50,16 @@ at `<data-home>/browser-harness/venv` (`python -m venv --clear` on that
 directory alone, so the Chromium beside it survives a re-install; then
 `pip install --require-hashes -r browser_harness/requirements.lock`: 12 pinned
 requirements, 176 sha256 hashes, compiled for Python 3.11+ on every platform).
+The venv links to the base interpreter that built it, which under Toolbox is a
+versioned directory Toolbox later prunes. A finished install (marker at this
+`HARNESS_VERSION`) whose interpreter link dangles, built by the gateway's own
+Python minor version (`pyvenv.cfg` `version`) and holding the pip it needs, is
+repaired in place instead of cleared: the dangling `python*` links are unlinked
+and `python -m venv --upgrade --without-pip` re-points the venv at the gateway's
+interpreter, keeping site-packages, so the pip step finds every pin already
+installed and needs no package index. Any other missing interpreter (no marker,
+another version, another minor version, a venv filled from a runtime copy, below) is
+still a `--clear` rebuild.
 On Linux with a glibc older than 2.27 (Amazon Linux 2: 2.26) the locked
 `pillow==12.3.0`, which `browser-harness` itself pins, has no wheel and pip has to
 build its sdist. `build_deps.py` checks first, from the filesystem alone, for a C
@@ -63,6 +73,36 @@ host missing any of them is refused at `preparing`, before the marker or the ven
 is touched, with what is missing and the `yum`/`apt-get` command that installs it.
 A venv that already holds the locked pillow and is not being rebuilt is not
 checked, since pip has nothing to build.
+A runtime that already ships the harness asks no index at all. When the gateway's
+own interpreter carries `browser-harness`, `cdp-use` and `fetch-use` at the
+versions the lock pins (a distribution that bundles the harness beside the
+gateway), the gateway reads the file records for every distribution named by the
+lock. The launch directory and the working directory are not searched.
+A missing harness-family distribution, a different harness-family version,
+an absent RECORD or any recorded `.pth` file selects the hash-pinned pip path.
+Other lock distributions absent from the runtime are skipped. The venv is made
+`--clear --without-pip` on every runtime install, and the gateway copies the
+recorded files into its site-packages with content-only copies, each read from a
+descriptor that must still identify the regular file checked, opening each directory
+on the way without following links where descriptor-relative opens are supported
+(Windows keeps the path-based identity check). Anchored paths,
+paths containing `..`, and `__pycache__` entries are skipped. A recorded file that
+resolves outside its distribution's directory selects the pip path. No runtime
+directory is added to the venv's import path.
+`<venv>/python -I -c` must import `browser_harness` and resolve those three
+versions before the marker is written with `source: "runtime"`. The marker is
+removed before rebuilding, so a failed copy or interpreter check reads as not
+installed. A host whose index is unreachable or refuses its credentials can
+therefore still install. A failed interpreter check fails the install at
+`installing_harness`; it does not fall back to pip.
+The copied dependencies use the runtime's releases rather than the lock's, and
+nothing hash-checks this copy. Until the gateway takes it, the runtime tree has
+the gateway's own exposure: only the `kiro_crew` package directory is sealed
+([security](security.md), the packaged install directory). The driver's installed
+code is always under the sealed prefix, so later runtime edits or pruning cannot
+change it. Nothing is built, so the pillow check does not apply. The pip path
+reads the marker's source, independent of the venv's Python layout, and rebuilds
+a runtime-filled venv rather than repairing or reusing its packages.
 Kiro's own Chromium (Chrome for Testing `154.0.8037.0`, the build Playwright's
 `chromium-1244` ships, fetched from Google's bucket and then Playwright's CDN,
 which alone hosts linux-arm64) is downloaded into the same prefix for hosts with
@@ -84,10 +124,12 @@ start, in the background task that first reclaims a stray daemon
 (`handlers/browser_harness_status.py`) starts the SAME install job when the
 Harness is missing or stale (`install.harness_current`:
 installed AND the marker's `lock_sha256` equals the shipped lock's digest, so a
-re-pin without a version bump reinstalls). It adds Kiro's Chromium only when
-discovery would launch it (no usable Chrome/Edge, or `browser.choice` pins
-`kiro_chromium`/`headless`) and it is not on disk; a host that drives the user's
-Chrome never downloads it unasked (Settings' Install still installs both). After
+re-pin without a version bump reinstalls). A copied venv remains current when
+the runtime's package tree moves, is pruned or changes versions. It adds Kiro's
+Chromium only when discovery would launch it (no usable Chrome/Edge, or
+`browser.choice` pins `kiro_chromium`/`headless`) and it is not on disk; a host
+that drives the user's Chrome never downloads it unasked (Settings' Install still
+installs both). After
 a successful install it warms the connection the way Test does ONLY for a
 headless Kiro Chromium: connecting the user's Chrome or Edge is what raises
 Chrome's Allow sheet, and a headed Kiro Chromium would open a window, so both stay
@@ -127,20 +169,28 @@ shorter place is the system temp dir, which no sandbox mask covers, and the
 daemon resolves symlinks before binding, so an alias cannot help (the guard
 measures the RESOLVED home for the same reason). The daemon runs with
 `python -I`, like the helper worker, so the gateway's working directory can never
-shadow the pinned package; the INSTALLER's two spawns (`python -I -m venv`,
-`<venv>/python -I -m pip`) run the same way, with the `PYTHON*` and `PIP_*`
-families scrubbed from their environment and the prefix as their working
-directory, because a pod gateway's cwd is the agent's workspace and a `pip/`
-package written there would otherwise run as the owner the moment they press
-Install. `NO_PROXY`/`no_proxy` always carry `127.0.0.1,localhost`: neither
-`urllib` nor `websockets` bypasses a proxy for loopback on its own, and a shell
-with `HTTPS_PROXY` set would send the relay URL (secret and all) to the proxy
-host. A version bump re-reads the package's telemetry and auth modules before it
-lands, because 0.1.13's telemetry is on by default and its run event carries the
-agent's whole script unscrubbed.
+shadow the pinned package; the INSTALLER's two spawns (`python -I -m venv`, then
+`<venv>/python -I -m pip`, or the copied venv's `-I -c` check) run the same way,
+with the `PYTHON*` and `PIP_*` families scrubbed from their environment and the
+prefix as their working directory, because a pod gateway's cwd is the agent's
+workspace and a `pip/` package written there would otherwise run as the owner the
+moment they press Install. Their environment also sets `PIP_CONFIG_FILE` to the
+null device, so pip loads no config file (the user's `~/.config/pip/pip.conf` or
+`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own) and installs from its default
+index, PyPI: an `index-url` in the user's file, such as a CodeArtifact repository
+whose login has expired, would otherwise answer 401 for every locked wheel and
+fail the install with pip's raw output. A mirror set in pip's config or in
+`PIP_INDEX_URL` is therefore not used; the lock's hashes pin every file either
+way. `NO_PROXY`/`no_proxy` always carry `127.0.0.1,localhost`: neither `urllib`
+nor `websockets` bypasses a proxy for loopback on its own, and a shell with
+`HTTPS_PROXY` set would send the relay URL (secret and all) to the proxy host. A
+version bump re-reads the package's telemetry and auth modules before it lands,
+because 0.1.13's telemetry is on by default and its run event carries the agent's
+whole script unscrubbed.
 
-**The helper worker.** The gateway's Python has no `browser_harness` package, so
-each helper call runs in a worker the venv's interpreter executes
+**The helper worker.** The gateway never imports `browser_harness` (its Python
+carries none unless its runtime bundles the harness), so each helper call runs in
+a worker the venv's interpreter executes
 (`<prefix>/bin/python -I browser_harness/helper_worker.py`, JSON lines on its
 pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). The pipe is
 read with an 8 MiB line limit (`WORKER_LINE_LIMIT`; asyncio's 64 KiB default is
@@ -556,18 +606,27 @@ retry. The claim and the op route share one per-session fence
 claim takes the lock first (so no new op starts), cancels the op in flight and is
 confirmed only once the route has left the fence, so a takeover never lands
 inside an op; `in_control` is published only if the lock is still held after the
-claim's own awaits (an Esc in between has already said `live`). A claim on a
+claim's own awaits (an Esc in between has already said `live`). Only a lock
+release leaves `in_control`: a supervisor state reported while the person holds
+the browser (`waiting_allow`, `error`), and a non-`live` state the claim took over,
+is queued on the session and published by the hand-back instead of `live`; the
+turn's fold, a new turn and a started stream drop it. A claim on a
 finished card (`done`, `error`) is refused (409 `turn_over`). **An agent op is
 not lost while the person is in control: it waits for the hand-back and then
 runs**, which is how the agent resumes by itself after a sign-in. The wait lives in
 the TOOL, not in one HTTP call: the op route answers at once with
 `user_in_control` and `hold: true`, and the `browser` tool parks itself as a
-`DeferredTool` (the shim runs one worker thread, and the ACP tool-stall watchdog
-ends a tool call silent for 600 s) that every `HANDBACK_POLL_S` (5 s) posts
+`DeferredTool` (the shim runs one worker thread, and the call has its own silence
+timer on the ACP side, `acp-client.md` "Per-call silence timer") that every `HANDBACK_POLL_S` (5 s) posts
 `/api/browser/handback` -- a short long-poll of at most `HANDBACK_WAIT_S` (3 s) on
 `LiveHub.wait_for_release`, the awaitable the release sets -- and every 30 s pings
-the session keepalive. On `released` the op is posted again and runs. Bounded by
-`HOLD_TIMEOUT_S` (10 minutes) in the shim, after which the agent is told
+the session keepalive with the call's heartbeat (`tool_call_id`, phase
+`waiting_for_handback`), beside the MCP progress note the stdio loop sends. On `released` the op is posted again and runs. Bounded by
+`HOLD_TIMEOUT_S` (10 minutes) from each park, owned by the gateway's hub
+(`LiveSession.parked_until`, one per session, so every call parked there hears
+the end; a re-posted op held again starts a new hold on both sides): a poll after it
+answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
+only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
 turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
@@ -622,13 +681,18 @@ are dropped. The answer's `delivered` says where it went:
 * `agent`: an agent op of this turn is parked on this takeover: the op route
   answered it `hold` (`LiveHub.park`, `LiveSession.parked`), so the tool polls
   `/api/browser/handback` until the hand-back. The flag is cleared by the
-  hand-back, the turn's start and its end. The hub keeps `{choice, note}` on the
+  hand-back, the turn's start and its end, and it lapses when the hub's hold
+  ends: a hand-back after that goes to chat, never to the turn's next op, and
+  the op's poll answers `hold_over` so the op is not run behind words the agent
+  never sees (`LiveHub.hold_over`). A claim before the poll saw a hand-back parks
+  the op again on the same end, so that earlier hand-back resumes nothing; a note
+  it carried rides on the `hold_over` answer instead. The hub keeps `{choice, note}` on the
   session (`LiveHub.take_handback` takes it once; a second note while one is
   untaken goes to chat); the poll answers `released` with `handed_back`, and the
   tool appends one line to the op's result (or to the `interrupted` text):
   `handed_back: {"choice", "note"}`, marked as the user's own words, not page
-  content. Should the poll go away without taking it, the turn's next op answer
-  carries it.
+  content. Should a poll that was still inside its hold go away without taking
+  it, the turn's next op answer carries it.
 * `chat`: no op is parked -- the turn is between ops (it may end without
   another), a view was reopened after its turn, or the turn ended under the
   takeover. The card fires `mc:browser-handback-chat`
@@ -945,8 +1009,8 @@ the last navigate or snapshot.
 |---|---|
 | `navigate`, `back` | stamp the old document and wait for a new one (or a matching href) with an injected clock |
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
-| `click` | a ref or `x`,`y`; `clicks: 2` is a double click |
-| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers) |
+| `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
+| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
@@ -1294,9 +1358,11 @@ The config section is `browser`: `choice`, `live.enabled`, `live.quality`,
 
 `dashboard.use_builtin_browser` and `dashboard.browser_view_port` configured the
 agent browser this stack replaced. They are no longer fields. A `config.json`
-that still carries them loads, logs ONE warning naming them
-(`config/resolution.py`, `warn_retired_section_keys`), and drops them on the
-next save (`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+that still carries them loads, logs ONE warning naming each one whose value
+differs from the default older builds wrote into every config they saved
+(`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
+`warn_retired_section_keys`), and drops them on the next save
+(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 

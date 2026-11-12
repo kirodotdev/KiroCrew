@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Fifty-one types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-three types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -48,6 +48,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`tool/completed`](#toolcompleted) | A tool call's terminal frame. | live | `acp`, `gateway` | closer, by `call_id` |
 | [`approval/requested`](#approvalrequested) | A tool call is waiting on a human. | live | `gateway` | opener of `approval/decided` |
 | [`approval/decided`](#approvaldecided) | How an approval resolved. | live | `gateway` | closer, by `approval_id` |
+| [`approval/bridged`](#approvalbridged) | An action on an approval, taken from a chat app through the notification bridge. | live | `gateway` | none; beside the approval, by `approval_id` |
 | [`model/selected`](#modelselected) | A model swap, and why. | live | `gateway` | — |
 | [`compaction/applied`](#compactionapplied) | A compaction, as context-usage percentages. | live | `gateway` | — |
 | [`plan/updated`](#planupdated) | The session's task list, as just restated. | live | `acp` | — |
@@ -70,6 +71,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a Bot waits on the person for, after it changed. | live | `gateway` | — |
 | [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a Bot, stamped with who wrote it. | live | `gateway` | — |
 | [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this Bot ended in error, stamped by the gateway. | live | `gateway` | — |
+| [`dashboard/stale_wake`](#dashboardstale_wake) | The gateway started a turn in this Bot's thread because fields on its page went out of date. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1013,6 +1015,43 @@ no `by`.
 
 **Since** — type #10091; written by #11185.
 
+### `approval/bridged`
+
+An action on an approval, taken from a chat app through the notification bridge.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once for every action a chat app takes on a bridged approval,
+admitted or refused, by `notifications/bridge_action_audit.audit_action`. No
+transport calls it yet.
+
+**Pairing** — None. It sits beside the approval's own entries, matched by
+`approval_id`, and never replaces `approval/decided`: an admitted action resolves
+the decision, and the waiter writes `approval/decided` as it does for any surface.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `turn` | int | optional | The turn that asked; absent when unknown. | |
+| `approval_id` | string | required | The same id as the request. | |
+| `transport` | string | required | The chat transport the action came from. | |
+| `outcome` | string | required | What the action did; `approved` and `denied` resolved the decision. | `approved`, `denied`, `expired`, `refused` |
+| `reason` | string | optional | Why the action was not admitted; absent when it was. | `already_answered`, `expired`, `not_owner`, `invalid_choice`, `unknown` |
+| `channel` | string | optional | The source notification channel, when known. | |
+| `actor` | string | optional | Who took the action, on the transport; recorded for a refused stranger too. | |
+| `owner` | string | optional | The verified owner the prompt was bridged to. | |
+
+**Invariants** — At most one entry for an approval has `outcome` `approved` or
+`denied`, and only those two carry no `reason`.
+
+```json
+{"type":"approval/bridged","seq":26,"time":1789000000700,"src":"gateway","data":{"turn":3,"approval_id":"a-1","transport":"slack","outcome":"approved"}}
+```
+
+**Reader hint** — To see refused or expired attempts on an approval, filter to
+entries that carry a `reason`.
+
+**Since** — introduced with the notification bridge actions (RFC phase B4b).
+
 ## Model, compaction and plan
 
 ### `model/selected`
@@ -1856,6 +1895,24 @@ that writer's next record replaces the row, and `custom.failures` lists the writ
 
 ```json
 {"type":"dashboard/custom_failed","seq":97,"time":1789000004600,"src":"gateway","data":{"writer":"cron:nightly-build","error":"crew_log_append() failed: this cron job has sent 30 records in the last minute; wait before sending more","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+### `dashboard/stale_wake`
+
+Kind `session`, `src` `gateway`. Written by the gateway (`dashboard/stale_wake.py`,
+preview `dashboard_stale_wake`) right after it starts a hidden turn in this Bot's thread
+because agentic fields on its page went out of date. Best-effort: a Bot with no crew log
+yet gets none. No fold reads it; it is the record of a model turn no one typed, for a
+reader adding up what wakes cost.
+
+| field | type | notes |
+| --- | --- | --- |
+| `actor` | string | always `gateway` |
+| `reason` | string | `stale_fields` |
+| `fields` | array of string | the field names the turn asks the Bot to write again, sorted |
+
+```json
+{"type":"dashboard/stale_wake","seq":98,"time":1789000004700,"src":"gateway","data":{"actor":"gateway","reason":"stale_fields","fields":["headline","open_risks"]}}
 ```
 
 ## Change cards and guides

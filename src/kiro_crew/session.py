@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast  # noqa: F401
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities  # noqa: F401
+    from kiro_crew.session_rss_rebound import RssHold
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import model_registry, model_scope, platform_compat, shutdown_event  # noqa: F401
@@ -707,6 +708,8 @@ class SessionManager:
     compaction_waits_for_turn = _turn_context.compaction_waits_for_turn
     mark_needs_reinjection = _turn_context.mark_needs_reinjection
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
+    remember_agent_spawn_context = _turn_context.remember_agent_spawn_context
+    agent_spawn_context = _turn_context.agent_spawn_context
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
     provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
@@ -741,6 +744,7 @@ class SessionManager:
     mirror_accepts_inbound = _links.mirror_accepts_inbound
     has_mirror_row = _links.has_mirror_row
     mirror_link_nonce = _links.mirror_link_nonce
+    session_map_generation = _links.session_map_generation
     slack_link_nonce = _links.slack_link_nonce
     set_mirror_opt_out = _links.set_mirror_opt_out
     mirror_opt_out = _links.mirror_opt_out
@@ -791,6 +795,7 @@ class SessionManager:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     drain_active_turns = _teardown.drain_active_turns
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release
@@ -802,6 +807,7 @@ class SessionManager:
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
     open_replay_gap = _teardown.open_replay_gap
+    has_open_replay_gap = _teardown.has_open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap
     _send_abort_for_session = _teardown._send_abort_for_session
@@ -890,10 +896,13 @@ class SessionManager:
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues
         # grows both once the gateway's post-bind sizing has read the host.
-        configure_runtime_spawn_width(getattr(cfg, "agent", None))
+        # Kept so a later widening sizes from the settings this manager was built
+        # with: a config change replaces ``_cfg`` before a restart applies them.
+        self._cold_start_agent = getattr(cfg, "agent", None)
+        configure_runtime_spawn_width(self._cold_start_agent)
         self._allocation_state = SessionRegistryState(
             start_sem=new_cold_start_semaphore(
-                cached_cold_start_concurrency(getattr(cfg, "agent", None))
+                cached_cold_start_concurrency(self._cold_start_agent)
             )
         )
         self._allocation_boundary()
@@ -931,6 +940,14 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired once per turn by the RSS tick for a session over the ceiling whose
+        # memory is held by processes outside its runtime's tree. Args: (key, notice).
+        self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired once when the RSS recycle stops recycling a session whose fresh
+        # processes keep climbing straight back over the ceiling
+        # (``session_rss_rebound``), so the chat can say which setting to raise.
+        # The same kind of seam as ``on_stuck_turn``. Args: (session_key, hold).
+        self.on_rss_hold: Callable[[str, RssHold], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
         # channel turn's end, which no dashboard turn boundary sees, and to push

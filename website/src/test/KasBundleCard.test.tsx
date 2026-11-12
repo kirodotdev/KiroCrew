@@ -161,6 +161,31 @@ describe('KasBundleCard', () => {
     expect(screen.getByTestId('restart-badge')).toBeInTheDocument()
   })
 
+  it('keeps the switch focusable and refuses a second press while its own save runs', async () => {
+    // A native disabled takes the pressed switch out of the tab order, dropping a
+    // keyboard user to the page while the save runs. aria-disabled plus a guard
+    // keep the tab stop and still refuse a second press.
+    kasBundleStatus.mockResolvedValue(INSTALLED)
+    let release: () => void = () => undefined
+    patchConfig.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({}) }))
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    const sw = toggle()
+    sw.focus()
+    fireEvent.click(sw)
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true))
+    // Focusable and announced busy while the write runs, not taken out of the order.
+    expect(sw).toHaveAttribute('aria-disabled', 'true')
+    expect(sw).toHaveAttribute('aria-busy', 'true')
+    expect(sw).toHaveAttribute('tabindex', '0')
+    expect(sw).toHaveFocus()
+    // A second press is ignored, so only the first save ran.
+    fireEvent.click(sw)
+    expect(patchConfig.mock.calls.filter(c => c[0] === 'agent.kas_bundle')).toHaveLength(1)
+    act(() => { release() })
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-busy'))
+  })
+
   it('always lets an enabled switch be turned off, even with nothing installed', async () => {
     // A broken or removed install must never trap anyone on this route.
     kasBundleStatus.mockResolvedValue({ ...BASE, enabled: true })

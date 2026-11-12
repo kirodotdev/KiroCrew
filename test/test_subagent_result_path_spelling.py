@@ -24,6 +24,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew import subagent_persistence
 from kiro_crew.subagent_persistence import (
     _agent_dir,
@@ -127,6 +128,62 @@ class TestSymlinkedKirocrewHomeOverride:
         active = tmp_path / "active-home"
         monkeypatch.setattr(subagent_persistence, "data_home", lambda: active)
         assert agent_dir_for_display(_AGENT_ID) == active / "subagents" / _AGENT_ID
+
+
+class TestSpawnSubAgentsPointsUnderTheConfiguredHome:
+    """``spawn_sub_agents`` runs in an MCP process started on the RESOLVED home.
+
+    Each status read is answered by the real ``GET /api/spawn/{id}`` handler under
+    the gateway's ``KIROCREW_HOME`` (the link), while the tool itself runs with the
+    resolved home, as its process does.
+    """
+
+    @pytest.mark.parametrize("registered", [True, False], ids=["live", "on-disk"])
+    def test_a_long_result_points_under_the_link(self, tmp_path, monkeypatch, registered):
+        import asyncio
+        import json
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_status
+        from kiro_crew.mcp_core import _call_tool
+        from kiro_crew.subagent import SubagentInfo
+        from kiro_crew.subagent_persistence import write_tombstone
+
+        real = tmp_path / "real-crew"
+        real.mkdir()
+        link = tmp_path / "crew-link"
+        make_dir_link(link, real)
+        monkeypatch.setattr(subagent_persistence, "_SUBAGENTS_DIR", None)
+        monkeypatch.setenv("KIROCREW_HOME", str(link))
+        create_agent_folder(_AGENT_ID, task="t", agent="")
+        write_result_chunk(_AGENT_ID, "word " * 1000)
+        write_tombstone(_AGENT_ID, cause="delivered", recovery_action="delivered")
+        info = SubagentInfo(id=_AGENT_ID, task="t")
+        info.done = True
+        info.result_path = str(agent_dir_for_display(_AGENT_ID) / "result.txt")
+        state = mock.MagicMock()
+        state.subagents.get = mock.MagicMock(return_value=info if registered else None)
+        state.subagents.queued_run_async = mock.AsyncMock(return_value=None)
+
+        def gateway_get(path, **_kw):
+            request = mock.MagicMock()
+            request.app = {"state": state}
+            request.match_info = {"agent_id": path.rsplit("/", 1)[-1]}
+            request.query = {}
+            with mock.patch.dict(os.environ, {"KIROCREW_HOME": str(link)}):
+                return json.loads(asyncio.run(api_spawn_status(request)).body)
+
+        monkeypatch.setenv("KIROCREW_HOME", str(real.resolve()))
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "s")
+        with (
+            mock.patch("kiro_crew.mcp_core._post", return_value={"id": _AGENT_ID}),
+            mock.patch("kiro_crew.mcp_core._get", side_effect=gateway_get),
+            mock.patch("kiro_crew.mcp_core.sel"),
+        ):
+            reply = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+
+        text = json.loads(reply.split("\n\n")[0])["text"]
+        assert str(link / "subagents" / _AGENT_ID / "result.txt") in text
+        assert str(real.resolve()) not in text
 
 
 class TestEmittedResultPointersAreReadable:

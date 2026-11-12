@@ -183,11 +183,12 @@ def _parse_duration(value: Any, field: str) -> float:
         raise ValueError(f"{field}: expected a duration, got an empty value")
     scale = _DURATION_UNITS.get(text[-1])
     try:
-        return float(text[:-1]) * scale if scale is not None else float(text)
+        seconds = float(text[:-1]) * scale if scale is not None else float(text)
     except ValueError:
         raise ValueError(
             f"{field}: expected seconds or a duration like 30s, 5m, 2h, 1d; got {value!r}"
         ) from None
+    return _finite(seconds, field)
 
 
 def _parse_instant(value: Any, field: str) -> float:
@@ -205,9 +206,11 @@ def _parse_instant(value: Any, field: str) -> float:
     if not text:
         raise ValueError(f"{field}: expected a time, got an empty value")
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         pass
+    else:
+        return _finite(number, field)
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
@@ -1085,7 +1088,10 @@ class Recorder:
         path = self._file_for(now)
         rows_today = 0
         try:
-            with open(path, encoding="utf-8") as handle:
+            # Bytes, as the query reader opens it: a write cut short mid
+            # character leaves a torn UTF-8 tail, and a text read would raise
+            # on it and lose the rest of this block until the day rolls over.
+            with open(path, "rb") as handle:
                 rows_today = sum(1 for _ in handle)
         except OSError:
             rows_today = 0

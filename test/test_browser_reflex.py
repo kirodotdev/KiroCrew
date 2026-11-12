@@ -28,6 +28,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.browser_harness import budgets
 from kiro_crew.browser_harness import decide as decide_mod
@@ -607,13 +608,30 @@ def test_a_later_decision_that_fails_ends_with_a_summary(seam, tmp_path):
 @pytest.mark.parametrize(
     "args,code",
     [
-        ({"keys": ["ArrowLeft"]}, "bad_goal"),
-        ({"goal": "g"}, "no_actions"),
-        ({"goal": "g", "keys": ["F13"]}, "bad_key"),
-        ({"goal": "g", "click": ["button"]}, "bad_ref"),
-        ({"goal": "g", "drag": ["e1-e2"]}, "bad_ref"),
-        ({"goal": "g", "type": ["e1"]}, "bad_value"),
-        ({"goal": "g", "keys": ["a"] * 41}, "too_many_actions"),
+        *named_cases(
+            "test_a_malformed_call_is_refused",
+            "args,code",
+            [
+                ({"keys": ["ArrowLeft"]}, "bad_goal"),
+                ({"goal": "g"}, "no_actions"),
+                ({"goal": "g", "keys": ["F13"]}, "bad_key"),
+                ({"goal": "g", "click": ["button"]}, "bad_ref"),
+                ({"goal": "g", "drag": ["e1-e2"]}, "bad_ref"),
+                ({"goal": "g", "type": ["e1"]}, "bad_value"),
+                ({"goal": "g", "keys": ["a"] * 41}, "too_many_actions"),
+            ],
+        ),
+        # The timed modes and the operation/target heads.
+        *named_cases(
+            "test_a_malformed_timed_call_is_refused",
+            "args,code",
+            [
+                ({"goal": "g", "keys": ["s"], "mode": "turbo"}, "bad_mode"),
+                ({"goal": "g", "targets": ["type"]}, "bad_value"),
+                ({"goal": "g", "targets": ["paste"]}, "bad_targets"),
+                ({"goal": "g", "keys": ["s"], "supersede": "always"}, "bad_supersede"),
+            ],
+        ),
     ],
 )
 def test_a_malformed_call_is_refused(args, code):

@@ -69,7 +69,7 @@ def test_compute_default_per_worker_is_platform_aware(
 ) -> None:
     """With no explicit per_worker_gb, the reservation follows the platform.
 
-    A full-suite worker holds ~1.5 GB on Linux but 14.9-16.1 GB on macOS, so the
+    A long-suite worker holds ~4.5 GB on Linux but 14.9-16.1 GB on macOS, so the
     default divisor is not one number. Sized identically to the local ``-n auto``
     budget (``xdist_budget``) so the two subsystems size a worker identically.
     """
@@ -77,8 +77,8 @@ def test_compute_default_per_worker_is_platform_aware(
     # 64 GB free, 16 CPUs: macOS reserves 16 GB/worker → floor(64*0.5/16) = 2.
     assert rs.compute_xdist_auto_workers(64.0, 16) == 2
     monkeypatch.setattr(rs.sys, "platform", "linux", raising=False)
-    # Same host on Linux reserves 3 GB/worker → floor(64*0.5/3) = 10.
-    assert rs.compute_xdist_auto_workers(64.0, 16) == 10
+    # Same host on Linux reserves 5 GB/worker → floor(64*0.5/5) = 6.
+    assert rs.compute_xdist_auto_workers(64.0, 16) == 6
 
 
 # ── _xdist_cap_config ────────────────────────────────────────────────────────

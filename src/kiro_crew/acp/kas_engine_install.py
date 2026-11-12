@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "KAS_ENGINE_RETRY_COMMAND",
+    "host_unsupported_message",
     "install_pinned_engine",
     "install_snapshot",
     "offline_install_message",
@@ -77,6 +78,16 @@ def offline_install_message(detail: str) -> str:
     )
 
 
+def host_unsupported_message(detail: str) -> str:
+    """The error for a host that cannot run the engine: the cause alone.
+
+    No offline or retry advice: the OS, architecture or glibc that refused the
+    install is the same on the next attempt, so a retry can never succeed.
+    """
+    detail = detail.strip().rstrip(".")
+    return f"Kiro Crew cannot install its KAS engine: {detail}."
+
+
 def _inside_agent_sandbox() -> bool:
     from kiro_crew.sandbox_launch_mark import SANDBOX_MARKER
 
@@ -94,7 +105,9 @@ def install_pinned_engine(
     *caller* names who asked (``"spawn"`` or ``"dashboard"``) for the log line.
     Raises :class:`kiro_crew.acp.kas_bundle.KasBundleError` with
     :func:`offline_install_message`'s text on any failure, so the error a chat
-    shows already says how to retry.
+    shows already says how to retry, except on a host that cannot run the engine:
+    that is :class:`kiro_crew.acp.kas_bundle.KasHostUnsupported` with
+    :func:`host_unsupported_message`'s text, which offers no retry.
     """
     from kiro_crew.acp import kas_bundle as kas_bundle_mod
 
@@ -140,6 +153,13 @@ def install_pinned_engine(
         )
         try:
             installed = kas_bundle_mod.install_pinned(base_url, on_progress=_progress)
+        except kas_bundle_mod.KasHostUnsupported as exc:
+            # Kept as its own type, so the harness and the dashboard can tell a
+            # host that never runs the engine from a transfer that may work later.
+            message = host_unsupported_message(str(exc))
+            _update(running=False, error=message)
+            logger.warning("KAS engine cannot run on this host: %s", exc)
+            raise kas_bundle_mod.KasHostUnsupported(message) from exc
         except kas_bundle_mod.KasBundleError as exc:
             message = offline_install_message(str(exc))
             _update(running=False, error=message)

@@ -145,8 +145,8 @@ class HostTokenSource(Protocol):
     ) -> None:
         """Register what says whether a host connection is up, and who is on it.
 
-        A lease renewal reports *connected* as ``relay.connected`` and *people* as
-        ``connectedCount``. ``None`` unregisters each.
+        A lease renewal reports *connected* as ``relay.connectionStatus`` and
+        *people* as ``connectedCount``. ``None`` unregisters each.
         """
         ...
 

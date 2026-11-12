@@ -21,12 +21,12 @@ Path arguments are resolved in the shapes these modules use:
 * a module-level constant, including one interpolated into an f-string
   (``f"{_api_base()}{COMMAND_PATH}"`` in ``mcp_tools/browser.py``)
 * a local variable built earlier in the same function, including one assembled by
-  ``+`` concatenation (``"/api/apps/ops-mission-control" + _omc_path``) or
+  ``+`` concatenation (``"/api/lessons" + (...)`` in ``mcp_tools/learn.py``) or
   extended with ``+=``
 
 An unknown span becomes ``{X}``. A whole-segment marker keeps the path concrete. A
 marker glued to a segment's tail makes it a PREFIX: some allowlist entry must start with
-the literal head (this covers the individually allowlisted Ops Mission Control routes).
+the literal head (a query string appended to a granted path reads this way).
 
 Not checked: which bucket (strict or mixed) a path is in; that a specific endpoint under
 a granted prefix is granted; bucket disjointness, which
@@ -536,10 +536,15 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 cands = _resolve(expr, scopes, core)
                             except _TooManyCandidates:
                                 cands = []
+                            # A Request built from the URL alone carries no header, so a
+                            # dashboard-token read of that shape (``kirocrew status``'s
+                            # owner read) sends no internal secret: out of scope. One that
+                            # passes headers may send it, so its path is checked.
+                            url_only = (
+                                called == "Request" and len(child.args) == 1 and not child.keywords
+                            )
                             for cand in cands:
-                                if called == "Request" and "?token=" in cand:
-                                    # A dashboard-token read (``kirocrew status``'s owner
-                                    # read) sends no internal secret: out of scope.
+                                if url_only and "?token=" in cand:
                                     found = True
                                     continue
                                 norm = _normalise(cand)
@@ -622,7 +627,7 @@ def _is_prefix_path(path: str) -> bool:
 
     A marker that occupies a whole segment (``/api/artifacts/{X}/comments``) is
     an opaque id and the path is still concrete. A marker glued to text
-    (``/api/apps/ops-mission-control{X}``) means the rest of the segment is only
+    (``/api/lessons{X}``) means the rest of the segment is only
     known at runtime.
     """
     at = path.find(_UNKNOWN)
@@ -846,7 +851,7 @@ class TestMcpCallSiteAuthCoverage:
             ("/api/artifacts", "literal passed to an exempted wrapper's caller"),
             ("/api/crons/{X}/run", "a non-MCP caller (cron_trigger)"),
             ("/api/artifacts/{X}/versions/{X}", "local variable assigned in a branch"),
-            ("/api/apps/ops-mission-control{X}", "local built by + concatenation"),
+            ("/api/lessons{X}", "local built by + concatenation"),
         ):
             assert path in found, f"{path} not extracted -- {shape} is now blind"
         # The wrapper-caller shape by its own mark: a path-forwarding wrapper's verb
@@ -899,6 +904,31 @@ class TestMcpCallSiteAuthCoverage:
             f"so it is unguarded and nothing failed; unresolved={sorted(unresolved)}"
         )
 
+    def test_a_token_url_skips_only_a_request_built_from_the_url_alone(self, monkeypatch, tmp_path):
+        """A dashboard-token URL must not hide a Request that can carry the secret.
+
+        ``kirocrew status``'s owner read is ``Request(<url>)`` with a token query and
+        nothing else. A Request with the same URL and headers may send
+        ``X-Internal-Secret``, so its path is checked like every other call.
+        """
+        mod = tmp_path / "tokenshape.py"
+        mod.write_text(
+            "import urllib.request\n"
+            'H = "X-Internal-Secret"\n'
+            "def go(base, t, s):\n"
+            '    headers = {"X-Internal-Secret": s}\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-local?token={t}", headers=headers)\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-positional?token={t}", None, {H: s})\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-alone?token={t}")\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(globals(), "_SOURCES", (_CORE, mod))
+        paths, _ = _scan()
+        for path in ("/api/zz-tok-local", "/api/zz-tok-positional"):
+            assert path in paths, f"a token-URL Request with headers skipped the check: {path}"
+            assert not _is_granted(path, _methods_for(paths[path])), path
+        assert "/api/zz-tok-alone" not in paths, "the URL-only token read is no longer skipped"
+
     def test_secret_header_is_detected_in_a_dict_literal(self):
         """A constant header key inside a dict literal marks a sender.
 
@@ -924,7 +954,7 @@ class TestMcpCallSiteAuthCoverage:
         """Guard the classifier: reading a prefix as concrete would false-FAIL,
         and reading a concrete path as a prefix would weaken a real check."""
         assert _is_prefix_path(
-            "/api/apps/ops-mission-control{X}"
+            "/api/lessons{X}"
         ), "a marker glued to a segment tail is a prefix, not a concrete path"
         assert not _is_prefix_path(
             "/api/artifacts/{X}/comments"

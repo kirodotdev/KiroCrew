@@ -6,7 +6,9 @@ import { api, type CrewmateExportChoices, type CrewmateExportPreview } from '../
 import { apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { effortLabel } from '../../lib/effort'
 import { downloadBlob } from '../../utils/download'
 
 /** Why the server left a part out, worded for the owner. Each code is one literal key. */
@@ -52,6 +54,7 @@ function planSignature(plan: CrewmateExportPreview): string {
     name: plan.name,
     description: plan.description,
     model: plan.model,
+    reasoning_effort: plan.reasoning_effort,
     dashboard: plan.dashboard,
     avatar: plan.avatar,
     avatar_digest: plan.avatar_digest,
@@ -242,6 +245,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
           )) : <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_none')}</p>)}
         </Line>
         <Line label={t('pages.membersPage.export_model')} value={v.model || t('pages.membersPage.export_model_default')} testId="crew-export-model" />
+        <Line label={t('components.reasoningEffortDropdown.reasoning_effort')} value={v.reasoning_effort ? effortLabel(v.reasoning_effort) : t('pages.membersPage.export_model_default')} testId="crew-export-reasoning-effort" />
         {ownSkills.map(s => (
           <Line
             key={s.name}
@@ -299,7 +303,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
                 {v.mcp_servers.map(m => (
                   <li key={m.server}>
                     {m.server}
-                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: m.placeholders.join(', ') })}</span>}
+                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: fmtList(m.placeholders, { style: 'narrow' }) })}</span>}
                   </li>
                 ))}
               </ul>

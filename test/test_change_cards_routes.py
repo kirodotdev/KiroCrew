@@ -89,6 +89,37 @@ def test_real_setting_reader_and_validation_use_the_settings_registry():
     assert exc.value.code == "setting_not_editable"
 
 
+@pytest.mark.parametrize("name", ["marssupport", "mars-support", "MarsSupport", "mars_support"])
+def test_an_agents_path_gets_the_resolvers_answer_whatever_the_bot_name(name):
+    """A Bot name may hold a hyphen or a capital (``validation._AGENT_NAME_RE``), so
+    ``agents.<name>.<field>`` clears the path check for every Bot name and is answered
+    by the setting resolver, as a lowercase name is, never by a refusal that blames
+    the name's characters. Validate, then resolve: the order the propose route runs."""
+    path = f"agents.{name}.approval_mode"
+    params = catalog.validate_params("setting.change", {"path": path, "value": "trust"})
+    assert params["path"] == path
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        cards.resolve_setting(params)
+    assert exc.value.code == "setting_not_editable"
+
+
+@pytest.mark.parametrize(
+    "path", ["agents..approval_mode", "agents.mars support.approval_mode", "Agents.x.y", "agent"]
+)
+def test_a_malformed_config_path_is_still_refused_by_the_path_check(path):
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        catalog.validate_params("setting.change", {"path": path, "value": 1})
+    assert exc.value.message == "'path' has invalid characters"
+
+
+def test_a_manual_config_patch_reads_the_old_value_of_a_hyphenated_path(monkeypatch):
+    """The same path grammar gates the old value a manual Settings save records in
+    memory, so an ``apps.<name>.model`` row (app names are kebab-case) keeps it."""
+    monkeypatch.setattr(cards, "_config_value", lambda path: f"old:{path}")
+    route = ("PATCH", "/api/config/kirocrew")
+    assert routes._config_before(route, {"path": "apps.my-app.model"}) == "old:apps.my-app.model"
+
+
 def test_propose_lands_in_the_callers_slot_and_only_an_agent_may_propose(world, tmp_path):
     store = CardStore(tmp_path / "c.json")
 

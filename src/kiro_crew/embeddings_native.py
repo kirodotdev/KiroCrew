@@ -19,6 +19,7 @@ import logging
 import os
 import platform
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -330,23 +331,79 @@ def _install_diskcache_stub() -> None:
     sys.modules["diskcache"] = stub
 
 
-def _harden_llama_null_streams() -> None:
-    """Make llama-cpp-python's process-global suppression streams Unicode-safe.
+class _NativeQuiet:
+    """How many of the binding's quiet blocks are open, and the callback that reads it."""
 
-    The vendored suppressor temporarily assigns its import-time ``os.devnull``
-    handles to ``sys.stdout`` and ``sys.stderr`` while a model loads. That load
-    runs on a background thread, so unrelated gateway output can reach those
-    handles. Reconfiguring the existing wrappers preserves the native ``dup2``
-    suppression while removing the host locale from that process-wide window.
+    #: Guards ``depth``, and makes installing the two halves one step.
+    lock = threading.Lock()
+    depth = 0
+    #: Every log callback registered with llama.cpp. It holds only an address,
+    #: so these references keep each one alive; none is ever dropped.
+    callbacks: list[object] = []
+
+
+def _native_quiet_enter(self):  # type: ignore[no-untyped-def]
+    """``suppress_stdout_stderr.__enter__``: silence llama.cpp's log, nothing else."""
+    if not self.disable:
+        with _NativeQuiet.lock:
+            _NativeQuiet.depth += 1
+    return self
+
+
+def _native_quiet_exit(self, *_exc):  # type: ignore[no-untyped-def]
+    """``suppress_stdout_stderr.__exit__``: the last block to close ends the silence."""
+    if not self.disable:
+        with _NativeQuiet.lock:
+            _NativeQuiet.depth -= 1
+
+
+def _quiet_native_log_without_redirect() -> None:
+    """Keep llama.cpp quiet during a load without redirecting the process's streams.
+
+    The binding wraps its native load calls in ``suppress_stdout_stderr``, which
+    points ``sys.stdout``, ``sys.stderr`` and descriptors 1 and 2 at the null
+    device for the WHOLE process. The load runs on ``kc-embed-load``, so every
+    line another thread writes meanwhile is discarded: the gateway's
+    ``--json-ready`` line, a log record, a traceback.
+
+    llama.cpp reports through one log callback, which the binding registers. So
+    the block keeps its meaning and loses its reach: a callback registered here
+    drops every native line while a block is open and hands it to the binding's
+    own callback otherwise. The count of open blocks is the only state, so the
+    ``set_verbose`` call every constructor makes cannot end the silence of a
+    load that is still running. Every caller of the class gets this, since
+    ``with`` reads ``__enter__`` and ``__exit__`` from the class.
+
+    A binding without these parts keeps its own redirect: both halves are
+    installed or neither. They are installed once per binding and under one
+    lock: the loader's cache does not stop two threads from both arriving here
+    first, and a callback registered by one of them and then released would
+    leave llama.cpp calling freed memory.
+
+    shortcut: a native line that bypasses llama.cpp's log callback is not hidden
+    (the bundled Linux arm64 build writes none through a load, embed and free);
+    if a build writes one, silence that writer, never a descriptor.
     """
-    llama_utils = sys.modules.get("llama_cpp._utils")
-    if llama_utils is None:
+    binding = sys.modules.get("llama_cpp")
+    redirect = getattr(sys.modules.get("llama_cpp._utils"), "suppress_stdout_stderr", None)
+    shipped = getattr(sys.modules.get("llama_cpp._logger"), "llama_log_callback", None)
+    as_callback = getattr(binding, "llama_log_callback", None)
+    register = getattr(binding, "llama_log_set", None)
+    if redirect is None or shipped is None or as_callback is None or register is None:
         return
-    for name in ("outnull_file", "errnull_file"):
-        stream = getattr(llama_utils, name, None)
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+    def quiet_aware(level, text, user_data):  # type: ignore[no-untyped-def]
+        if not _NativeQuiet.depth:
+            shipped(level, text, user_data)
+
+    with _NativeQuiet.lock:
+        if redirect.__enter__ is _native_quiet_enter:
+            return
+        callback = as_callback(quiet_aware)
+        _NativeQuiet.callbacks.append(callback)
+        register(callback, ctypes.c_void_p(0))
+        redirect.__enter__ = _native_quiet_enter
+        redirect.__exit__ = _native_quiet_exit
 
 
 def _log_dropped_inherited_lib_path() -> None:
@@ -557,7 +614,7 @@ def _load_llama_class():
     try:
         from llama_cpp import Llama  # noqa: F811
 
-        _harden_llama_null_streams()
+        _quiet_native_log_without_redirect()
         return Llama
     except Exception:
         logger.warning("Vendored llama-cpp-python failed to import", exc_info=True)

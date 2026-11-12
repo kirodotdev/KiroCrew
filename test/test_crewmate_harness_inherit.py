@@ -40,6 +40,10 @@ def _registry(_floor_monkeypatch):
     _floor_monkeypatch.setattr(crewmate_harness, "_fallback_logged", set())
     _floor_monkeypatch.setattr(crewmate_harness, "_VERDICTS", {})
     _floor_monkeypatch.setattr(crewmate_harness, "_REFRESHING", set())
+    # An installed claude adapter at or above the session-options floor.
+    _floor_monkeypatch.setattr(
+        "kiro_crew.agent_sdk.drivers.acp.claude_adapter_honours_session_options", lambda: True
+    )
 
 
 def _member(agent: dict) -> str:
@@ -391,13 +395,15 @@ def limits(_floor_monkeypatch):
         state["reads"] += 1
         state["on_loop"] = state.get("on_loop", 0) + int(_on_event_loop())
         if member_id != "atlas-0123456789ab" or backend == "kas":
-            return ()
-        return tuple(state["value"])
+            return (), ()
+        return tuple(state["value"]), tuple(state.get("items", ()))
 
-    _floor_monkeypatch.setattr("kiro_crew.mate_worker.kas_only_worker_fields", _fields)
+    _floor_monkeypatch.setattr("kiro_crew.mate_worker.kas_only_worker_detail", _fields)
     _floor_monkeypatch.setattr(
         "kiro_crew.crewmate_harness._chat_tool_limits",
-        lambda crew, backend: bool(state.get("chat")) and crew == "atlas" and backend != "kas",
+        lambda crew, backend: (
+            tuple(state.get("chat", ())) if crew == "atlas" and backend != "kas" else ()
+        ),
     )
     _floor_monkeypatch.setattr(
         "kiro_crew.agent_discovery.agents_dir_revision",
@@ -652,6 +658,40 @@ class TestMateAlarm:
         assert title.startswith("atlas runs on") and "tool limits" in body
         assert url == "/members?member=atlas"
 
+    def test_the_note_names_exactly_the_entries_to_change(self, limits, declared):
+        from kiro_crew import crewmate_harness_notice
+
+        limits["value"] = ("tool limits", "hooks")
+        limits["items"] = (
+            ("turned off", "github/create_issue"),
+            ("turned off", "fs/delete"),
+            ("hooks", "preToolUse"),
+        )
+        state = _State()
+        asyncio.run(
+            crewmate_harness_notice.deliver(state, _cfg("claude", "claude", inherited=True))
+        )
+        body = state.notes[0][2]
+        assert (
+            "turn these tools back on or remove these entries in the bot's file or its "
+            "Capabilities: turned off: `github/create_issue`, `fs/delete`; hooks: `preToolUse`."
+        ) in body
+        assert "more" not in body and crewmate_harness_notice.ROUTE in body
+
+    def test_a_long_list_is_capped(self):
+        from kiro_crew.crewmate_harness_notice import MAX_ITEMS, _items_line
+
+        line = _items_line(tuple(("turned off", f"s/t{i}") for i in range(MAX_ITEMS + 3)))
+        assert line.count("`s/t") == MAX_ITEMS and line.endswith("(+3 more)")
+
+    def test_a_name_with_markup_is_escaped(self):
+        from kiro_crew.crewmate_harness_notice import MAX_ITEM_CHARS, _items_line
+
+        line = _items_line((("hooks", "a`<img src=x>\n[x](http://e)\x1b"), ("hooks", "y" * 99)))
+        assert line == (
+            "hooks: `a<img src=x> [x](http://e)`, `" + "y" * (MAX_ITEM_CHARS - 1) + "…`"
+        )
+
     def test_a_mate_that_stops_falling_back_is_told_again_later(self, limits, declared):
         from kiro_crew import crewmate_harness_notice
 
@@ -680,7 +720,7 @@ class TestKasOnlyWorkerFields:
         from kiro_crew.mate_worker import kas_only_worker_fields
 
         spec["spec"] = {
-            "excludedTools": ["shell"],
+            "excludedTools": ["use_aws"],
             "hooks": {"preToolUse": [{"command": "x"}]},
             "permissions": {"allow": ["read"]},
             "toolsSettings": {"shell": {"allowedCommands": ["ls"]}},
@@ -699,14 +739,51 @@ class TestKasOnlyWorkerFields:
         spec["spec"] = {"tools": ["read"], "hooks": {}}
         assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ()
 
+    def test_the_detail_names_each_switched_off_tool_and_hook(self, spec):
+        from kiro_crew.mate_worker import kas_only_worker_detail
+
+        spec["spec"] = {
+            "mcpServers": {
+                "github": {"command": "gh", "disabledTools": ["create_issue"]},
+                "fs": {"command": "fs", "disabledTools": ["delete"]},
+            },
+            "hooks": {"preToolUse": [{"command": "x"}]},
+        }
+        assert kas_only_worker_detail("atlas-0123456789ab", "codex") == (
+            ("tool limits", "hooks"),
+            (
+                ("turned off", "github/create_issue"),
+                ("turned off", "fs/delete"),
+                ("hooks", "preToolUse"),
+            ),
+        )
+
+    def test_a_deny_host_is_told_only_the_entries_it_cannot_carry(self, spec):
+        from kiro_crew.mate_worker import kas_only_worker_detail
+
+        spec["spec"] = {
+            "mcpServers": {"github": {"command": "gh", "disabledTools": ["create_issue"]}},
+            "excludedTools": ["shell", "use_aws", "@github/x"],
+        }
+        assert kas_only_worker_detail("atlas-0123456789ab", "claude")[1] == (
+            ("excludedTools", "use_aws"),
+        )
+
 
 class TestChatToolLimits:
     def test_a_saved_spec_with_chat_tool_limits_runs_the_mate_on_kas(self, limits):
-        from kiro_crew.crewmate_harness import crewmate_backend_pin, worker_spec_kas_fields
+        from kiro_crew.crewmate_harness import (
+            crewmate_backend_pin,
+            worker_spec_kas_detail,
+            worker_spec_kas_fields,
+        )
 
-        limits["chat"] = True
+        limits["chat"] = ("github/search",)
         cfg = _cfg("claude", "claude", inherited=True)
         assert worker_spec_kas_fields(cfg, "atlas") == ("chat tool limits",)
+        assert worker_spec_kas_detail(cfg, "atlas")[1] == (
+            ("turned off in Capabilities", "github/search"),
+        )
         assert crewmate_backend_pin(cfg, DM_KEY).backend == "kas"
 
     def test_the_real_check_skips_a_harness_that_carries_chat_limits(self, _floor_monkeypatch):
@@ -730,7 +807,7 @@ class TestChatToolLimits:
         _floor_monkeypatch.setattr(
             "kiro_crew.agent_capabilities.prepare_member_capabilities", lambda _crew: prepared
         )
-        assert crewmate_harness._chat_tool_limits("atlas", "codex") is expected
+        assert bool(crewmate_harness._chat_tool_limits("atlas", "codex")) is expected
 
     def test_an_unreadable_saved_spec_is_left_to_the_start(self, _floor_monkeypatch):
         from kiro_crew import crewmate_harness
@@ -778,8 +855,10 @@ class TestPrivateCopyFallback:
         _floor_monkeypatch.setattr(
             "kiro_crew.agent_capabilities.prepare_member_capabilities", _refuse
         )
-        _floor_monkeypatch.setattr(crewmate_harness, "_private_copy_tool_limits", lambda c: True)
-        assert crewmate_harness._chat_tool_limits("atlas", "codex")
+        _floor_monkeypatch.setattr(
+            crewmate_harness, "_private_copy_tool_limits", lambda c: ("github/search",)
+        )
+        assert crewmate_harness._chat_tool_limits("atlas", "codex") == ("github/search",)
 
 
 class TestColdStartRefresh:
@@ -851,8 +930,25 @@ class TestColdStartRefresh:
         asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
         assert limits["reads"] == 0
 
-    def test_a_failed_read_never_raises(self, _floor_monkeypatch):
+    def test_a_failed_read_never_raises(self, limits, declared, _floor_monkeypatch):
+        """A failed read returns quietly and leaves the held answer in place."""
         from kiro_crew import crewmate_harness
+
+        cfg = _cfg("claude", "claude", inherited=True)
+        state = _State()
+        _floor_monkeypatch.setattr(
+            "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda *a, **k: cfg)
+        )
+        _floor_monkeypatch.setattr("kiro_crew.slack.handler.get_dashboard_state", lambda: state)
+
+        async def _pin():
+            return crewmate_harness.crewmate_backend_pin(cfg, DM_KEY)
+
+        # The held answer: the worker file sets hooks, so the Bot runs on KAS.
+        limits["value"], limits["revision"] = ("hooks",), ("r", 1)
+        asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
+        assert asyncio.run(_pin()).backend == "kas"
+        notes_before = list(state.notes)
 
         def _boom(*a, **k):
             raise OSError("unreadable")
@@ -860,7 +956,9 @@ class TestColdStartRefresh:
         _floor_monkeypatch.setattr(
             "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(_boom)
         )
-        asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
+        assert asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY)) is None
+        assert asyncio.run(_pin()).backend == "kas"
+        assert state.notes == notes_before
 
     def test_the_factory_seam_awaits_the_refresh(self):
         import inspect
@@ -1090,8 +1188,22 @@ class TestCarriedMcpToolLimits:
         assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ()
         assert kas_only_worker_fields("atlas-0123456789ab", "codex") == ("tool limits",)
 
-    def test_a_native_tool_limit_still_needs_kas(self, spec):
+    def test_a_native_tool_limit_no_built_in_covers_still_needs_kas(self, spec):
         from kiro_crew.mate_worker import kas_only_worker_fields
 
+        spec["spec"] = {"excludedTools": ["use_aws"]}
+        assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ("tool limits",)
+        spec["spec"] = {"excludedTools": ["shell"]}
+        assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ()
+
+    def test_a_native_tool_limit_needs_kas_below_the_adapter_options_floor(
+        self, spec, _floor_monkeypatch
+    ):
+        from kiro_crew.mate_worker import kas_only_worker_fields
+
+        _floor_monkeypatch.setattr(
+            "kiro_crew.agent_sdk.drivers.acp.claude_adapter_honours_session_options",
+            lambda: False,
+        )
         spec["spec"] = {"excludedTools": ["shell"]}
         assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ("tool limits",)

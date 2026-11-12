@@ -222,6 +222,34 @@ class _StaleWakeStopGuard:
         )
 
 
+async def _default_cycle_cap(args: dict[str, Any], binding: str, cap: int) -> int:
+    """0 when the loop the tool capped by default observes a subject after all.
+
+    Infers the subject from the same inputs the service's own arm reads -- the
+    redacted message, the scrubbed judge, the watch and the session log -- so the
+    cap follows the gate the loop will actually get.
+    """
+    import asyncio
+
+    from kiro_crew import autonudge
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    message, _ = redact_exfiltration_urls(str(args.get("message") or ""))
+    message, _ = redact_credentials(message)
+    watch = str(args.get("watch") or "")
+    judge = args.get("judge") if isinstance(args.get("judge"), dict) else None
+    texts = await asyncio.to_thread(autonudge.read_session_texts, message, binding, watch)
+    observed = autonudge.infer_monitor(
+        message,
+        time.time(),
+        judge=autonudge.scrubbed_judge_spec(judge) if judge else None,
+        watch=watch,
+        slot_key=binding,
+        session_texts=texts,
+    )
+    return 0 if observed is not None else cap
+
+
 async def _monitor_start(
     state: Any,
     session_key: str,
@@ -251,6 +279,12 @@ async def _monitor_start(
     # the flag existed must not read as an opt-out.
     raw_gate = args.get("gate")
     gate = True if raw_gate is None else bool(raw_gate)
+    if args.get("max_cycles_default") and gate:
+        # The tool chose the default cap because its run saw no subject; a bare
+        # ``PR <n>`` resolves only against the session log, which the tool's replay
+        # does not read. Decide again with the log, read off the event loop, so a loop
+        # that is gated after all takes no cap, as its ack and schema say.
+        max_cycles = await _default_cycle_cap(args, binding, max_cycles)
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -336,8 +370,9 @@ async def _monitor_start(
         f"to their turn's end without restarting the countdown){cap}"
         + (f"; {first_wake}" if first_wake else "")
         + ". Reply with one line saying the watch is armed, then end your turn — the "
-        "loop wakes you. Call autonudge_stop when the "
-        "exit condition is met."
+        "loop wakes you. When live state shows the exit condition is met, "
+        "send ONE final report, then call monitor_stop (or autonudge_stop) in a "
+        "later step."
     )
 
 
@@ -378,6 +413,7 @@ async def _monitor_watch(
         budgets=budgets,
         cadence_secs=int(args["cadence_secs"]),
         wake_instructions=str(args.get("wake_instructions") or ""),
+        wake_on_terminal=bool(args.get("wake_on_terminal") or False),
     )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -504,6 +540,19 @@ async def _monitor_update(
             "monitor_update cannot apply structured fields to a legacy loop: "
             + ", ".join(structured_only)
         )
+    # A work-ledger patrol takes no model-chosen bound or cadence (rfc-permanent-patrol.md):
+    # adding the watch, or touching a bound or the interval on a loop that has it, sets
+    # the one patrol interval, no cycle cap, and the operator's runtime ceiling (7 days
+    # as shipped) as the one backstop.
+    watches_ledger = getattr(getattr(loop, "monitor", None), "kind", "") == "work-ledger"
+    if patch.get("watch") == "work-ledger" or (
+        {"idle_secs", "max_cycles", "max_runtime_secs"} & set(patch) and watches_ledger
+    ):
+        from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS
+        from kiro_crew.monitoring.limits import runtime_ceiling_secs
+
+        patch["idle_secs"] = PATROL_INTERVAL_SECS
+        patch["max_cycles"], patch["max_runtime_secs"] = 0, runtime_ceiling_secs()
     cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
     current_cap = int(getattr(loop, "max_cycles", 0) or 0)
     new_cap = patch.get("max_cycles", current_cap)

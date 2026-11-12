@@ -21,6 +21,7 @@ import en from '../i18n/locales/en.manual.json'
 const KEYS = {
   rolling_out: 'rolling_out.key',
   distribution_disabled: 'distribution_disabled.key',
+  origin_mismatch: 'origin_mismatch.key',
   notice_generic: 'notice_generic.key',
 }
 
@@ -33,6 +34,11 @@ describe('publishNoticeKey', () => {
 
   it('keeps the rolling-out line for the case that is genuinely rolling out', () => {
     expect(publishNoticeKey(KEYS, 'rolling_out')).toBe(KEYS.rolling_out)
+  })
+
+  it('gives an origin mismatch its different-content warning and remedy', () => {
+    expect(publishNoticeKey(KEYS, 'origin_mismatch')).toBe(KEYS.origin_mismatch)
+    expect(publishNoticeKey(KEYS, 'origin_mismatch')).not.toBe(KEYS.notice_generic)
   })
 
   it('never promises a time for a code it does not recognise', () => {
@@ -57,6 +63,18 @@ describe('publish notice copy', () => {
       expect(s).toMatch(/AWS console/i)
       // The whole point of the discriminator: no "few minutes" anywhere in this case.
       expect(s).not.toMatch(/few minutes/i)
+    }
+  })
+
+  it('states the different-content risk and origin remedy for an origin mismatch', () => {
+    for (const s of [
+      hub.published_origin_mismatch,
+      detail.publication_origin_mismatch,
+      en.pages.artifactsPage.published_origin_mismatch,
+    ]) {
+      expect(s).toMatch(/different content/i)
+      expect(s).toMatch(/distribution origin/i)
+      expect(s).toMatch(/AWS console/i)
     }
   })
 

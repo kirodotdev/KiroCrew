@@ -155,7 +155,7 @@ flowchart LR
   own marks: trim to the newest turns when it passes 80K tokens. Its credits
   stay near the floor.
 - **Lifetime.** Started on the first routed wake. Ordinary idle reap
-  between wakes; a conductor patrol interval is 300 to 900 s, so it rarely
+  between wakes; a conductor patrol interval is 300 s, so it rarely
   idles that long.
   The transcript is kept and linked from each report row.
 - **Turns.** Each wake runs as one gateway-authored turn, through the same

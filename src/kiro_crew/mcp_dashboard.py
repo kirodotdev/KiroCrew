@@ -790,6 +790,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
@@ -853,13 +854,17 @@ def _list_tools() -> list[dict[str, Any]]:
 
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened; there is nothing left to gate here. The one
-    conditional part is the ``crew`` argument on the five session tools, which is
-    advertised only while ``work_ledger.remote_dispatch`` is on.
+    conditional parts are the ``crew`` argument on the five session tools, which is
+    advertised only while ``work_ledger.remote_dispatch`` is on, and ``backend`` on
+    ``session_create`` / ``work_dispatch``, only while the ``session_harness``
+    feature preview is on.
     """
     from kiro_crew.mcp_session_crew import with_crew_schema
     from kiro_crew.remote_dispatch import remote_dispatch_enabled
+    from kiro_crew.session_harness_preview import session_harness_enabled, with_backend_schema
 
-    return with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    tools = with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    return with_backend_schema(tools, session_harness_enabled())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:

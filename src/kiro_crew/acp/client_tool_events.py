@@ -34,14 +34,15 @@ from kiro_crew.acp._dispatch import (
     classify_tool_call,
     derive_edit_diff,
     extract_tool_purpose,
-    harness_tool_name,
     is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
+    qualified_harness_tool_id,
     redact_text,
 )
 from kiro_crew.acp._dispatch import select_tool_title as _select_tool_title
 from kiro_crew.acp._dispatch import (
+    stated_harness_tool_name,
     tool_call_content_text,
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
@@ -54,6 +55,7 @@ from kiro_crew.acp.harness.copilot import (
 )
 from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
@@ -213,13 +215,18 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
     status, so every tool call of an ``auto`` session has an SEL record. A call that
     did ask is skipped, because the consumer that answered it owns its record.
 
-    Scope: only a session whose seeded mode is ``auto``, and never an
+    Scope: only a session whose seeded mode is ``auto`` and that runs in it (not
+    one pinned to ``default`` on the exclusion path), and never an
     ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
     calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
     call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
     SEL failure or hang is logged and never breaks dispatch.
     """
     if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    # A session that left a foreign settings file out runs pinned to ``default``
+    # whatever it requested, so no classifier approved its unasked calls.
+    if self._claude_session_excludes_local():
         return
     if getattr(self, "_audit_source", None):
         return
@@ -503,6 +510,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # doubles (test_acp_tool_identity), and telemetry must not be
             # the reason such a double stops working.
             scope=getattr(self, "_session_id", "") or "",
+            tool_name=identity.tool_name,
         )
         input_str = ""
         if tool_call_id and raw_input:
@@ -612,7 +620,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_name = harness_tool_name(update)
+                _harness_name = stated_harness_tool_name(self.backend, update)
                 # dsh forwards the provider's tool-call id verbatim, and its
                 # permission frame names only that id. Two calls under one id
                 # in a turn leave the name unknown, so neither is read as the
@@ -642,6 +650,16 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                     event_mcp_server = recovered_server
                     event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
                     event_tool_trusted = event_mcp_trusted = True
+        # codex runs most calls without a permission request, so the event that
+        # starts the call names it too, for its PostToolUse spec hooks. The
+        # other backends are named by their permission request alone.
+        _event_tool_id = (
+            qualified_harness_tool_id(
+                ACP_BACKEND_CODEX, stated_harness_tool_name(self.backend, update)
+            )
+            if self.backend == ACP_BACKEND_CODEX
+            else ""
+        )
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
             from kiro_crew.security import redact
@@ -678,6 +696,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             tool_identity_trusted=event_tool_trusted,
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
+            harness_tool_id=_event_tool_id,
         )
         # getattr: a client built without ``__init__`` keeps no window. A native
         # sub-agent's call is not in this turn's parallel batch: the parent's open

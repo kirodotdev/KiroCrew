@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
 )
 from kiro_crew.dashboard.interaction_coordinator import _slot_decision
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.validation_parts.core_agent_schemas import SPAWN_BATCH_MEMBERS_MAX
 
 # The family logs under the facade's name, which log filters and caplog assertions key on.
 logger = logging.getLogger("kiro_crew.dashboard.handlers.sessions")
@@ -136,18 +137,28 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     request_app = str(request.get("app") or "")
     if request_app:
         return await _resolve_app_approval(request, state, request_app, approval_id, action)
+
+    async def _response_id(request: web.Request, shared_decisions: Any) -> tuple[str, bool]:
+        """The click's ``response_id`` from the decide body, and whether it is valid."""
+        try:
+            raw_body = await request.json() if request.can_read_body is True else {}
+        except ValueError:
+            raw_body = {}
+        return shared_decisions.read_response_id(raw_body if isinstance(raw_body, dict) else {})
+
     if "origin" in request.query:
         # Dynamic Dashboard echoes the inventory record's origin, exact slot and
         # instance. Do not fall through to native futures when that displayed
         # record expires. The instance binds the decision to the request the card
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
-        # the request that replaced it. An approval with no owning slot (a cron,
-        # autonudge or task-runner request) names its slot as empty, which only
-        # a record whose own slot is empty matches.
-        slot = request.query.get("slot", "")
+        # the request that replaced it.
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or "slot" not in request.query or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
@@ -166,46 +177,55 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
                     },
                     status=403,
                 )
+        # Shared Crew: the targeted decide settles through the same decision
+        # registry as the bare one, naming the verified responder, so a retry of
+        # this click replays and a different collaborator's later click gets 409
+        # with the winner. The slot and instance check above stays the fence.
+        from kiro_crew.dashboard.interaction_coordinator import settled_coordinator_target
         from kiro_crew.shared_crew import decisions as shared_decisions
 
-        try:
-            raw_target_body = await request.json() if request.can_read_body is True else {}
-        except ValueError:
-            raw_target_body = {}
-        target_response_id, target_response_id_ok = shared_decisions.read_response_id(
-            raw_target_body if isinstance(raw_target_body, dict) else {}
-        )
-        if not target_response_id_ok:
+        response_id, response_id_ok = await _response_id(request, shared_decisions)
+        if not response_id_ok:
             return web.json_response(
                 {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
             )
+        decision = (
+            "approved"
+            if action == "approve"
+            else "rejected_once" if action == "reject_once" else "rejected"
+        )
         pending = state._pending_approvals.get(approval_id)
-        # No await between checking the record and resolving its state-only
-        # future. The registry records the verified responder, as the by-id
-        # path below does.
+        # No await between checking the record and resolving its state-only future.
+        current = (
+            pending.get("instance") if pending and (pending.get("slot") or "") == slot else None
+        )
         # A settled future whose record the wait has not popped yet is a lost
         # race: resolving again would reopen the decision the winner settled.
         future = state._approval_futures.get(approval_id)
-        if (
-            pending
-            and (pending.get("slot") or "") == slot
-            and pending.get("instance") == instance
-            and future is not None
-            and not future.done()
+        if current == instance and (future is None or future.done()):
+            reply = None
+        elif current == instance:
+            reply = shared_decisions.resolve_state_approval(
+                state, request, approval_id, action == "approve", decision, response_id
+            )
+        elif pending is not None or settled_coordinator_target(state, approval_id) != (
+            slot,
+            instance,
         ):
-            outcome = {"approve": "approved", "reject_once": "rejected_once"}.get(
-                action, "rejected"
-            )
-            target_reply = shared_decisions.resolve_state_approval(
+            # Another request holds the id now, or the decision kept under it
+            # settled a different request: neither outcome is this click's.
+            reply = None
+        else:
+            # Only the state decision: a native request in this slot can hold
+            # the same id, and its decision is not this click's outcome.
+            reply = shared_decisions.settled_state_reply(
                 state,
-                request,
                 approval_id,
-                action == "approve",
-                outcome,
-                target_response_id,
+                response_id,
+                shared_decisions.request_principal(request),
             )
-            if target_reply is not None:
-                return shared_decisions.respond(target_reply)
+        if reply is not None:
+            return shared_decisions.respond(reply)
         ok = False
     else:
         # Imported here: chat_handlers imports this package at module scope.
@@ -226,13 +246,7 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # with the winning decision, a retry of the same click replays it.
         from kiro_crew.shared_crew import decisions as shared_decisions
 
-        try:
-            raw_body = await request.json() if request.can_read_body is True else {}
-        except ValueError:
-            raw_body = {}
-        response_id, response_id_ok = shared_decisions.read_response_id(
-            raw_body if isinstance(raw_body, dict) else {}
-        )
+        response_id, response_id_ok = await _response_id(request, shared_decisions)
         if not response_id_ok:
             return web.json_response(
                 {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
@@ -399,7 +413,17 @@ async def api_session_directive(request: web.Request) -> web.Response:
             exc,
         )
         return web.json_response({"error": str(exc), "code": "invalid_directive"}, status=400)
-    return web.json_response({"ok": True, "id": record_id})
+    # Whether the caller's running turn has already streamed reply text, so the
+    # tool can tell the model that text was shown. Read from the session's own
+    # dashboard tab; a session with none (a channel or cron session) reports False.
+    # shortcut: the text chunks normally reach the runner before the tool runs, but
+    # nothing orders the two; a chunk still in the pipe reads as no text.
+    from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+    slot_name = dashboard_slot_key(session_key)
+    slot = request.app["state"].get_slot(slot_name) if slot_name else None
+    wrote_text = getattr(slot, "_turn_wrote_text", False) is True
+    return web.json_response({"ok": True, "id": record_id, "turn_wrote_text": wrote_text})
 
 
 async def api_session_keepalive(request: web.Request) -> web.Response:
@@ -445,6 +469,7 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.debug("touch_activity failed for %s: %s", session_key, exc)
         return web.json_response({"error": "touch failed"}, status=500)
+    _note_tool_heartbeat(state, session_key, provider, body)
     # Also advance the session's own last_used clock. touch_activity() only
     # refreshes the ACP runtime's activity timestamp, which feeds
     # is_responsive()/the stall watchdog, while the periodic idle sweep reads
@@ -466,6 +491,118 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     if wait_id:
         _service_wait_ping(state, session_key, wait_id, body, reply, provider)
     return web.json_response(reply)
+
+
+#: Longest ``tool_call_id`` a heartbeat may name; a harness id is far shorter.
+_HEARTBEAT_ID_MAX_CHARS = 256
+#: Most sub-agent ids one heartbeat is read for: a wave's own batch bound.
+_HEARTBEAT_SUBAGENTS_MAX = SPAWN_BATCH_MEMBERS_MAX
+
+
+def _note_tool_heartbeat(
+    state: DashboardState, session_key: str, provider: Any, body: dict
+) -> None:
+    """Restart the per-call silence timer of the call this keepalive came from.
+
+    A long Kiro Crew tool sends this about every 30 s, the same heartbeat its MCP
+    progress notification carries: ``tool_call_id`` names the harness call it runs
+    under (empty when the harness sent no progress token, and the handle then
+    stamps the calls in flight on Kiro Crew's own servers) and ``phase`` says what
+    it is doing. A tool that waits on sub-agents also names them in
+    ``subagent_ids``, so its call counts the sub-agents' own activity rather than
+    its own polling (:func:`_subagent_activity_at`). Best-effort: a provider with
+    no per-call timer, or a malformed body, costs nothing but this stamp.
+    """
+    note = getattr(provider, "note_tool_heartbeat", None)
+    if not callable(note):
+        return
+    raw_id = body.get("tool_call_id")
+    tool_call_id = (
+        raw_id if isinstance(raw_id, str) and len(raw_id) <= _HEARTBEAT_ID_MAX_CHARS else ""
+    )
+    ids = body.get("subagent_ids")
+    activity_at = None
+    if isinstance(ids, list) and ids:
+        activity_at = _subagent_activity_at(
+            state, session_key, ids[:_HEARTBEAT_SUBAGENTS_MAX], _model_think_window(provider)
+        )
+    try:
+        note(tool_call_id, activity_at=activity_at)
+    except Exception:
+        logger.debug("tool heartbeat not noted for %s", session_key, exc_info=True)
+
+
+#: The ``WatchdogSettings.model_silent_probe_secs`` default, for a provider with no
+#: live session handle to read the window from.
+_MODEL_THINK_WINDOW_DEFAULT_SECS = 1800.0
+
+
+def _model_think_window(provider: Any) -> float:
+    """``watchdog.model_silent_probe_secs``: how long a child may think silently.
+
+    Read from the ``WatchdogSettings`` snapshot on *provider*'s live session handle,
+    which a config reload rebinds (``SessionManager._rebind_live_watchdogs``). Never
+    from config.json: this runs on the event loop for every keepalive a waiting
+    wave sends, and a config load reads, parses and validates the file and can
+    write it back under the config lock. With no readable snapshot it is the
+    snapshot's own default.
+    """
+    # Imported here so it does not join the names the sessions facade mirrors.
+    from kiro_crew.session_parts.provider_probes import _watchdog_handle_of
+
+    handle = _watchdog_handle_of(provider)
+    window = getattr(getattr(handle, "_watchdog", None), "model_silent_probe_secs", None)
+    if isinstance(window, (int, float)) and not isinstance(window, bool):
+        return float(window)
+    return _MODEL_THINK_WINDOW_DEFAULT_SECS
+
+
+def _subagent_activity_at(
+    state: DashboardState, session_key: str, ids: list, model_window: float
+) -> float | None:
+    """When the sub-agents a call waits on last moved (monotonic), or None for now.
+
+    Only this session's own runs still going are read. One that is mid-tool,
+    waiting on a person, running its prompt hooks, or not started yet counts as
+    moving now: its own watchdog and its admission bound that wait, and judging
+    it again from here would cancel a parent whose child is running a long
+    build. So does one quiet for less than *model_window*
+    (``watchdog.model_silent_probe_secs``, :func:`_model_think_window`): a child
+    in a long reasoning think streams nothing and has no tool open, and the
+    model-wait window bounds that wait. Only a child quiet past that window
+    reports its last activity. With nothing readable the heartbeat itself is the
+    activity.
+    """
+    manager = getattr(state, "subagents", None)
+    if manager is None:
+        return None
+    now = time.monotonic()
+    latest: float | None = None
+    for agent_id in ids:
+        if not isinstance(agent_id, str) or not agent_id:
+            continue
+        try:
+            info = manager.get(agent_id)
+        except Exception:
+            return None
+        if info is None or getattr(info, "parent_session_key", None) != session_key:
+            continue
+        if getattr(info, "done", False):
+            continue
+        tracker = getattr(info, "_tool_tracker", None)
+        if (
+            getattr(info, "_awaiting_approval", False)
+            or getattr(info, "_prompt_hooks_running", False)
+            or getattr(info, "_exec_started", None) is None
+            or (tracker is not None and tracker.any_active)
+        ):
+            return None
+        moved = getattr(info, "_last_activity_mono", None)
+        if isinstance(moved, (int, float)) and not isinstance(moved, bool):
+            if now - float(moved) < model_window:
+                return None
+            latest = float(moved) if latest is None else max(latest, float(moved))
+    return latest
 
 
 def _wait_end_reason(slot, wait_id: str, provider: Any) -> str | None:

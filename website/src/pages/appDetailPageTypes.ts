@@ -78,6 +78,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   selectionActionGrant?: SelectionActionGrantRow
   /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
+  /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */
+  userSessionReachGrant?: { approved: string[]; staged: string[] }
   managed?: string
   source?: string
   installedAt?: string
@@ -117,6 +119,7 @@ interface AppPermissions {
   sessionApproval?: boolean
   memberThreads?: boolean
   workerAutoApprove?: boolean
+  reachableByUserSessions?: string[]
   [key: string]: unknown
 }
 

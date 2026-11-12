@@ -217,6 +217,10 @@ class MemberSessionRunner(SessionAgentRunner):
                 agent=execution.template_id,
                 crew_agent=name,
                 cwd=kwargs["cwd"],
+                # The app the gate judges this member's calls under
+                # (agent_runner_gate), so the session's own governance reads,
+                # its KAS projection among them, judge under the same app.
+                owning_app=store.APP_NAME,
             )
             full_prompt, hook = await _io(
                 self._runtime.context_builder.build_message,

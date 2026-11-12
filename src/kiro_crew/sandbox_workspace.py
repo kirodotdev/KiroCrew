@@ -45,14 +45,9 @@ def _ensure_voice_runtime_directory(path: str) -> None:
 
 def _literal_ancestor_guards(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Return every rename-sensitive ancestor below the filesystem root."""
-    guards: dict[str, None] = {}
-    for item in paths:
-        current = os.path.normpath(item)
-        # A guard already held brought every ancestor of its own along.
-        while current not in guards and os.path.dirname(current) != current:
-            guards[current] = None
-            current = os.path.dirname(current)
-    return tuple(guards)
+    from kiro_crew.sandbox_plan import path_ancestor_guards
+
+    return tuple(path_ancestor_guards(paths))
 
 
 #: Bounds a link loop or an endlessly growing chain: Linux's own limit, above macOS's 32.

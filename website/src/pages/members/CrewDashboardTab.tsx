@@ -18,7 +18,7 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
  * record is a diagnostics surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
-export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onOpenProfileTab, preview = false, onLeavePreview }: {
+export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onActKeep, onSend, onOpenProfileTab, preview = false, onLeavePreview }: {
   slug: string
   member: string
   displayName: string
@@ -26,8 +26,12 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
   avatar?: unknown
   /** Put a reply the page offered into this crewmate's chat box. */
   onAct?: (text: string) => void
-  /** Called when the person clicks the "Layout locked · Profile" badge to go
-   *  straight to the Profile tab where the lock switch lives. */
+  /** Add a reply to the chat box without replacing an earlier suggestion (see `CrewDynamicDashboard`). */
+  onActKeep?: (text: string) => void
+  /** Send a reply the page offered into this crewmate's own thread (see `CrewDynamicDashboard`). */
+  onSend?: (text: string) => Promise<'sent' | 'off' | 'refused' | 'failed' | 'unknown'>
+  /** Called when the person clicks the one-click-send badge to go straight to
+   *  the Profile tab where its switch lives. */
   onOpenProfileTab?: () => void
   /** Show the STAGED page under the shared preview label instead of the live one. */
   preview?: boolean
@@ -72,6 +76,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
             displayName={name}
             avatar={avatar}
             onAct={onAct}
+            onActKeep={onActKeep}
+            onSend={onSend}
             onOpenProfileTab={onOpenProfileTab}
             preview={showPreview}
             onPreviewGone={showPreview ? onPreviewGone : undefined}

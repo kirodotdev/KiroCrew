@@ -124,6 +124,83 @@ export interface IssueSource {
   linkedChanges: IssueLinkedChange[]
   /** Sections potentially incomplete because a provider request failed or hit a limit. */
   partialSections?: string[]
+  /** The subset of `partialSections` whose provider read failed (not a limit). */
+  failedSections?: string[]
+}
+
+/* ── Issue search (POST /api/source/issues) ─────────────────────────────────
+ * Lists or searches ONE scope's issues. GitHub and GitLab are served today;
+ * 'jira' and 'linear' answer 400 with code 'provider_not_supported'. Errors use
+ * the same status/shape mapping as POST /api/source/issue. */
+
+export type IssueSearchProvider = 'github' | 'gitlab' | 'jira' | 'linear'
+
+export interface IssueSearchRequest {
+  provider: IssueSearchProvider
+  /** GitHub `owner/repo`; GitLab project path `group/sub/project`; Jira project key; Linear team key. */
+  scope: string
+  /** GitHub Enterprise / self-managed GitLab / Jira host. Defaults to github.com / gitlab.com.
+   *  Must be a host the gateway already allows for that provider. */
+  host?: string
+  /** Default 'open'. */
+  state?: 'open' | 'closed' | 'all'
+  /** 'me' = the signed-in user. */
+  assignee?: string
+  author?: string
+  labels?: string[]
+  text?: string
+  /** Default 'updated'. */
+  sort?: 'updated' | 'created'
+  /** Default 'desc'. */
+  order?: 'desc' | 'asc'
+  /** Provider-native query (GitHub search qualifiers, GitLab filter string). Replaces the
+   *  structured filters; `scope` still applies and cannot be widened by it. */
+  raw?: string
+  /** 1..100, default 25. */
+  limit?: number
+  /** The `nextCursor` of the previous page, or null/omitted for the first page. */
+  cursor?: string | null
+  refresh?: boolean
+}
+
+/** A person as an issue list reports them. Provider-controlled: render as text / <img>. */
+export interface IssuePerson {
+  login: string; name: string; avatarUrl: string
+}
+
+export interface IssueSummary {
+  provider: IssueSearchProvider
+  url: string
+  /** Display key: '#4821', 'CREW-142', 'ENG-77'. */
+  key: string
+  number: number | null
+  title: string
+  state: 'open' | 'closed'
+  /** The provider's own status name, e.g. 'Open', 'In progress'. */
+  statusLabel: string
+  labels: IssueLabel[]
+  assignees: IssuePerson[]
+  author: IssuePerson | null
+  priority: string | null
+  commentCount: number
+  /** ISO 8601. */
+  createdAt: string
+  updatedAt: string
+  /** Plain text, the first ~280 characters of the body with markdown stripped. */
+  excerpt: string
+  /** Display name of the scope. */
+  project: string
+  /** [] when the list API does not return them. */
+  linkedChanges: IssueLinkedChange[]
+}
+
+export interface IssueSearchResponse {
+  provider: IssueSearchProvider
+  scope: string
+  issues: IssueSummary[]
+  nextCursor: string | null
+  /** Null when the provider does not report a total. */
+  total: number | null
 }
 
 /** A single contributor to an app's source repository (GitHub only, v1).
@@ -151,4 +228,6 @@ export interface PullRequestSource {
   comments: PullRequestComment[]; files: PullRequestFile[]
   /** Sections potentially incomplete because a provider request failed or hit a page/output limit. */
   partialSections?: string[]
+  /** The subset of `partialSections` whose provider read failed (not a page/output limit). */
+  failedSections?: string[]
 }

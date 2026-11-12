@@ -510,7 +510,14 @@ Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
 temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
 screenshots). A directory is reclaimed automatically once every process
 recorded in its `.owner` file has exited and nothing in it has been touched for
-an hour, so short-lived sessions clean up on their own.
+an hour, so short-lived sessions clean up on their own. A file dated more than a
+day in the future (a test fixture can set one) counts as touched when that date
+was set, not on that date, except on Windows, where it keeps the directory until
+that date. On Linux a directory is also kept while any other running process
+still uses it as its temp directory, as its working directory or through an open
+file, and the gateway log names it and that process in a WARNING line on every
+hourly sweep that keeps it:
+`agent-scratch: keeping '<name>': its owners are dead, but live pid <pid> still uses it`.
 
 A directory that holds a git repository (a clone, a workspace of checkouts, a
 bare repository) is never deleted this way, because nothing outside the agent
@@ -520,6 +527,20 @@ name>`, and deleted from there 14 days after the move (later, if something was
 written into it in the last hour). The gateway log names every move in one
 INFO line: `agent-scratch: moved <name> to <path in .quarantine> instead of
 deleting it`, with the date it will be deleted.
+
+A directory with no `.owner` file has no process to check, so it is never
+deleted in place either: once nothing in it has been written for 7 days it is
+moved into `.quarantine` the same way, and its INFO line says it has no owner
+record. This happens only in the default scratch directory, and only to a
+directory named the way Kiro Crew names one: eight hex characters, such as
+`0123abcd`, or, from older versions, a label, a dash and eight hex characters
+with at least one letter (`runtime-0123abcd`). A folder you made or cloned
+there under any other name is left alone (a dated name such as
+`backup-20261105` is not a Kiro Crew name), as is any folder with no `.owner`
+file under `KIROCREW_SCRATCH_ROOT`, which can hold folders of your own.
+On Linux such a directory is also kept while a running process still uses it,
+as above; macOS and Windows have no such check, so a process that uses one
+without writing to it for a week finds it moved.
 
 The quarantine keeps the work, not what tools rebuild from it. Each kept
 directory loses its `node_modules`, `__pycache__`, `.pytest_cache`,
@@ -539,10 +560,10 @@ session, move it back beside the others under its original name.
 One directory does not: the background runtime's tree is shared by every
 dashboard session and is handed on from one runtime to its replacement, so it
 lives as long as the gateway does and is never pruned while a session might
-still need it. It is one of the `runtime-*` directories — usually the oldest
-and largest. Other `runtime-*` directories belong to ordinary agent processes
-and are reclaimed by the normal rule above. If the shared tree grows large, the
-fix is a gateway restart (a fresh tree is
+still need it. It is usually the oldest and largest directory there, and its
+`.owner` names a process that is still running. The other directories belong to
+ordinary agent processes and are reclaimed by the normal rule above. If the
+shared tree grows large, the fix is a gateway restart (a fresh tree is
 started and the old one is reclaimed by the hourly sweep once its processes are
 gone), or deleting large work products inside it that you know are finished.
 Do not delete a directory whose `.owner` names a live process.

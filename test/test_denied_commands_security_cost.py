@@ -11,6 +11,7 @@ trigger token.
 from __future__ import annotations
 
 import time
+from collections import Counter
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -1322,7 +1323,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         "floor",
         [
             "_is_credential_mint",
-            "_is_self_kill",
+            "_self_kill_span",
             "_matches_self_subcommand",
             "_is_ssh_to_self",
         ],
@@ -1362,12 +1363,19 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
                             found.append(sub.lineno)
             return found
 
+        def loops_over_tokens(node) -> bool:
+            # The frame loop binds ``tokens``, either as a bare target or as the
+            # second element of a ``(source, tokens)`` unpacking (the kill floor
+            # walks ``_shell_payload_walk`` for the source it reports a span in).
+            target = node.target
+            if isinstance(target, ast.Name):
+                return target.id == "tokens"
+            if isinstance(target, ast.Tuple):
+                return any(isinstance(el, ast.Name) and el.id == "tokens" for el in target.elts)
+            return False
+
         frame_loops = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "tokens"
+            node for node in ast.walk(tree) if isinstance(node, ast.For) and loops_over_tokens(node)
         ]
         assert len(frame_loops) == 1, f"{floor} no longer has exactly one frame loop"
         loop = frame_loops[0]
@@ -1428,3 +1436,48 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
             f"the argv sweep is quadratic in trigger count: {calls['n']} sweeps for "
             f"an argv of {argv_len} tokens ({n * 2} trigger tokens)"
         )
+
+
+class TestOneDecisionWalksEachTextOnce:
+    """One deny decision walks each text of a long command once, not once per floor.
+
+    Every floor of ``is_denied`` asks for the same payload walk, and a ``$(`` span
+    with no ``{`` in it gets one paren walk rather than a second ``${...}``-aware one
+    that would take the same steps. Ratcheted on work counts, never timing.
+    """
+
+    _HEREDOC = "git add f && python3 - <<'PY'\n" + "print('a $b \"c\" `d` $(e) f')\n" * 20 + "PY"
+
+    def test_each_decision_walks_each_text_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer
+
+        walked: Counter[str] = Counter()
+        real = shell_normalizer._self_tokens
+
+        def spy(text: str) -> list[str]:
+            walked[text] += 1
+            return real(text)
+
+        monkeypatch.setattr(shell_normalizer, "_self_tokens", spy)
+        for _ in range(2):  # and nothing carries from one decision to the next
+            assert is_denied(self._HEREDOC) is None
+        # The argv rules walk the original-case text, the floors the lowered one.
+        whole = {text: n for text, n in walked.items() if text.lower() == self._HEREDOC.lower()}
+        assert whole and set(whole.values()) == {2}, whole
+
+    def test_a_span_without_a_brace_is_walked_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        modes: list[bool] = []
+        real = walk._close_paren_walk
+
+        def spy(text: str, open_end: int, expansions: bool) -> tuple[int, bool]:
+            modes.append(expansions)
+            return real(text, open_end, expansions)
+
+        monkeypatch.setattr(walk, "_close_paren_walk", spy)
+        assert walk._matching_close_paren("$(echo a) b", 2) == (9, True)
+        assert modes == [False]
+        modes.clear()
+        assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
+        assert modes == [False, True]

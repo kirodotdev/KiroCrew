@@ -17,6 +17,7 @@ from kiro_crew.session_summary import (
     STATE_IN_PROGRESS,
     STATE_NEEDS_YOU,
     count_user_turns,
+    count_user_turns_in_records,
     derive_state,
     extract_turns,
     last_activity_ts,
@@ -117,6 +118,24 @@ class TestTrapAutomationUnderUserRole:
     def test_detection_is_case_insensitive_and_tolerates_leading_space(self):
         turns = extract_turns([_rec("user", "  [SUBAGENT COMPLETION EVENT] x")])
         assert turns[0].injected is True
+
+    def test_workflow_finished_auto_turn_is_automation(self):
+        """The turn the gateway runs when a workflow finishes is not the person."""
+        records = [
+            _rec("user", "research the origin of pizza"),
+            _rec("assistant", "Launched workflow wf_1."),
+            _rec(
+                "user",
+                "[Workflow `deep-research` finished: finished] Its result was just "
+                "posted above. The user is waiting on the answer.",
+            ),
+            _rec("assistant", "Pizza comes from Naples."),
+        ]
+        turns = extract_turns(records)
+        assert [t.injected for t in turns if t.role == "user"] == [False, True]
+        assert count_user_turns(turns) == 1
+        assert count_user_turns_in_records(records) == 1
+        assert "USER (turn 2)" not in render_input(turns)
 
 
 class TestTrapResends:

@@ -325,12 +325,11 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
           {shortcut.chord}
         </span>
       )}
-      {/* LAST in the flex line, so the expanded unread/activity indicators sit to
-          the RIGHT of the chord above rather than over it. Order matters only for
-          the in-flow expanded indicators: every caller-supplied badge (the dev
-          dot, the update dot) and the collapsed dot are absolutely positioned
-          against the row, so they render where they always did regardless of
-          where in the children they appear. */}
+      {/* LAST in the flex line, so the expanded indicators sit to the RIGHT of the
+          chord above and the label truncates before them. An expanded badge must
+          be IN FLOW (`shrink-0`): an absolute one takes no room, so the
+          `flex-1 truncate` label runs under it. Only collapsed and phone-tile
+          badges are absolute, in the icon's corner, where no label is drawn. */}
       {badge}
       {collapsed && tip && <OverlayPortal>
         <div

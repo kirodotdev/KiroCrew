@@ -30,7 +30,7 @@ class _State:
     _slots: dict = {}
 
 
-class _Req:
+class _Req(dict):
     headers = {"X-Session-Key": "dashboard:ui"}
     app = {"state": _State()}
     match_info: dict = {}

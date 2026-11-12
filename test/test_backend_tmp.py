@@ -281,6 +281,30 @@ class TestBootSweep:
         assert bt.sweep_all_backend_tmp() == 0
         assert path.exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows has no change time, so a far-future date stands there",
+    )
+    def test_a_far_future_mtime_does_not_keep_a_dead_tree(
+        self, tmp_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A write stamps the current clock, so a file utime() dated years ahead
+        # is read by when that utime() ran, not kept until that date.
+        import time
+        import types
+
+        path = bt.allocate_backend_tmp(DIGEST)
+        bt.record_owner(path, 2**22 - 1)  # almost surely dead
+        fixture = path / "fixture.csv"
+        fixture.write_text("x\n")
+        now = time.time() + 2 * bt._UNOWNED_GRACE_SECONDS
+        future = now + 10 * 365 * 86400.0
+        os.utime(fixture, (future, future))
+        monkeypatch.setattr(bt, "time", types.SimpleNamespace(time=lambda: now))
+
+        assert bt.sweep_all_backend_tmp() == 1
+        assert not path.exists()
+
     def test_live_owner_is_kept_even_when_idle(self, tmp_root: Path) -> None:
         live = bt.allocate_backend_tmp(DIGEST)
         # POSIX: our own process GROUP id -- the probe is group-scoped (the

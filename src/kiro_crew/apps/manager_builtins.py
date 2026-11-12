@@ -29,10 +29,12 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
+    _declared_grant_entries,
     _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _update_in_progress,
+    _write_approved_grants,
     _write_installed,
     app_dir,
     apps_dir,
@@ -42,6 +44,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
 from kiro_crew.apps.manifest import app_name_error
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
@@ -818,6 +821,10 @@ def register_builtin_apps() -> int:
             existing.lifecycle = "locked"
             # Sync migratedTo from definition (overwrite stale values)
             existing.migratedTo = _effective_migrated_to(app_data)
+            # A built-in approves what it SHIPS, stored here at every start so the set
+            # follows an upgrade: the app.json copy below is agent-writable and grants
+            # nothing it adds.
+            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
             _write_installed(name, existing)
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
@@ -856,6 +863,10 @@ def register_builtin_apps() -> int:
                 # record would claim it already had.
                 defaultOnBackfilled=default_enabled and name in _DEFAULT_ON_BACKFILL,
             )
+            # A built-in approves what it ships (see the branch above). Stored with the
+            # first record, so one registered after the one-time import is not left
+            # approving nothing.
+            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info
@@ -871,15 +882,18 @@ def register_builtin_apps() -> int:
         # loopback mcpServers URL (self-managed apps) — both go through the
         # proxy, which 502s without a secret, so both must get one.
         if _app_declares_backend(app_data):
-            secret_path = dest / ".app_secret"
-            if not secret_path.is_file():
-                # circular import: token_auth → app_secret_store → manager
-                # token_auth imports app_secret_store, which transitively
-                # imports the manager module's app-directory helpers.
-                # Importing at module scope here would create a cycle, so
-                # we defer to the function body.
-                from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+            # circular import: token_auth → app_secret_store → manager
+            # token_auth imports app_secret_store, which transitively
+            # imports the manager module's app-directory helpers.
+            # Importing at module scope here would create a cycle, so
+            # we defer to the function body.
+            from kiro_crew.dashboard.token_auth import (
+                generate_app_secret,
+                read_app_secret,
+                write_app_secret,
+            )
 
+            if not read_app_secret(name):
                 write_app_secret(name, generate_app_secret())
             # Invalidate the proxy secret cache so the newly-written (or
             # pre-existing) secret is picked up on the next request.

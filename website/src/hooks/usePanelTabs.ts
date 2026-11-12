@@ -706,8 +706,17 @@ export function openPanelView(slotKey: string | null, kind: ViewKind, opts?: { h
 let documentBodyEpoch = 0
 export function documentBodyEpochNow(): number { return documentBodyEpoch }
 
+/** Bodies held outside the tab store (the file pop-out window's own copy) drop a
+ *  clean copy on every `evictDocumentBodies`, by the same rule as a file tab. */
+const evictionListeners = new Set<() => void>()
+export function onDocumentBodiesEvicted(listener: () => void): () => void {
+  evictionListeners.add(listener)
+  return () => { evictionListeners.delete(listener) }
+}
+
 export function evictDocumentBodies(): number {
   documentBodyEpoch++
+  for (const listener of evictionListeners) listener()
   let touched = 0
   for (const key of Object.keys(store)) {
     mutateSlot(key, b => {

@@ -47,6 +47,74 @@ function mountWithStaleRows() {
   )
 }
 
+function mountWithNoRows() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <MemoryRouter initialEntries={['/developer?tab=system']}>
+      <QueryClientProvider client={qc}>
+        <Harness />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
+  return qc
+}
+
+describe('SessionsTab could-not-read Retry', () => {
+  afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+  it('keeps keyboard focus on Retry while it runs, and ignores a second press', async () => {
+    const spy = vi.spyOn(api, 'sessionsMemory').mockRejectedValue(new Error('boom') as never)
+    mountWithNoRows()
+    const panel = await screen.findByTestId('sessions-error')
+    const button = within(panel).getByRole('button', { name: 'Retry' })
+
+    let fail: (e: Error) => void = () => {}
+    spy.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }) as never)
+    const calls = spy.mock.calls.length
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(button.textContent).toBe('Retrying…'))
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(spy.mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { fail(new Error('boom')) })
+    await waitFor(() => expect(button.textContent).toBe('Retry'))
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(button).toHaveFocus()
+  })
+})
+
+describe('SessionsTab could-not-read panel', () => {
+  afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+  it('stays up, with focus on Retry, through a background poll', async () => {
+    const spy = vi.spyOn(api, 'sessionsMemory').mockRejectedValue(new Error('boom') as never)
+    const qc = mountWithNoRows()
+    const panel = await screen.findByTestId('sessions-error')
+    // The failure reads through ErrorNotice, the one error surface.
+    expect(within(panel).getByRole('alert').textContent).toContain('we can’t tell what is running')
+    const button = within(panel).getByRole('button', { name: 'Retry' })
+    button.focus()
+
+    // The 5s poll's refetch, not a press: it must not swap the panel out either.
+    let fail: (e: Error) => void = () => {}
+    spy.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }) as never)
+    let poll: Promise<void> = Promise.resolve()
+    act(() => { poll = qc.refetchQueries({ queryKey: ['sessionsMemory'] }) })
+    await waitFor(() => expect(button.textContent).toBe('Retrying…'))
+    expect(screen.getByTestId('sessions-error')).toBe(panel)
+    expect(button).toHaveFocus()
+
+    await act(async () => { fail(new Error('boom')); await poll.catch(() => {}) })
+    await waitFor(() => expect(button.textContent).toBe('Retry'))
+    expect(button).toHaveFocus()
+  })
+})
+
 describe('SessionsTab stale-rows Retry', () => {
   afterEach(() => { cleanup(); vi.restoreAllMocks() })
 

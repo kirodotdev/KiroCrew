@@ -30,7 +30,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_path", lambda: path)
     _floor_monkeypatch.setattr(crew_pause, "_loaded_from", None)
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
-    _floor_monkeypatch.setattr(crew_pause, "_RESUMING", set())
+    _floor_monkeypatch.setattr(crew_pause, "_resuming", {})
     _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
     _floor_monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
@@ -40,6 +40,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
 def _forget_memory() -> None:
     """What a gateway restart does to the in-memory copy, before the preload has run."""
     crew_pause._records.clear()
+    crew_pause._resuming = {}
     crew_pause._loaded_from = None
 
 
@@ -538,6 +539,73 @@ def test_a_turn_ended_while_resume_hands_back_is_left_to_that_resume():
     assert crew_pause.owe_turn("w2") is False
     crew_pause.forget_resuming(["w1"])
     assert crew_pause.owe_turn("w1") is False
+
+
+def test_a_restart_before_resume_hands_back_keeps_the_stopped_members_paused():
+    # Resume all dropped the record, then the gateway restarted before its
+    # hand-backs finished: the members still owed stay paused.
+    crew_pause.pause("root", ["w1", "w2", "w3"], ["root", "w1", "w2"])
+    crew_pause.resume("root")
+    crew_pause.forget_resuming(["w1"])  # w1 was handed back before the restart
+    _restart()
+    rec = crew_pause.record("root")
+    assert rec is not None and rec["stopped"] == ["root", "w2"] and rec["held"] == ["w2"]
+    assert crew_pause.holds_turn("w2") and not crew_pause.holds_turn("w1")
+    assert crew_pause.root_paused("root") and crew_pause.owe_turn("w2") is True
+    # The next Resume all continues them, and a later restart brings nothing back.
+    assert crew_pause.resume("root")["stopped"] == ["root", "w2"]
+    crew_pause.forget_resuming(["root", "w2"])
+    _restart()
+    assert crew_pause.record("root") is None
+
+
+def test_members_resume_could_not_hand_back_are_held_in_the_same_write(_pause_store):
+    crew_pause.pause("root", ["w1", "w2"], ["w1", "w2"])
+    crew_pause.resume("root")
+    crew_pause.forget_resuming(["w1", "w2"], root="root", pending=["w2"], root_pending=False)
+    stored = json.loads(_pause_store.read_text(encoding="utf-8"))
+    assert "resuming" not in stored and stored["paused"]["root"]["stopped"] == ["w2"]
+    _restart()
+    assert crew_pause.holds_turn("w2") and not crew_pause.holds_turn("w1")
+
+
+def test_a_refused_hand_back_write_still_frees_memory_and_keeps_the_file_owing(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("root", ["w1"], ["w1"])
+    crew_pause.resume("root")
+
+    def _fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(crew_pause, "atomic_write", _fail)
+        assert crew_pause.forget_resuming(["w1"]) is False
+        # The gate runs w1's turns again, though the write is still refused.
+        assert crew_pause.owe_turn("w1") is False
+    # The file still names it, so a restart before the next write holds it
+    # again rather than losing it.
+    assert json.loads(_pause_store.read_text(encoding="utf-8"))["resuming"] == {"root": ["w1"]}
+    _restart()
+    assert crew_pause.holds_turn("w1")
+
+
+@pytest.mark.asyncio
+async def test_resume_all_reports_a_pause_file_it_could_not_save(routes, monkeypatch):
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    real = crew_pause.resume
+
+    def _fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    def _resume_then_the_disk_fills(root: str) -> Any:
+        rec = real(root)
+        monkeypatch.setattr(crew_pause, "atomic_write", _fail)
+        return rec
+
+    monkeypatch.setattr(crew_pause, "resume", _resume_then_the_disk_fills)
+    resp = await routes.handler.api_crew_resume(_req(_state(_TREE)))
+    assert resp.status == 500 and json.loads(resp.text)["code"] == "pause_file_unsaved"
 
 
 @pytest.mark.asyncio

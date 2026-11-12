@@ -24,7 +24,12 @@ import pytest
 
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES, TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import managed_mcp, service_agents
+from kiro_crew.agent_materialization import auto_approve, managed_mcp, service_agents
+
+#: The lead auto-approves ``session_create`` and not ``session_send``, so the
+#: governed tail closes its charter with the one line that says so.
+_SEED_RULE_TAIL = f"\n{auto_approve.SEED_AFTER_CREATE_RULE}\n"
+_INSTALLED_PROMPT = agent._TEAM_LEAD_SYSTEM_PROMPT + _SEED_RULE_TAIL
 
 _SKILL = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -73,7 +78,7 @@ class TestTheInstallerWritesADefaultAgent:
 
     def test_the_file_carries_this_agent_name_and_charter(self, installed):
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert installed["prompt"].startswith("# Kiro Crew Team Lead")
         assert installed["description"]
 
@@ -118,7 +123,7 @@ class TestTheInstallerWritesADefaultAgent:
 
         installed = json.loads(target.read_text(encoding="utf-8"))
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert sorted(p.name for p in tmp_path.iterdir()) == [TEAM_LEAD_AGENT_FILENAME]
 
 
@@ -133,11 +138,13 @@ class TestTheLeadReportsToItsParent:
         assert "unless a conductor" in prompt
 
     def test_the_spec_can_reach_both_worker_verbs(self, installed):
-        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` is
-        also auto-approved, ``work_report`` prompts like a nested conductor's."""
+        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` and
+        ``work_report`` are both auto-approved, as for a nested conductor
+        (rfc-conductor-own-child-verbs.md, section 5.5)."""
         assert _reachable(installed, "kirocrew-work", "work_report")
         assert _reachable(installed, "kirocrew-work", "work_brief")
         assert "@kirocrew-work/work_brief" in installed["allowedTools"]
+        assert "@kirocrew-work/work_report" in installed["allowedTools"]
 
 
 class TestTheLeadCanDispatch:
@@ -269,7 +276,8 @@ class TestTheLeadCanDispatch:
         from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
 
         shared = _ASK_ONLY_WHEN_NEEDED_RULE.splitlines()
-        assert len(prompt.splitlines()) - len(shared) < 40
+        charter = prompt.removesuffix(_SEED_RULE_TAIL)
+        assert len(charter.splitlines()) - len(shared) < 40
         # Nothing copied from the conductor charter; the one shared rule is named, not copied.
         for line in agent._CONDUCTOR_SYSTEM_PROMPT.splitlines():
             if len(line) > 60 and line not in shared:

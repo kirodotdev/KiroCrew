@@ -50,8 +50,8 @@ class _NonRestrictedState:
     _slots: dict = {}
 
 
-class _FakeReq:
-    """Test request with a non-restricted app state installed."""
+class _FakeReq(dict):
+    """Test request with a non-restricted app state installed (a mapping, like ``web.Request``)."""
 
     def __init__(self, body, *, match_info=None):
         self._body = body
@@ -350,7 +350,7 @@ def test_deploy_local_dir_missing(monkeypatch):
 
 # --- authorization guard: restricted sessions denied on all mutating routes ---
 
-class _RestrictedReq:
+class _RestrictedReq(dict):
     """Fake request that simulates a restricted session."""
 
     def __init__(self, method="POST", match_info=None, body=None):
@@ -432,7 +432,7 @@ def test_teardown_persistent_manifest_unreachable_returns_502(monkeypatch):
     monkeypatch.setattr(handlers, "_expire_manifest_best_effort", _fake_expire)
 
     # Non-restricted request with confirm=True
-    class _Req:
+    class _Req(dict):
         headers = {"X-Session-Key": "dashboard:ui"}
         match_info = {"slug": "test-slug"}
         app = {"state": MagicMock(_restricted_keys=set(), _slots={})}

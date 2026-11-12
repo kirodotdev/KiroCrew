@@ -12,7 +12,9 @@ it fixes the parts an app must not choose:
 * **Approval.** :meth:`AgentTurnSDK.run` approves tools only through the hook
   gate (``HOOK_BASED``); :meth:`AgentTurnSDK.run_oneshot` rejects every tool
   (``REJECT_ALL``). No method takes an approval policy, so an app cannot ask for
-  auto-approval.
+  auto-approval. A call the gate neither denies nor grants goes to the owner's
+  approval prompt, the one cron jobs use (:func:`set_turn_approver`), never
+  straight to an approve.
 * **Admission.** Every turn is admitted as Crew automation
   (``OperationKind.BACKGROUND``); a refusal raises ``TurnRefused`` and the work
   never runs.
@@ -64,6 +66,28 @@ _ONESHOT_AGENT = "kirocrew-lite"
 
 class AgentTurnRefused(PermissionError):
     """The app's ``capabilities.spawn`` ceiling refuses the agent this turn runs."""
+
+
+#: The gateway's approval prompt for app turns: called with the app's name, it
+#: returns the ``on_tool_approval`` callback a turn of that app asks. ``None``
+#: until a gateway registers one (a bare test application).
+_turn_approver: Callable[[str], Any] | None = None
+
+
+def set_turn_approver(factory: Callable[[str], Any] | None) -> None:
+    """Register the gateway's approval prompt for every app turn (``None`` clears it).
+
+    Without one, a call the hook gate neither denies nor grants would fall to
+    ``stream_and_collect``'s caller-less default and be approved unseen; with one
+    it asks the owner, as a cron job's call does.
+    """
+    global _turn_approver
+    _turn_approver = factory
+
+
+def _approver_for(app: str) -> Any:
+    factory = _turn_approver
+    return factory(app) if factory is not None else None
 
 
 def _default_agent() -> str:
@@ -214,7 +238,9 @@ class AgentTurnSDK:
         is the agent a new session starts as (``""`` for today's default, resolved
         to its name before the session opens). Tools are approved only by the
         hook gate, under this app's identity and the agent the session manager
-        records for the session: a reused session's own agent, never *agent*.
+        records for the session: a reused session's own agent, never *agent*. A
+        directive only a person's turn may issue (``set_project``, ...) is refused,
+        and its refusal leads the reply.
 
         Session acquisition is outside *timeout_secs*: a cold start cancelled
         half way would leave a session that never received the first message.
@@ -227,7 +253,12 @@ class AgentTurnSDK:
         key = self.check_key(key)
         sessions = self._manager()
         asked = await self._require_spawn_permit(key, agent)
-        provider, _is_new, _resumed = await sessions.get_or_create(key, agent=asked)
+        # ``owning_app`` is the app the gate below judges this session's calls
+        # under, so the session's own governance reads (its KAS projection among
+        # them) judge under the same app.
+        provider, _is_new, _resumed = await sessions.get_or_create(
+            key, agent=asked, owning_app=self._app
+        )
         try:
             running = await self._require_recorded_agent(sessions, key, asked)
         except BaseException:
@@ -235,11 +266,16 @@ class AgentTurnSDK:
             raise
         app = self._app
         hooks = self._hooks()
+        approver = _approver_for(app)
 
         async def _run_turn() -> str:
+            from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
             from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
-            return await stream_and_collect(
+            # An app turn is not a person's, and no session applier reads its
+            # stream: a person-only directive it calls is refused out loud.
+            refusals: list[str] = []
+            reply = await stream_and_collect(
                 provider,
                 text,
                 approval_policy=ToolApprovalPolicy.HOOK_BASED,
@@ -247,7 +283,10 @@ class AgentTurnSDK:
                 session_key=key,
                 agent=running,
                 app=app,
+                on_tool_approval=approver,
+                on_event=person_only_directive_refuser(key, refusals),
             )
+            return "\n\n".join([*refusals, reply])
 
         from kiro_crew.shared_crew.admission import OperationKind
         from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise

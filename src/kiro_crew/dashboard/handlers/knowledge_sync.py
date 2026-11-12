@@ -365,9 +365,10 @@ async def _hand_off_under_gate(  # type: ignore[no-untyped-def]
     task once it holds its own gate. The caller enters the gate BEFORE this
     call so its own lookup is covered too, and the gate's per-task re-entrancy
     makes that outer hold the one that counts. The task is created in a
-    hand-off context: it takes a real hold of its own, admitted past any
-    maintenance window that began waiting while this hold is open, so the
-    wait below cannot deadlock against that window (``handoff_gate_context``).
+    hand-off context: it takes a real hold of its own, admitted past a
+    maintenance window that is still waiting for this or another open hold, so
+    the wait below cannot deadlock against that window (``handoff_gate_context``).
+    A task that takes its hold after every hold is gone waits for the window.
     """
     settled: asyncio.Event = asyncio.Event()
     async with pipeline.ingestion_in_flight():

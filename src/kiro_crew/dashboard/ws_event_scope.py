@@ -329,6 +329,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
     # the install, for the owner who pressed the button and no one else.
     "resume_all_done",
+    # A person's steer into a Crew Mode worker was delivered but its ledger record
+    # failed in the background (``chat_api.crew_steer.CREW_STEER_UNRECORDED_FRAME``,
+    # ``broadcast_ws_owners``). Only the owner's own sends are steers.
+    "crew_steer_unrecorded",
 })
 
 

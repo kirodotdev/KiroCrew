@@ -99,6 +99,28 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?\s*([\w.:+-]{1,40})""", re.IGNORECASE)
 _COLOR_SCHEME_MEDIA = re.compile(r"prefers-color-scheme\s*:\s*(dark|light)", re.IGNORECASE)
 _MEDIA_NEGATION = re.compile(r"\bnot\b", re.IGNORECASE)
+#: Tags that may appear before the body starts. After any non-document tag in
+#: this set starts an omitted head, another start tag begins the body.
+_HEAD_CONTENT_TAGS = frozenset(
+    {
+        "html",
+        "head",
+        "base",
+        "basefont",
+        "bgsound",
+        "link",
+        "meta",
+        "noframes",
+        "noscript",
+        "script",
+        "style",
+        "template",
+        "title",
+    }
+)
+#: Elements whose children never end the head: a browser reads ``<noframes>``
+#: and ``<noscript>`` in the head as raw text, and ``<template>`` content is inert.
+_HEAD_RAW_CONTAINERS = frozenset({"noframes", "noscript", "template"})
 #: Title shapes an auth wall serves in place of the page a link names. Every
 #: alternative is anchored at BOTH ends: the leading gate phrase must be
 #: followed by the end of the title, an explicit separator, or a gate
@@ -679,9 +701,15 @@ def icon_color_scheme(media: str) -> str:
 class _HeadParser(HTMLParser):
     """Collect the meta/title/icon tags from an untrusted document.
 
-    Stops collecting at ``</head>`` (or the first ``<body>``): everything of
-    interest is declared there, and a multi-hundred-KB body should not be walked
-    for tags that cannot appear in it.
+    Stops collecting at ``</head>``, the first ``<body>``, or the first
+    body-content tag after an omitted head has started. Leading body-like
+    markup is ignored until a later explicit ``<head>``, ``<!doctype>``, or
+    ``<html>`` boundary restarts document parsing. This preserves metadata
+    after server warning output without collecting metadata from the warning
+    or body. Everything of interest is declared in the head, and a
+    multi-hundred-KB body should not be walked for tags that cannot appear in
+    it. An explicit ``<head>`` keeps collecting past a stray tag until it
+    closes, so metadata after that tag still counts.
 
     ``convert_charrefs`` is left at its default (True) so entity decoding
     happens once in the parser for both text and attributes. Downstream helpers
@@ -706,6 +734,15 @@ class _HeadParser(HTMLParser):
         #: would only have to be re-merged to preserve it.
         self._icon_links: List[Tuple[str, str, bool]] = []
         self._in_title = False
+        #: An explicit head tolerates stray body-content tags until ``</head>``.
+        self._saw_head = False
+        #: Whether a non-document head tag started an omitted head.
+        self._implicit_head_started = False
+        #: Leading body-like markup is skipped while seeking a later explicit head.
+        self._awaiting_explicit_head = False
+        #: Open ``<noframes>``/``<noscript>``/``<template>`` depth; tags inside
+        #: them do not end the head.
+        self._raw_depth = 0
 
     # -- HTMLParser hooks ---------------------------------------------------
 
@@ -715,6 +752,28 @@ class _HeadParser(HTMLParser):
         if tag == "body":
             self.done = True
             return
+        if tag == "head":
+            self._saw_head = True
+            self._awaiting_explicit_head = False
+        elif tag == "html":
+            self._awaiting_explicit_head = False
+        elif self._awaiting_explicit_head:
+            return
+        if (
+            not self._saw_head
+            and tag not in _HEAD_CONTENT_TAGS
+            and not self._raw_depth
+            and not self._in_title
+        ):
+            if self._implicit_head_started:
+                self.done = True
+            else:
+                self._awaiting_explicit_head = True
+            return
+        if not self._saw_head and tag not in {"html", "head"}:
+            self._implicit_head_started = True
+        if tag in _HEAD_RAW_CONTAINERS:
+            self._raw_depth += 1
         attr = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
             self._in_title = True
@@ -743,10 +802,18 @@ class _HeadParser(HTMLParser):
             elif is_apple:
                 self._icon_links.append((href, icon_color_scheme(attr.get("media", "")), True))
 
+    def handle_decl(self, decl: str) -> None:
+        if decl.lstrip().lower().startswith("doctype"):
+            self._awaiting_explicit_head = False
+
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
+        if tag in _HEAD_RAW_CONTAINERS and self._raw_depth:
+            self._raw_depth -= 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in _HEAD_RAW_CONTAINERS:
+            self._raw_depth = max(0, self._raw_depth - 1)
         if tag == "title":
             # Only a close that matches an OPEN we saw proves the collected text is
             # whole. A stray `</title>` — before any `<title>`, or left over from
@@ -816,9 +883,11 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
         except Exception:  # noqa: BLE001
             pass
 
-    title = clean_text(parser.og.get("og:title", "") or parser.title, TITLE_MAX_CHARS)
+    # A whitespace-only og value counts as absent, so the fallback still applies.
+    og_title = parser.og.get("og:title", "").strip()
+    title = clean_text(og_title or parser.title, TITLE_MAX_CHARS)
     description = clean_text(
-        parser.og.get("og:description", "") or parser.meta_name.get("description", ""),
+        parser.og.get("og:description", "").strip() or parser.meta_name.get("description", ""),
         DESCRIPTION_MAX_CHARS,
     )
     site_name = clean_text(parser.og.get("og:site_name", ""), SITE_NAME_MAX_CHARS)
@@ -851,8 +920,7 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
         # otherwise the `<title>` element must have closed. The `bool(title)` term
         # is what keeps an empty-but-closed `<title></title>` from reading as a
         # complete title on a truncated document.
-        title_complete=bool(title)
-        and (bool(parser.og.get("og:title", "").strip()) or parser.title_closed),
+        title_complete=bool(title) and (bool(og_title) or parser.title_closed),
     )
 
 

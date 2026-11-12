@@ -1,13 +1,14 @@
 """The session's MCP servers.
 
-The launch roster the liveness oracle attributes a tool by, the init drain, the readiness
-wait, OAuth and sign-in offers, and the failed-server reattempt.
+The launch roster the liveness oracle attributes a tool by, the servers the silence timer
+reads as network servers, the init drain, the readiness wait, OAuth and sign-in offers,
+and the failed-server reattempt.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_mcp_launches``,
+Instance fields written: ``_config_options``, ``_mcp_launches``, ``_mcp_network_servers``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -23,10 +24,12 @@ import logging
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
 from kiro_crew.acp.mcp_session_report import (
@@ -145,6 +148,45 @@ def mcp_launch_roster(
     return {name: tuple(argvs) for name, argvs in roster.items()}, refused
 
 
+def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
+    """The names of one session's MCP servers declared with a ``url``. Pure, never raises.
+
+    Read from the same two sources as :func:`mcp_launch_roster`. A server is a
+    network server only when no source declares it as a stdio ``command``, so a
+    name both ways keeps the longer stdio bound of the per-call silence timer
+    (``acp.tool_silence``). Bounded like the roster: at most ``BUCKET_CAP`` names
+    of at most ``NAME_CAP`` characters.
+    """
+    url_named: set[str] = set()
+    stdio_named: set[str] = set()
+
+    def _add(name: object, entry: object) -> None:
+        if not isinstance(name, str) or not name or len(name) > NAME_CAP:
+            return
+        if not isinstance(entry, Mapping):
+            return
+        url = entry.get("url")
+        if isinstance(url, str) and url:
+            if len(url_named) < BUCKET_CAP:
+                url_named.add(name)
+        elif _launch_argv(entry) is not None:
+            stdio_named.add(name)
+
+    try:
+        servers = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                _add(name, entry)
+        if isinstance(wire_servers, (list, tuple)):
+            for element in wire_servers:
+                if isinstance(element, Mapping):
+                    _add(element.get("name"), element)
+    except Exception:
+        logger.debug("MCP network servers unreadable", exc_info=True)
+        return frozenset()
+    return frozenset(url_named - stdio_named)
+
+
 # MCP-server-init drain (parity with AcpClient._drain_notifications): after
 # set_mode, briefly consume the session queue so MCP-init/oauth/config frames
 # are processed before the first prompt, instead of racing into the first turn.
@@ -188,6 +230,14 @@ GOVERNED_DROP_REASON = (
 #: The pending state a managed server re-attempted after a start timeout reads as
 #: in the readiness barrier until the host shows it acting on the reset.
 STATE_REATTEMPTING = "re-attempting"
+#: How far past its budget the managed-readiness barrier may wait while the
+#: host's MCP connect queue keeps moving (:class:`_QueueWait`). Four times the
+#: engine's default per-server connect timeout (60 s): enough for every connect
+#: slot to turn over four times behind slow agent servers. Bounded so the
+#: subagent startup watchdog (``subagent_parts.manager._startup_deadline``)
+#: still outlives a start that spends its whole session/new budget plus this
+#: wait, at the default and at the 900 s maximum budget alike.
+QUEUE_EXTENSION_SECS = 240.0
 
 
 def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, ...], ...]] | None:
@@ -217,7 +267,7 @@ def _mcp_attribution_launches(
 
 
 def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) -> None:
-    """Record how this session launched its stdio MCP servers.
+    """Record how this session launched its stdio MCP servers, and which are network ones.
 
     *spec* is the agent spec the session runs and *wire_servers* the final
     ``mcpServers`` array it sent; both were already read by the runtime, so
@@ -232,6 +282,7 @@ def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) ->
         logger.debug("session %s: MCP launch roster not recorded", self._session_id, exc_info=True)
         roster, refused = {}, 0
     self._mcp_launches = roster
+    self._mcp_network_servers = mcp_network_servers(spec, wire_servers)
     if refused:
         logger.warning(
             "session %s: %d MCP server launch(es) past the roster bounds are not "
@@ -354,7 +405,7 @@ async def wait_mcp_ready(
     # snapshot since the reset has shown it in a state other than failed.
     reattempted: dict[str, bool] = {}
     start = time.monotonic()
-    deadline = start + timeout
+    wait = _QueueWait.begin(self, start, timeout)
     # The governed checkpoint: the first moment the never-named check may start
     # the session. Past it (or without a reason) only the deadline remains.
     checkpoint = (
@@ -367,11 +418,13 @@ async def wait_mcp_ready(
             checkpoint = None
             if _record_dropped(self._mcp_report, readiness, governed):
                 return
-        remaining = (checkpoint if checkpoint is not None else deadline) - now
+        remaining = (checkpoint if checkpoint is not None else wait.deadline) - now
         if checkpoint is None and remaining <= 0:
             if _record_dropped(self._mcp_report, readiness, governed):
                 return
-            raise _readiness_timeout(readiness, timeout)
+            if wait.extend(readiness, now, self._session_id):
+                continue
+            raise _readiness_timeout(readiness, wait.waited, extended=wait.extended)
         try:
             msg = await asyncio.wait_for(self._queue.get(), max(0.0, remaining))
         except asyncio.TimeoutError as exc:
@@ -383,7 +436,9 @@ async def wait_mcp_ready(
                 return
             if stage_was_checkpoint:
                 continue
-            raise _readiness_timeout(readiness, timeout) from exc
+            if wait.extend(readiness, time.monotonic(), self._session_id):
+                continue
+            raise _readiness_timeout(readiness, wait.waited, extended=wait.extended) from exc
         if msg is None:
             self._queue.put_nowait(None)
             raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
@@ -521,7 +576,9 @@ def _registry_filtered_message(readiness: KasMcpReadiness) -> str:
     )
 
 
-def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequestTimeout:
+def _readiness_timeout(
+    readiness: KasMcpReadiness, timeout: float, *, extended: bool = False
+) -> AcpRequestTimeout:
     """The deadline error, pointing at the doctor when the host never named a server.
 
     A server the host never named at all is what a governed MCP profile produces
@@ -531,6 +588,11 @@ def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequest
     whose MCP Governance section checks the account's identity before it advises
     the setting, rather than advising a setting that withholds every agent-spec
     server.
+
+    *extended* means the wait already ran past the budget while the host's MCP
+    connect queue kept moving (:class:`_QueueWait`); when every server it still
+    waits for is ``connecting``, the message names the setting that gives a large
+    agent more time.
     """
     message = f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
     if readiness.never_reported:
@@ -539,7 +601,77 @@ def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequest
             "MCP Governance section to see whether an admin MCP registry applies to this "
             "account."
         )
+    elif extended and readiness.all_pending_connecting:
+        message += (
+            ". The host was still connecting this session's MCP servers a few at a time; "
+            "an agent with many servers may need a larger "
+            "`agent.session_start_timeout_secs`."
+        )
     return AcpRequestTimeout(message)
+
+
+@dataclass
+class _QueueWait:
+    """The barrier's deadline, which moves while the host's connect queue moves.
+
+    KAS connects a process's MCP servers a few at a time and reports a queued
+    server as ``connecting`` (see :mod:`kiro_crew.acp.mcp_connect_progress`), so
+    a required server can sit in the queue past the plain budget while the
+    servers ahead of it settle. At the deadline, :meth:`extend` grants one more
+    *timeout* window when every pending server is ``connecting`` and the
+    runtime's :attr:`McpConnectProgress.epoch` moved since the last grant, never
+    past ``start + timeout + QUEUE_EXTENSION_SECS``. Without a runtime that
+    tracks progress, nothing is ever extended.
+    """
+
+    progress: McpConnectProgress | None
+    start: float
+    timeout: float
+    deadline: float
+    ceiling: float
+    epoch: int
+    extended: bool = False
+
+    @classmethod
+    def begin(cls, handle: AcpSessionHandle, start: float, timeout: float) -> _QueueWait:
+        runtime = getattr(handle, "_runtime", None)
+        progress = getattr(runtime, "mcp_connect_progress", None)
+        if not isinstance(progress, McpConnectProgress):
+            progress = None
+        return cls(
+            progress=progress,
+            start=start,
+            timeout=timeout,
+            deadline=start + timeout,
+            ceiling=start + timeout + QUEUE_EXTENSION_SECS,
+            epoch=progress.epoch if progress is not None else 0,
+        )
+
+    @property
+    def waited(self) -> float:
+        """Seconds the barrier allowed, for the timeout message."""
+        return self.timeout if not self.extended else float(round(self.deadline - self.start))
+
+    def extend(self, readiness: KasMcpReadiness, now: float, session_id: str | None) -> bool:
+        """Move the deadline if the queue moved; False when the start should fail."""
+        if (
+            self.progress is None
+            or self.progress.epoch == self.epoch
+            or not readiness.all_pending_connecting
+            or now >= self.ceiling
+        ):
+            return False
+        self.epoch = self.progress.epoch
+        self.deadline = min(now + self.timeout, self.ceiling)
+        self.extended = True
+        logger.info(
+            "KAS managed MCP readiness on %s: %s still queued while the host's MCP "
+            "connect queue moves; waiting until +%.0fs",
+            session_id,
+            ", ".join(readiness.pending_names),
+            self.deadline - self.start,
+        )
+        return True
 
 
 async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:

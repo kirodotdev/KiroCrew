@@ -12,11 +12,11 @@ connection encrypts each media object with **AES-256-CBC**, PKCS#7-padded to a
 32-byte multiple, using the first 16 bytes of the object's own key as the IV.
 
 That is deliberately NOT the same scheme as Weixin's (`weixin/media.py`, AES-128-
-**ECB** with a shared key), and the two must not be merged: the mode differs, the
-key length differs, and WeCom's key is **per object** rather than per app. A
-per-object key is the safer shape — one leaked key exposes one object — but it
-also means there is no long-lived secret to cache, so the key travels with the
-item and is used once.
+**ECB**, no IV), and the two must not be merged: the mode, the key length and the
+IV all differ. What they share is that each object carries its **own** key. That
+is the safer shape — one leaked key exposes one object — but it also means there
+is no long-lived secret to cache, so the key travels with the item and is used
+once.
 
 The URL is valid for about five minutes, which is why a download failure is
 reported rather than retried indefinitely: by the time a long retry would

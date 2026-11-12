@@ -136,6 +136,46 @@ session's start error names the same fix.
 
 Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
+### Read-only paths
+
+`agent.sandbox_readonly_paths` lists directories the sandboxed agent may read but
+never write, and `agent.sandbox_readonly_exceptions` lists directories inside
+those that stay writable. The OS sandbox enforces both: a write into a read-only
+directory fails with `EROFS` on Linux (WSL2 included) and is denied by the
+Seatbelt profile on macOS. For example, to protect a Windows drive under WSL
+while keeping one folder on it writable:
+
+```json
+{
+  "agent": {
+    "sandbox_readonly_paths": ["/mnt/c"],
+    "sandbox_readonly_exceptions": ["/mnt/c/Users/<you>/Documents"]
+  }
+}
+```
+
+- Entries are absolute paths; a leading `~` is expanded. Filesystems mounted
+  below a read-only directory are made read-only too, and stay read-only below
+  an exception.
+- An unreadable config file logs a `SECURITY` warning and keeps this process's last
+  readable layer; without one, it applies the entries of the files that do parse.
+- Both lists are empty by default, which changes nothing. They can only take
+  write access away: Kiro Crew's own masks and seals are applied on top and
+  always win, so no entry can expose a hidden or sealed Kiro Crew path.
+- An entry that cannot be used is skipped with a `SECURITY: ignoring
+  agent.sandbox_readonly_...` warning in the gateway log: one that is relative
+  or does not exist, `/` itself, a directory holding `/run/user/<uid>` or
+  `/dev/shm` (where the Linux sandbox builds its masks), or an exception that is
+  not strictly inside a read-only entry or would re-open a Kiro Crew path.
+- Making the project directory, the Kiro Crew data home or the agent's own state
+  directories read-only breaks the agent there, so list the directories you want
+  protected rather than their parents.
+- Not enforced where Kiro Crew applies no sandbox of its own: `agent.sandbox`
+  `off`, a macOS spawn delegated to kiro-cli's internal sandbox, and Windows,
+  which logs a `SECURITY` warning instead.
+- `config.json` is itself read-only inside the sandbox, so an agent can read
+  these lists but never edit them. A change applies to sessions started after it.
+
 ## ACP Backend
 
 `agent.acp_backend` selects the ACP harness Kiro Crew drives. `agent.provider`
@@ -156,11 +196,15 @@ provider.
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 
-Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
-and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
-self-contained `credential_process` in that file, not SSO or static keys. If a
-Codex session fails to start with an authentication error, the error says this
-too.
+Codex runs with the credential stores Kiro Crew's agent may never read hidden
+on purpose, apart from Codex's own sign-in file. They include `~/.aws`,
+`~/.ssh`, `~/.gnupg`, `~/.netrc` and the sign-in cookie directory `~/.midway`.
+Of `~/.aws` only `~/.aws/config` stays readable. Codex on Amazon Bedrock
+therefore needs a `credential_process` in that file that reads nothing under
+the hidden stores. SSO, static keys, and a `credential_process` that needs a
+sign-in cookie or key kept in one of them, such as `~/.midway`, cannot work
+there. If a Codex session or turn fails with an AWS credential error, the
+error names the stores that were hidden.
 
 - Keep static keys in `~/.aws/credentials`. Do not write them into `~/.aws/config`.
 - Do not make `~/.aws/config` a symlink. On Linux the sandbox copies whatever
@@ -330,8 +374,10 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
 | `agent.crew_mode_agent` | The agent template a chat runs when Ultra Mode is turned on: the team lead unless set. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-team-lead"` |
+| `agent.member_branch_prefix` | The start of the git branch the gateway cuts for a bot's new worktree of a repository, before `<bot>/<repo>`: `"alice/"` gives `alice/reviewer/myservice`, so each person's bots can follow a shared remote's naming rules. Each part between slashes may use only letters, digits, `.`, `_` and `-`, may not start or end with `.` or `-`, has no `..` and no `.lock` ending, and is at most 40 characters; an empty value uses `crew/`, and so does a rejected one, with a warning. The first part must not be the name of a branch the repository has, such as `main`: git cannot cut a branch under it, and the bot gets no worktree there. Takes effect live for the next new worktree; one that already exists keeps its branch, and one made again after its folder was deleted takes the current prefix (its old branch stays) | `"crew/"` |
 | `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. With nothing installed the gateway installs the pinned engine at the first spawn; a failed install refuses the spawn and names the install command. With `false`, KAS still takes this route when kiro-cli's relay cannot run on the host | `false` |
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Only a JSON `true` turns it on; any other stored value, or a config file that cannot be read, keeps sign-ins in memory. The vault belongs to the gateway, so every session on it, a Shared Crew collaborator's included, reuses the sign-in, as with the `kiro` backend's own sign-in cache. An install that stored the old default `false` is moved to the new default once, at its next config load; a `false` set after that is kept. To forget stored sign-ins: set the key to `false`, stop the gateway, delete `kas/mcp-grants/` under the data home, and start it again. Takes effect when a KAS process starts | `true` |
+| `agent.kas_repair_kiro_cli_extract` | When a `kas` start through kiro-cli's relay exits with `failed to canonicalize KAS server path` (kiro-cli's unpacked engine under its data directory's `kas/<version>` is incomplete, for example after a home directory was copied to another machine), move that directory out of `kas/` to `<version>.kas-broken-<UTC time>` in kiro-cli's data directory (kiro-cli deletes untracked entries inside `kas/`) and start once more, so kiro-cli unpacks a fresh copy. Nothing is deleted; a moved `<version>.kas-broken-*` copy is never used again and can be deleted by hand. A directory changed in the last minute, or reached through a link, is left alone. With `false`, or when the second start fails the same way, the start fails with one message naming the directory and the `mv` command, and the warm pool stops respawning until the directory is moved | `true` |
 | `agent.kas_refuse_plain_http_mcp_headers` | On the `kas` backend, stop relaying an MCP server's `headers` to a plain `http://` url on another host, so they are never sent unencrypted. The server then does not run, and the session-start notice names it. Off by default: Kiro Crew's local bridge sends the headers to that url, as before. Only a JSON `true` turns it on. Read when a session starts | `false` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
 | `agent.native_skill_projection` | Launch each `kiro` backend agent under a Kiro Crew managed view (`kirocrew-skill-view-*.json` in the kiro agents directory) that serves skills through Kiro Crew's skill search, with `.kiro/settings/cli.json` in the workspace overlaid while it runs. `false` launches agents under their authored names, writes no view, rolls the workspace overlay back, and lets kiro-cli load skill metadata natively. Turn it off when you also run kiro-cli on its own against the same agents directory. `KIROCREW_NATIVE_SKILL_PROJECTION=0` disables it regardless of this value. Takes effect when a native session is next spawned | `true` |
@@ -345,10 +391,13 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
 | `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
 | `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). Applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |
+| `agent.sandbox_readonly_paths` | Absolute directories the sandboxed agent may read but never write, enforced by the OS sandbox. Kiro Crew's own masks and seals always win. See [Read-only paths](#read-only-paths) | `[]` |
+| `agent.sandbox_readonly_exceptions` | Absolute directories strictly inside a `sandbox_readonly_paths` entry that stay writable. See [Read-only paths](#read-only-paths) | `[]` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
-| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; On KAS, an agent whose `tools` grants `tool_search` has all of its MCP tools deferred and loaded through KAS's own `tool_load`; an agent that grants no `tool_search` keeps them direct, because Kiro Crew lists each of its MCP tools in KAS's never-defer list (a whole-server `@server` grant is expanded from the tool list Kiro Crew already holds for that server, and a server it holds none for stays deferred). KAS ignores this toggle and both thresholds. Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. On Kiro Crew's own KAS engine bundle (`agent.kas_bundle`) they always defer, because that engine keeps the request's tools list fixed when a deferred tool loads; the KAS relay follows the kiro-cli rule above. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
+| `agent.chat_runtime_sharing_max_sessions` | How many dashboard chats one shared agent process serves before the next chat starts another, while the `chat_runtime_sharing` feature preview is on; the blast radius of one process dying. No effect with the preview off. Clamped to 1..64 | `10` |
+| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; On KAS, an agent whose `tools` grants `tool_search` has its MCP tools deferred and loaded through KAS's own `tool_load`, except the few tools that are a built-in agent's own job (the default agent's `spawn_run`, `spawn_sub_agents` and `spawn_status`, a worker's `work_brief` and `work_report`, a conductor's dispatch and work-ledger tools), which stay direct unless `ASBX_KIRO_MANDATORY_MCPS` is set; an agent that grants no `tool_search` keeps them direct, because Kiro Crew lists each of its MCP tools in KAS's never-defer list (a whole-server `@server` grant is expanded from the tool list Kiro Crew already holds for that server, and a server it holds none for stays deferred). KAS ignores this toggle and both thresholds. Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. On Kiro Crew's own KAS engine bundle (`agent.kas_bundle`) they always defer, because that engine keeps the request's tools list fixed when a deferred tool loads; the KAS relay follows the kiro-cli rule above. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
@@ -389,9 +438,11 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `session.file_changes_keep_turns` | How many of a dashboard chat's most recent file-changing turns keep the before and after copies their file-change card diffs. An older turn's card lists its files marked "File only", and the rows that held its copies are written to the session archive first, where `session.archive_retention_days` applies. Rows still in the chat's in-memory window are never changed. Applied when a save re-reads the older part of the transcript: the first save after a restart, after another process appended to the chat, or after the window trims. `0`, the default, keeps every turn's copies, so nothing changes until you set a count | `0` |
 | `session.kas_delete_delay_secs` | On the `kas` backend, seconds a task-runner session's record, and a reused workflow worker's previous conversation, stay on disk after the session ends before Kiro Crew deletes them. The session leaves the engine's memory when it ends either way. `0` deletes the record when the session ends. At most `86400` (one day). Incognito and temporary sessions, and a `kirocrew run` started inside an agent's sandbox, are deleted when they end whatever this says. Needs a KAS engine that advertises `sessionCapabilities.close`; an older one deletes at once. The delay is the earliest time the record is deleted: the delete runs on a later session cleanup tick. A record that comes due while another backend is selected waits until `kas` is selected again. Other backends ignore it | `0` |
 | `session.search_scan_window` | How many of the most recently changed session transcripts a session search reads: the dashboard search, `search_chat_history` and a chat channel's session picker. An older session is not searched; when that leaves sessions out, the results say how many were searched out of how many there are ("Searched the 2,000 most recent of 2,150 sessions"). A `title:` search with nothing after its term reads titles only and is not held to the window. A larger window makes each search read more transcripts; memory stays bounded by the search caches' byte ceilings. Clamped to 100-100000. Read at each search, so a change needs no restart | `2000` |
-| `session.watchdog_rss_max_mb` | Recycle an idle session when its process tree resident memory exceeds this many MiB. The default 4096 sits above a healthy session with many MCP servers (about 1.4-2.6 GB) and still stops a runaway one. 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. A session with a turn in flight is never recycled. `kirocrew status` and `kirocrew doctor` show the ceiling next to the gateway's own resident memory | `4096` |
+| `session.watchdog_rss_max_mb` | Recycle an idle session when its process tree resident memory exceeds this many MiB. The default 4096 sits above a healthy session with many MCP servers (about 1.4-2.6 GB) and still stops a runaway one. 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. A session with a turn in flight is never recycled. When a recycled session goes straight back over the ceiling because its restored conversation alone is that large, the watchdog stops after three recycles in a row and leaves it running for up to a day unless its memory doubles; the chat then names this setting. `kirocrew status` and `kirocrew doctor` show the ceiling next to the gateway's own resident memory | `4096` |
+| `session.watchdog_end_leftovers_mid_turn` | A command the agent runs can leave a process running after the command itself ends, for example a job inside a shell command that timed out. That process counts toward `session.watchdog_rss_max_mb`, and an idle session over the limit is recycled with it. During a turn the session is never recycled, so Kiro Crew logs those processes (pid, size, name) and posts one notice in the chat. Turn this on to end them during the turn as well. Off by default, because such a process can be work the agent started on purpose. Linux only. Re-read every cleanup tick | `false` |
 | `session.harness_background_hold_secs` | On the Claude backend, how long after the agent starts background work (a Workflow, or a command run in the background) the idle timeout and `session.watchdog_rss_max_mb` still leave its session running. Claude Code does not report when that work ends, so after this time Kiro Crew treats it as finished and the session can be ended; when the idle timeout or a closed tab then ends it, the gateway log warns and a notice in the chat says the background work may have been stopped. Raise it for work that runs longer than an hour. Kept between 300 and 86400; a value outside that range is set to the nearest bound and the gateway log warns. Twice `session.watchdog_rss_max_mb` still ends a session inside the hold. Other ways to keep long background work alive: list the chat in `session.idle_exempt_keys` and keep its tab open, raise `session.timeout_secs`, or start the work with `spawn_run` / `workflow_run`, which the sweep tracks. Re-read every cleanup tick | `3600` |
 | `session.reconcile_max_kills` | Unowned root candidates the runtime reconciler may signal the process tree of in one pass — one candidate can signal several processes. The ceiling equals the default, so this setting can only lower the budget, never raise it. Lower it where more than one install shares this data home: the agent slice is keyed on the data home, so a runtime owned by another install has no record here and reads as unowned. `0` leaves the kill arm observing — it still publishes the `unowned_alive` / `owned_dead` leak reading and audits each candidate it would have signalled as `would_kill`, and signals nothing. The same budget caps one **Reclaim** of the dashboard's Leaked agent runtimes report, so `0` there refuses every candidate. Re-read every cleanup tick, so a change needs no restart | `5` |
+| `session.max_per_creator` | How many live sessions one creator may hold. A creator is a Bot's own chat, a conductor, or any session that opens other sessions. A creator that holds this many cannot open, fork, revive or take over another until it closes one; the refusal says how many it holds and names this setting. The chats you open yourself do not count. Range 10-450: a value outside it is clamped, and a value that is not a whole number loads as the default. All sessions together still stop at 500, so the highest setting leaves 50 for everyone else. Read at each create, so a change needs no restart. Change it in Settings > Chat > Sessions > Sessions per creator | `50` |
 
 ### Dashboard
 
@@ -412,8 +463,8 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `dashboard.feature_videos_enabled` | Download and play short intro clips for features this install has not used yet, in the video card at the top of the Explore panel. Off, nothing is downloaded and the card shows no clip. See [Feature Videos](feature-videos.md) | `false` |
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
-| `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
-| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the six visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; the older hand-edited `connections.crew_oauth` is ignored. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
+| `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers. A Bot is covered when it runs a listed template on the shared memory with nothing of its own: the default workspace, no model or effort pin, no label, triggers or description beyond the template's, and no permanent rules, goal, briefing, harness, worker, approval or dynamic-capabilities choice. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
+| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `chat_runtime_sharing`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `dashboard_stale_wake`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `session_harness`, `webhooks`). `session_harness` lets `session_create` and `work_dispatch` take `backend` (off: neither tool offers it, and one passed is refused `session_harness_preview_off` with nothing created; a Bot's own harness setting and `spawn_run(backend=...)` work either way); `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the seven visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab, TickTick) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; `dashboard_stale_wake` (needs `dashboard_stale_fields`) also starts one short turn in the Bot's own chat when such a field goes out of date, with no check-in needed, at most one per Bot every 30 minutes; the older hand-edited `connections.crew_oauth` is ignored. `chat_runtime_sharing` lets dashboard chats on kiro-cli (and KAS on kiro-cli 3.1.0 or newer) share one agent process, up to `agent.chat_runtime_sharing_max_sessions` each, instead of one process per chat; chats on one process take turns one at a time, and it applies to chats started after the change. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off. An LTS build reads every switch as off and refuses to save one | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
@@ -460,6 +511,7 @@ transcribed the same way.
 | `stt.slide_to_send` | On the phone's hold-to-talk bar, slide up and to the right before letting go to send the transcript once it is ready, or to steer the running turn where the composer's Send would steer. Sliding straight up or to the left still cancels. Only while `submit_on_release` is off, because then letting go keeps a draft; with it on, letting go already sends. Off by default, so the hold bar's single slide-up-to-cancel stays as it was | `false` |
 | `stt.polish` | After a dictation finishes, hand the TEXT (never the audio) to a fast model that fixes punctuation and spacing, and replace what is in the message box a moment later. Off by default because this is the one part of `local` recognition that sends anything off your machine. It never blocks you — the recogniser's own text is already there and already sendable — and never CHANGES a word: a reply that altered one is discarded, so the worst case is that nothing happens. It also never touches anything you typed after you stopped talking | `false` |
 | `stt.dictation_panel` | Show the animated dictation panel while recording instead of the thin status bar. Ignored when the browser lacks WebGL2 or the OS asks for reduced motion, both of which fall back to the bar | `true` |
+| `stt.dictation_note` | End a message that holds dictated text with one line telling the agent it was dictated and may contain transcription errors, odd typos, misplaced words or punctuation. A message you only typed never gets it. The line is part of the message, so the transcript shows it too, and it rides every path the message takes: a queued send, a steer, a regenerate | `false` |
 | `stt.timeout_secs` | Ceiling on transcribing one whole file: the audio decode, and each model load or recognition inside it. A value outside 10-3600 s is clamped into that range | `300` |
 | `stt.transcribe_region` | AWS region for the Transcribe API (`transcribe` provider only) | `"us-east-1"` |
 | `stt.transcribe_profile` | AWS profile for the Transcribe API. Empty uses the default credential chain (`transcribe` provider only) | `""` |
@@ -484,7 +536,7 @@ again.
 Desktop users install nothing else by hand: the app already carries the
 recognizer, decoder, and AWS client. In a source environment the recognizer and
 AWS client are the optional `voice` extra, installed as its own dependencies
-(`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'`):
+(`pip install "boto3>=1.34,<2" "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"`):
 
 - **Intel Macs have no prebuilt recognizer.** Every other platform Kiro Crew
   supports (Apple silicon macOS, glibc and musl Linux on x86_64 and arm64, and
@@ -494,7 +546,7 @@ AWS client are the optional `voice` extra, installed as its own dependencies
   different fixes.
 
   If you would rather not build it, installing only the cloud half
-  (`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6.3,<1'`) gets you the AWS
+  (`pip install "boto3>=1.34,<2" "amazon-transcribe>=0.6.3,<1"`) gets you the AWS
   Transcribe client on its own. `pip` resolves an extra all-or-nothing, so on a
   platform without the recognizer wheel the full `voice` extra installs *nothing* —
   including the Transcribe client, which has no such limitation. This is the way to
@@ -680,6 +732,12 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.writes_enabled` | Read-only memory. Off: the same automatic writers `memory.persistence_enabled` stops are stopped (`learn_add`, `kirocrew learn add`, history consolidation, task-runner lesson extraction, app-owned projections), while stored memory and lessons are still injected into new sessions and `memory_recall` still answers. Incognito and temporary sessions behave as before. Explicit dashboard edits/deletions stay available | `true` |
 | `memory.lesson_extraction_enabled` | Off: history consolidation and the task runner save no extracted lessons. The rest of each consolidation pass (history, preferences, semantic and episodic memory) still runs, and `learn_add` still saves lessons | `true` |
 | `memory.kind_routing` | What history consolidation does with the `kind` it tags each `project.*` fact with: `fact`, `event` (something that happened) or `state` (a PR, issue, CI, branch or round status that GitHub, git or the work ledger already holds). `off` keeps today's prompt and writes. `shadow` (opt-in) asks for the tag, writes every fact as before and only logs what routing would do, inside fixed caps (one counter row a day; at most 150 samples a day, drawn evenly across the whole day, 2,000 in all and 1 MB, for the first 14 days, a window that starts again when the tagging rules change). `enforce` skips a state item and writes facts and events as before. Stored facts are never changed. `pref.*`, `user.*`, lessons and facts you state yourself are never routed | `"off"` |
+| `memory.lesson_origin_gate` | Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. `off` keeps today's prompt and writes. `shadow` (opt-in) writes every lesson as before and only counts what the gate would demote, inside the same caps as kind routing (one counter row a day; lesson keys only, at most 150 a day, for the first 14 days). `enforce` stores such a lesson as an `on_topic` finding, never dropping it, and saves a `learn_add` that such a turn triggered as `on_topic` under its own source rather than as yours. A span with any message from you keeps its tiers. Stored lessons are never changed | `"off"` |
+| `memory.lesson_tier_policy` | Which tier a new lesson from history consolidation gets. `off` keeps today's prompt and writes. `shadow` (opt-in) writes every lesson as before and only counts, inside the same caps as kind routing, which new lessons the policy would save as `on_topic` findings, and how often a later `learn_add` teaches one of them again. `enforce` asks the model for your own words behind each `always` lesson and saves a lesson as an `on_topic` finding unless those words are in one of your messages; a lesson with no tier is saved as a finding too. Your own `learn_add` and dashboard writes, and stored lessons, are never changed | `"off"` |
+| `memory.lesson_fold` | Whether the session-start rule block leaves out rules that repeat another one: same scope and tier, and either the same text (ignoring case, spacing and Unicode width) or stored vectors at cosine 0.95 or more. `off` keeps today's block. `shadow` (opt-in) keeps today's block and only records, in the injection receipt (`usage/injections/`, field `lesson_fold`), which rule ids would fold into which, inside the same caps as `memory.rule_authority_order`. `enforce` keeps the first copy of each rule (yours first, then the newest) and the block says how many were folded; `learn_list` still shows all. A folded rule is not counted as a budget omission. Rules you taught are never folded, a copy that adds a NOT-clause is kept, and no stored lesson is changed | `"off"` |
+| `memory.rule_authority_order` | How the session-start rule block orders its rules. `off` keeps today's block. `shadow` (opt-in) keeps today's block and only records, in the injection receipt (`usage/injections/`, field `rule_authority_order`), which rule ids the new order would add or drop, inside the same caps as kind routing (at most 150 lines a day, 2,000 and 1 MB in all, for the first 14 days). `enforce` lists rules saved as yours (`learn_add`, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Set `memory.lesson_origin_gate` to `enforce` too, or a `learn_add` an agent made on its own still counts as yours. The rule budget and its omission line are unchanged, and no stored lesson is changed | `"off"` |
+| `memory.member_lesson_dedup` | Whether a crew member's private memory folds a lesson its consolidation learned into a stored copy of the same rule: same scope and tier, and either the same text (ignoring case, spacing and Unicode width) or stored vectors at cosine 0.95 or more. `off` keeps today's writes. `shadow` (opt-in) writes every lesson as before and only counts what the fold would do, inside the same caps as kind routing (one counter row a day; lesson keys only, at most 150 a day, for the first 14 days). `enforce` skips a textual copy, and retires a new near-copy with a saved revision once it has its vector and before a dashboard turn was given it; setting the flag back to `off` restores those rows on the next embedding sweep. A copy that adds a NOT-clause is kept. Lessons you taught are never folded. Under `shadow` or `enforce` the main store also counts how many of its own merges (newest wins above cosine 0.85) fall below 0.95; its merges do not change | `"off"` |
+| `memory.relevance_rule` | Which word matches let past findings, task facts and the activity block's project and history sections into a new session. `off` keeps today's blocks. `shadow` (opt-in) keeps today's blocks and only records, in the injection receipt (`usage/injections/`, field `relevance_rule`), which ids the new rule would add or drop, inside the same caps as kind routing. `enforce` counts only words of 3 or more letters or digits and two-character pairs of Chinese or Japanese text, so a greeting such as "hi" admits nothing; a task fact also needs the private store's evidence check (enough shared words, or an embedding match above its floor). A message that names no topic gets the findings notice and no project or history sections. The rule block, preferences and episodes are unchanged, and no stored row is changed | `"off"` |
 | `memory.inject_memory` | Inject the stored memory block (preferences, the memory activity index, recent-session snippets) into new-session context, including the re-injection after a compaction. On-demand `memory_recall` and writes are unaffected | `true` |
 | `memory.inject_lessons` | Inject the learned-corrections and user-profile blocks into new-session context. Writes are unaffected | `true` |
 | `memory.inject_lessons_per_turn` | On each follow-up message, add up to three stored lessons (2,000 characters) that match it and that the session has not been shown yet: the session-start block holds only what fits its budget. A lesson matches when it shares at least two distinct words with the message that are each rare among stored lessons: carried by at most 1% of them, and never fewer than one. Request words on the lesson stop list and words of two letters or fewer are ignored. Each lesson is sent at most once until a compaction drops it from context, even when the turn that carried it was cancelled or failed; a gateway restart, or turning this on mid-session, can send one once more; it can also be sent once more after 256 newer lessons in that session or after its record is dropped past 256 sessions. Vector stores only. Requires `inject_lessons` | `false` |
@@ -755,10 +813,11 @@ edited on Settings → Browser and applies without a restart.
 
 The `hooks` section holds script-hook definitions; two keys there are declared on
 the config schema (like `hooks.confirm_tools`), so they are recognized config
-settings with defaults and help, editable in `config.json`. Both are off by
-default:
+settings with defaults and help, editable in `config.json`:
 
-- **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
+- **`hooks.batch_write_guard`** (boolean, default `true`; set the JSON boolean
+  `false` to turn it off; a quoted `"false"` is dropped with a warning and
+  leaves it on). When on, refuse a
   write-class tool call issued in the same parallel tool batch as a read-class
   call (or a call that creates an item, PR or commit) when the write
   quotes a value the session had not seen yet: a sha, an item, session or
@@ -811,6 +870,9 @@ restarts when the gateway restarts, when a credential file the gateway watches
 changes, or when `mcp_gateway.max_backends` is full and it is the least
 recently used idle backend.
 
+A script cron is not covered: each of its runs still starts its own copy of the
+server (see [Script and command crons](cron-and-scheduling.md#script-and-command-crons)).
+
 On the `kas` backend, a background helper whose agent mounts no tool
 (`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
@@ -847,6 +909,17 @@ On the `kas` backend, a background helper whose agent mounts no tool
 | `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. The default is about twice one measured self-contained clone with its dependencies. A value that is not a positive number uses the default | `5.0` |
 | `work_ledger.remote_dispatch_retire_minutes` | Minutes a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. A value that is not a positive number uses the default | `30.0` |
 
+### Kiro relay viewer
+
+The desktop app's list of remote Crews it can open through the Kiro relay. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `tunnel.relay_viewer_enabled` | Lets the desktop app list the remote Crews your Kiro sign-in can reach through the relay and open them. While it is off, both relay viewer routes answer 404 and the list is hidden. Only the JSON boolean `true` turns it on | `false` |
+| `tunnel.relay_viewer_cps_url` | The base URL of the control plane the viewer lists Crews from and gets access tokens from. Must be `https://` (`http://` only for a loopback port-forward); any other value is ignored with a warning. Empty means not set up | `""` |
+| `tunnel.relay_viewer_credential` | For testing only. Where the viewer reads a test credential to use instead of your Kiro sign-in, as `secret://NAME` or the absolute path of a file. Never the credential itself; a value that is not a reference is ignored with a warning that does not repeat it | `""` (your Kiro sign-in) |
+| `tunnel.relay_viewer_relay_domain` | Empty (the default) keeps the check that the Crew address starts with its endpoint ID. Set, the address must be exactly `https://<endpoint ID>.<this domain>` with no port, so a value that isn't the relay's domain lists no Crews | `""` |
+
 ### Power
 
 | Key | Description | Default |
@@ -857,7 +930,7 @@ On the `kas` backend, a background helper whose agent mounts no tool
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `auto_update` | Where the install can apply updates, `true` installs them and restarts the gateway; `false` only notifies. When work is running, a checkout waits before applying, while the `cli.sh` managed venv builds the new version alongside and waits only to restart. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
+| `auto_update` | Where the install can build a new version beside the running one, `true` prepares it and leaves it for the next restart you choose; `false` only notifies. The gateway never restarts itself for an update. Only the `cli.sh` managed venv prepares an update by itself; a checkout, pip and pipx only notify, and Update (or `kirocrew update`) applies them. A policy minimum version prepares an update on the managed venv regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"`, or `"local"` to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none, and for the agent's "now" | `""` (same as `"local"`) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
@@ -921,33 +994,45 @@ A per-job `timezone` on a cron job wins over this global value.
 ### When the gateway checks
 
 The gateway checks for a newer release when it starts (its own restarts
-included), every 12 hours, and every five minutes while an update is waiting
-for running work to finish. Depending on the install, the check is a `git
-fetch` or a release-feed fetch. Docker and the desktop app's bundled gateway
-skip it (see below); everywhere else it runs whatever `auto_update` is set to.
+included) and every 12 hours, and again every five minutes after a preparation
+that was interrupted. Depending on the install, the check is a `git fetch` or a
+release-feed fetch. Docker and the desktop app's bundled gateway skip it (see
+below); everywhere else it runs whatever `auto_update` is set to.
 
-`auto_update` decides what happens when the check finds something. With `true`
-(the default), the gateway applies the update and restarts itself, on the
-installs that can apply. With `false`, it only notifies.
+**The gateway never updates or restarts itself while it is running.** What
+`auto_update` decides is what happens to an update the check finds. With `true`
+(the default), the `cli.sh` managed venv builds the new version beside the live
+install while turns keep running, and nothing the running gateway loads from is
+changed. The dashboard then says an update is ready ("Update ready" on the top
+bar, "Restart to update" in the update dialog), and the new version starts the
+next time you stop or restart the gateway, or start it fresh. Every other
+install, and `auto_update` set to `false`, only notifies.
 
-A checkout applies only when no turn or background job is running. If work is
-in flight, it keeps serving and tries again five minutes later, so steady
-activity can postpone even a mandatory update. While a checkout's update
-applies, the gateway does not start new turns.
+A checkout, a policy update command, pip and pipx replace the tree the running
+gateway serves from, so they are never applied while it runs. **Update** ("Update
+when I restart") only sets the update to apply: nothing installs and nothing
+restarts now, and the gateway applies it at its next start, before it serves
+anything. If that apply fails, the old version starts and the dashboard shows why.
+You can also run `kirocrew update` and restart yourself. Clicking **Restart**
+while work is running (a turn, a background job, a queued message, an approval
+card, or a chat you typed into within 15 minutes) shows what is running and asks
+before it restarts anyway; declining just cancels.
 
-The `cli.sh` managed venv does not wait to apply. It builds the new version
-beside the live install while turns keep running, and nothing the running
-gateway loads from is changed. Only the restart into the new version waits for
-running work to finish, retried on the same five-minute cadence. On a Linux host
-where the `kirocrew-userns` AppArmor profile is attached to the launcher, the
-gateway does not apply by itself: it posts a notice to run `kirocrew update` and
-then `kirocrew service install`, which re-attaches the profile.
+On a Linux host where the `kirocrew-userns` AppArmor profile is attached to one
+version's launcher only, the gateway does not prepare an update by itself: it
+posts a notice to run `kirocrew update` and then `kirocrew service install`,
+which re-attaches the profile. Where the directory holding the install is owned
+by the service's account and writable by no other, `kirocrew service install`
+attaches the profile to every version's launcher, and updates prepare on their
+own.
 
-If an update removes the dashboard bundle while the gateway cannot be relaunched
-(the service manager could not start it, or the update moved the install but
-could not sync its dependencies), the gateway stays up on its loaded code. The
-dashboard then serves its fallback page, and the log carries a CRITICAL line
-naming the reason. See the
+If an update removes the dashboard bundle from under the running gateway (a
+terminal-run installer, for example), the gateway keeps serving on its loaded
+code. The dashboard then serves its fallback page, the log carries a CRITICAL
+line, and the same "Update ready" notice asks you to restart. Setting
+`KIROCREW_AUTO_RESTART=0` (or an `auto-restart.disabled` file in the edition's
+state directory) turns off automatic restarts for an edition that has them; the
+gateway itself restarts nothing. See the
 [stale-asset watchdog](../../../docs/system-specs/modules/slack-gateway.md) in the
 gateway spec.
 
@@ -960,37 +1045,29 @@ Windows, where they never run and the gateway does not update itself. See the
 
 A security policy can also turn unattended installs off with
 `"unattended_apply": false` in its `updates` block. The gateway then never
-applies an update by itself, whatever `auto_update` says: it still checks and
-shows the update badge, and Update installs the update when you ask. A policy
-minimum version still installs a mandatory update.
+prepares an update by itself, whatever `auto_update` says: it still checks and
+shows the update badge, and Update sets the update to apply at the next start. A
+policy minimum version still prepares a mandatory update, and never restarts for it.
 
 | Install | With `auto_update` on |
 |---|---|
-| Git or source checkout (any OS) on a primary branch: `main`, `mainline` or `master` <!-- wokeignore:rule=master --> | Applies |
-| The `cli.sh` managed venv (macOS, Linux) | Applies |
+| Git or source checkout (any OS) | Notifies. **Update** applies it at the next start |
+| The `cli.sh` managed venv (macOS, Linux) | Prepares it beside the running install; the next restart uses it |
 | pipx (what `cli.sh` uses when pipx is on `PATH`) or plain `pip` | Notifies only |
-| Docker | Neither checks nor applies. The About page says to pull a newer image |
+| Docker | Neither checks nor prepares. The About page says to pull a newer image |
 | The gateway bundled in the desktop app | Neither. The app's own updater owns it |
 
-Of the non-checkout installs, the gateway applies an update itself only on the
+Of the non-checkout installs, the gateway prepares an update itself only on the
 `cli.sh` managed venv, so pip and pipx only notify.
 
-A checkout applies when the tip of its branch carries a newer `__version__` than
-the running code, and then hard-resets to that tip and restarts. It does not
-apply over local changes, local commits or untracked files the update would
-overwrite, and it does not restart a gateway whose checkout you already pulled
-by hand. Other branches,
-`release/*` included, never auto-apply. `main` is always one minor version ahead
-of the release line, so a `main` checkout moves onto nightly code each time a
-release branch is cut. Below a policy minimum version, a primary-branch checkout
-applies on the same newer-`__version__` test and only when the checkout can take
-the update cleanly, so a floor moves it toward a build that satisfies the minimum
-rather than resetting to every intermediate commit. When the floor is pinned
-above the newest available build, or the checkout has diverged (local commits a
-reset would discard), the gateway refreshes the update badge instead of applying.
-A mandated apply that finds the required code already on disk leaves a restart
-pending and refreshes the badge rather than reporting a restart that does not
-happen.
+**Update** on a checkout applies, at the next start, when the tip of its branch
+carries a newer `__version__` than the running code, and then hard-resets to that
+tip. It does not apply over local changes, local commits or untracked files
+the update would overwrite. Below a policy minimum version, a primary-branch
+checkout shows the update badge and the required-update prompt; it is not reset
+by itself. When the floor is pinned above the newest available build, or the
+checkout has diverged (local commits a reset would discard), the gateway
+refreshes the update badge instead.
 
 ### Turning it off and updating by hand
 
@@ -1017,10 +1094,10 @@ the version the running gateway serves.
 ### What can still update a host with `auto_update` off
 
 - **A policy minimum version.** An administrator can set `min_version` in the
-  `updates` block of `security_policy.json`. On an install whose gateway updates
-  itself, a gateway below that version applies the update even with
-  `auto_update` off — but only toward a build carrying a newer `__version__`, so
-  a floor advances the host instead of churning on commit distance alone. The
+  `updates` block of `security_policy.json`. On an install whose gateway prepares
+  updates itself (the managed venv), a gateway below that version prepares the
+  update even with `auto_update` off, and the prompt to restart cannot be
+  dismissed; the gateway still does not restart itself. The
   scope per install is in the
   [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
 - **The desktop app's own updater.** On a desktop install, **Install app

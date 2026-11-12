@@ -166,9 +166,15 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # registered yet.
                 ("chat_api/session_relaunch.py", "api_chat_slot_project"),
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
+                ("chat_api/slot_effort.py", "api_chat_slot_ultracode"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
+                # The reload's closing row: a dispatched turn with no registered
+                # provider yet is the one starting the agent, and its reply or
+                # error card says how that went, so the reload posts no row. It
+                # reads the reservation because that turn may not execute yet.
+                ("chat_api/session_relaunch.py", "_report_reload_respawn"),
                 # A crewmate's worker reload waits for a reserved worker slot the
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),
@@ -273,6 +279,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("warm_task_brief.py", "_still_current"),
                 ("warm_task_brief.py", "_wait_for_idle_turn"),
                 ("ws.py", "_handle_slot_focused"),
+                # A slot a send has reserved is past the moment a read ahead of
+                # its first message could help.
+                ("skill_read_ahead.py", "read_ahead"),
             }
         },
         **{
@@ -283,6 +292,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the server's total agree; continue_slot_turn still refuses a
                 # reserved slot, reported as skipped.
                 ("chat_resume_all.py", "collect_interrupted_idle"),
+                # A card send is refused while a turn executes. It also reads the
+                # reservation directly (`_turn_admission_reserved`), which this
+                # table does not enumerate.
+                ("card_send.py", "_thread_is_idle"),
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a

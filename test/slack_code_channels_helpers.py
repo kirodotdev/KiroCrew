@@ -16,6 +16,7 @@ import pytest
 
 from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
 from kiro_crew.slack import features
+from kiro_crew.slack.code_channels import agent_picker
 from kiro_crew.slack.code_channels import binding as binding_mod
 from kiro_crew.slack.code_channels import recognition, routing, status
 from kiro_crew.slack.code_channels.classifier import RouteDecision
@@ -32,15 +33,35 @@ class FakeApi:
     def __init__(self) -> None:
         self.responses: dict[str, Any] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: Channels an accepted ``agents.conversations.archive`` archived, so
+        #: ``conversations.info`` reports them archived as Slack would.
+        self.archived: set[str] = set()
 
     async def api_call(self, method: str, **kwargs: Any) -> Any:
-        self.calls.append((method, kwargs.get("json") or kwargs.get("params") or {}))
+        body = kwargs.get("json") or kwargs.get("params") or {}
+        self.calls.append((method, body))
         resp = self.responses.get(method, {"ok": True})
         if callable(resp):
-            resp = resp(kwargs.get("json") or kwargs.get("params") or {})
+            resp = resp(body)
         if isinstance(resp, BaseException):
             raise resp
+        if method == "agents.conversations.archive" and isinstance(resp, dict) and resp.get("ok"):
+            self.archived.add(str(body.get("channel_id") or ""))
+        if method == "conversations.info":
+            resp = self._with_archived_state(str(body.get("channel") or ""), resp)
         return resp
+
+    def _with_archived_state(self, channel: str, resp: Any) -> Any:
+        """Add ``is_archived: True`` for a channel this fake archived, unless the
+        recorded answer already states the archived state itself."""
+        if channel not in self.archived or not isinstance(resp, dict) or not resp.get("ok"):
+            return resp
+        info = resp.get("channel")
+        info = dict(info) if isinstance(info, dict) else {"id": channel}
+        if "is_archived" in info:
+            return resp
+        info["is_archived"] = True
+        return {**resp, "channel": info}
 
     def methods(self) -> list[str]:
         return [m for m, _ in self.calls]
@@ -55,6 +76,10 @@ class FakeSlack:
         self.thread: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
         self.removed_reactions: list[tuple[str, str, str]] = []
+        self.blocks: dict[str, list[dict[str, Any]]] = {}
+        self.edits: list[tuple[str, str, str, list[dict[str, Any]] | None]] = []
+        #: Each ephemeral's blocks (None for a text-only one), in post order.
+        self.ephemeral_blocks: list[list[dict[str, Any]] | None] = []
         self._n = 0
 
     async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
@@ -68,6 +93,20 @@ class FakeSlack:
         self.posts.append((channel, text, thread_ts))
         return f"200.{self._n:06d}"
 
+    async def post_blocks(
+        self, channel: str, blocks: list[dict[str, Any]], text: str, thread_ts: str | None = None
+    ) -> str:
+        # Recorded as a post too (its fallback text), so a test reading
+        # ``posts`` sees the kickoff whichever way it went out.
+        ts = await self.post_message(channel, text, thread_ts)
+        self.blocks[ts] = blocks
+        return ts
+
+    async def update_message(
+        self, channel: str, ts: str, text: str = "", blocks: list[dict[str, Any]] | None = None
+    ) -> None:
+        self.edits.append((channel, ts, text, blocks))
+
     def _inject_team(self, channel: str, params: dict[str, Any]) -> None:
         team = self._channel_team.get(channel)
         if team and "team_id" not in params:
@@ -75,6 +114,7 @@ class FakeSlack:
 
     async def post_ephemeral(self, channel: str, user: str, text: str, **_k: Any) -> None:
         self.ephemerals.append((channel, user, text))
+        self.ephemeral_blocks.append(_k.get("blocks"))
 
     async def fetch_thread_replies(self, channel: str, ts: str, **_k: Any) -> list[dict[str, Any]]:
         return list(self.thread)
@@ -264,6 +304,17 @@ class Env:
 
         self.real_persist_request = routing._persist_request
         monkeypatch.setattr(routing, "_persist_request", persist_request)
+        # The agents the pickers list (never the host's real agent directory).
+        self.agents: list[str] | None = ["kirocrew", "kirocrew-conductor", "builder"]
+        #: What each listed agent does (its spec's description); unlisted: none.
+        self.agent_descriptions: dict[str, str] = {}
+
+        async def agent_menu(_project_dir: Any) -> dict[str, str] | None:
+            if self.agents is None:
+                return None
+            return {n: self.agent_descriptions.get(n, "") for n in self.agents}
+
+        monkeypatch.setattr(agent_picker, "agent_menu", agent_menu)
         status.set_slack_provider(lambda: self.slack)
 
     def info(self, channel: str, **kwargs: Any) -> None:

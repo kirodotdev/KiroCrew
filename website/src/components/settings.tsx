@@ -30,9 +30,19 @@ interface SettingsToggleProps {
   // Telegram forum toggle describes setup with inline <span className="font-mono">
   // fragments. The render path already wraps it in a <div>, so any node is safe.
   description?: React.ReactNode
+  /** A small status badge drawn before `description` on the same line (e.g. a
+   *  "Restart" badge on a switch that applies at the next gateway start). A
+   *  separate prop so `description` stays the literal the settings extractor reads. */
+  descriptionBadge?: React.ReactNode
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
+  /** Opt-in: the toggle is saving its own change right now. The switch keeps
+   *  keyboard focus (not taken out of the tab order like a plain `disabled`,
+   *  which drops focus to the page) and ignores presses while the save runs,
+   *  announced as `aria-disabled` + `aria-busy`. The row click is ignored too.
+   *  Default unset keeps today's behaviour, so no other caller changes. */
+  busy?: boolean
   /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
   configKey?: string
   /** Stable highlight anchor (`data-setting-id`) for a row with no gateway
@@ -63,7 +73,13 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+  // Busy refuses the row click. The row is disabled for assistive tech while it
+  // runs -- `aria-disabled` plus `aria-busy`, out of the tab order -- so a screen
+  // reader does not announce an active button that does nothing. Focus is not
+  // lost: the inner switch carries its own `busy` and keeps its tab stop, so the
+  // user stays on the control they pressed. The dimmed look stays either way.
+  const inert = disabled || busy
   /**
    * Did this activation come from the "?" tip rather than the row?
    *
@@ -76,7 +92,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
   const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
     e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
   return (
-    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
+    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} aria-busy={busy || undefined} className={`flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!inert && !fromHint(e)) onChange(!checked) }} disabled={inert}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
           <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
@@ -84,13 +100,20 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
               event target, so the tip needs no handler of its own. */}
           {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}
         </div>
-        {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
+        {descriptionBadge ? (
+          // Badge and description each in their own block: two separate UI
+          // units side by side, not one sentence built from two catalog keys.
+          <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted mt-0.5">
+            <div className="shrink-0">{descriptionBadge}</div>
+            {description && <div>{description}</div>}
+          </div>
+        ) : description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
       </div>
       {/* stopPropagation prevents the row's mouse-click convenience from double-
           toggling; the inner Toggle carries all keyboard/AT semantics. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div onClick={e => e.stopPropagation()}>
-        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} describedBy={describedBy} />
+        <Toggle checked={checked} onChange={onChange} disabled={disabled} busy={busy} label={label} describedBy={describedBy} />
       </div>
     </Clickable>
   )
@@ -135,13 +158,18 @@ interface SettingsSelectProps {
   /** Optional action at top of dropdown (e.g. "+ New workspace…") */
   action?: { label: string; onSelect: () => void }
   disabled?: boolean
+  /** Opt-in: this select is saving its own change right now. It keeps keyboard
+   *  focus instead of going native `disabled` (which would drop focus to the
+   *  page) and refuses picks while the save runs. See `SimpleSelect`'s `busy`.
+   *  Default unset keeps today's behaviour, so no other caller changes. */
+  busy?: boolean
   /** Schema-backed config key this select writes. */
   configKey?: string
   /** Explicit UI row identity for deep links, independent of the config schema. */
   settingId?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey, settingId }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, busy, configKey, settingId }: SettingsSelectProps) {
   // Per-instance id pairing the caption's htmlFor with the select trigger, so
   // the visible caption is the control's programmatic label. The aria-label
   // below stays as a fallback: it wins the accessible-name computation and
@@ -157,6 +185,7 @@ export function SettingsSelect({ label, description, hint, value, options, optio
         onChange={onChange}
         action={action}
         disabled={disabled}
+        busy={busy}
         aria-label={label}
         triggerFallback={optionLabels?.[options.indexOf(value)] ?? (value || '—')}
       />
@@ -539,7 +568,26 @@ export function SettingsSection({ title, badge, hint, collapsible, children }: S
  */
 export const SETTINGS_CARD_STAGGER_MS = 60
 
-export function SettingsCard({ index, children }: {
+/**
+ * The opt-in boxed look (`SettingsCard boxed`): one rounded, bordered card whose
+ * DIRECT children are its rows, each padded, with a hairline between rows. A row
+ * that renders nothing leaves no DOM node, so it draws no padding and no
+ * hairline. A card nested inside a row loses its own bottom gap, so a card-shaped
+ * row (an edition row, the KAS card) sits flush like the others.
+ * `data-settings-box` lets a caller test for an empty box with `:empty`.
+ */
+const SETTINGS_BOX_CLASS =
+  'rounded-xl overflow-hidden border border-[var(--border)] bg-[var(--card)] empty:hidden '
+  + '[&>*]:px-4 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-[var(--border)] [&_[data-settings-card]]:mb-0'
+
+export function SettingsCard({ index, boxed, children }: {
+  /**
+   * Draw the card as one bordered box with a hairline between its direct
+   * children. Off by default: most panels keep the borderless group, and only a
+   * page that lists many rows of one kind (Settings > Developer > Feature
+   * Previews) opts in.
+   */
+  boxed?: boolean
   /**
    * Ordinal of this card within its panel (0-based). Maps onto the shared
    * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
@@ -564,9 +612,15 @@ export function SettingsCard({ index, children }: {
       className="mb-2 animate-rise"
       style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
     >
-      <div className="flex flex-col gap-2.5">
-        {children}
-      </div>
+      {boxed ? (
+        <div data-settings-box="" className={SETTINGS_BOX_CLASS}>
+          {children}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          {children}
+        </div>
+      )}
     </div>
   )
 }

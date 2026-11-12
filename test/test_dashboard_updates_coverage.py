@@ -90,6 +90,21 @@ class TestUpdateCheckEndpoint:
         assert payload["update_required"] is True
         assert "auto_update" in payload
 
+    @pytest.mark.asyncio
+    async def test_carries_the_same_check_stamp_as_the_status_frame(self, monkeypatch):
+        """The dashboard orders this answer against the status frame's by this stamp."""
+
+        async def _fake_check() -> None:
+            monkeypatch.setattr(updates, "_last_update_check", 1_700_000_123.0)
+            updates._set_update_info(check_status="failed", error_code="feed_unreachable")
+
+        monkeypatch.setattr(updates, "_do_update_check", _fake_check)
+
+        payload = json.loads((await updates.api_update_check(_request())).body.decode())
+
+        assert payload["last_checked_at"] == 1_700_000_123.0
+        assert updates.status_update_fields()["update_last_checked_at"] == 1_700_000_123.0
+
 
 # A stand-in ``git`` whose fetch starts a helper that inherits git's stderr and
 # outlives git, the way a real ``git fetch`` starts ``git remote-https``, ssh or
@@ -637,6 +652,8 @@ class TestAutoUpdateToggle:
             "auto_update": False,
             "requested": False,
             "overlay_override": False,
+            "overlay_source": None,
+            "overlay_policy": None,
         }
         assert wrote == [{"agent": {"model": "x"}, "auto_update": False}]
 
@@ -694,6 +711,7 @@ class TestAutoUpdateToggle:
         assert resp.status == 409
         assert body["code"] == "auto_update_overlay_owned"
         assert body["overlay_override"] is True
+        assert body["overlay_source"] == "user"
         assert "config.local.json" in body["error"]
         assert wrote == []
         req.app["state"].push_refresh.assert_not_called()
@@ -715,6 +733,8 @@ class TestAutoUpdateToggle:
             "auto_update": True,
             "requested": False,
             "overlay_override": False,
+            "overlay_source": None,
+            "overlay_policy": None,
         }
 
     @pytest.mark.asyncio
@@ -770,7 +790,12 @@ class TestAutoUpdateToggle:
         resp = await updates.api_update_auto_pin(MagicMock())
 
         assert resp.status == 200
-        assert json.loads(resp.body.decode()) == {"overlay_override": pinned}
+        assert json.loads(resp.body.decode()) == {
+            "overlay_override": pinned,
+            # No edition registered an owner, so a set key is the person's own entry.
+            "overlay_source": "user" if pinned else None,
+            "overlay_policy": None,
+        }
         assert checks == []
         assert wrote == []
 

@@ -26,7 +26,7 @@ export default function SpeechProviderNotice({
 }) {
   const reason = entry.reason ?? i18nT('lib.speechProviders.unavailable_no_reason')
   if (entry.error) {
-    return <ErrorNotice variant="inline" className="-mt-1 mb-3" message={reason} askAgent={askAgent} testId={testId} />
+    return <ErrorNotice variant="inline" className="-mt-1 mb-3" message={reason} askAgent={askAgent} actionPlacement="below-on-phone" testId={testId} />
   }
   return (
     <div role="status" className="-mt-1 mb-3 flex flex-col gap-1 text-[13px]" data-testid={testId}>

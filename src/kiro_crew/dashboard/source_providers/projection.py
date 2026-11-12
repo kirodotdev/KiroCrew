@@ -30,6 +30,17 @@ def _mark_partial(partial_sections: list[str], section: str) -> None:
         partial_sections.append(section)
 
 
+def _mark_failed(partial_sections: list[str], failed_sections: list[str], section: str) -> None:
+    """Name a section whose read FAILED, as opposed to one cut at a page limit.
+
+    It stays in ``partialSections`` too, so a reader that only asks "is this
+    section complete?" (the chip's keep-known CI rule) still sees it; the panel
+    reads ``failedSections`` to show the failure as an error, not a status note.
+    """
+    _mark_partial(partial_sections, section)
+    _mark_partial(failed_sections, section)
+
+
 def _as_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []

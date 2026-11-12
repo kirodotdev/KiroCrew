@@ -387,8 +387,8 @@ invisible unless it keeps its own list.
 - **An absent script reads as `UNKNOWN`, never as permission.** Presence is
   checked at first use rather than assumed, so an install that does not carry a
   script loses that script's answers instead of gaining a default yes.
-- **The patrol expires silently.** `monitor_start` defaults to 24 cycles, so a
-  90-second patrol runs out in well under an hour, long before a fleet drains,
+- **The patrol expires silently.** `monitor_start` defaults to 24 cycles on a
+  loop that wakes every interval, so a 90-second patrol runs out in well under an hour, long before a fleet drains,
   and the loop simply stops with no symptom. `max_cycles` and
   `max_runtime_secs` are passed explicitly, with the interval times the cycle
   cap covering the runtime so the runtime is what ends the loop, and both are

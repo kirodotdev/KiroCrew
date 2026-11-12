@@ -603,7 +603,7 @@ class TestSetFolderErrors:
         store, _fstore = stores
         art = store.create(name="Doc", content="x", kind="markdown")
         monkeypatch.setattr(
-            art_handlers, "_resolve_folder_ref", lambda _ref, create_missing: ("phantom", None)
+            art_handlers, "_resolve_folder_ref", lambda _ref, **_kw: ("phantom", None)
         )
         resp = await api_artifact_set_folder(
             _request(body={"folder_id": "phantom"}, match={"slug": art.slug})

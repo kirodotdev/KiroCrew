@@ -654,6 +654,37 @@ def test_unprompted_group_silence_delivers_nothing_and_skips_cooldown():
     assert transport.group_gate.recorded == []  # no cooldown started
 
 
+@pytest.mark.parametrize("bucket", ["own", "other"])
+def test_an_unprompted_group_message_during_a_turn_posts_no_busy_receipt(bucket):
+    # Nobody addressed the bot, so a "still working" note answers a question no
+    # one asked; an unprompted turn must stay invisible until it has something.
+    provider = FakeProvider()
+    d, _client, sessions, transport = _make(provider=provider)
+    transport._is_operator = False
+    busy_key = d._session_key(_GROUP, is_operator=bucket != "own")
+    sessions.is_busy = lambda key: key == busy_key  # type: ignore[method-assign]
+    inbound = _msg("anyone know python?", conv=_GROUP, user="447711111111")
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(
+        respond=True, unprompted=True, rules="Help with python questions.", may_steer=False
+    )
+    asyncio.run(d.handle_message(inbound))
+    assert provider.prompts == []
+    assert transport.sent == []
+
+
+def test_the_operators_unprompted_follow_up_during_a_turn_still_reaches_the_busy_path():
+    # The operator may steer: an unaddressed follow-up while their own turn runs
+    # is folded in (or receipted), never silently dropped.
+    provider = FakeProvider()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    inbound = _msg("also cover Y", conv=_GROUP, user="447700900000")
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(
+        respond=True, unprompted=True, rules="Help with python questions.", may_steer=True
+    )
+    asyncio.run(d.handle_message(inbound))
+    assert len(transport.sent) == 1
+
+
 def test_group_command_from_non_operator_is_ignored():
     provider = FakeProvider()
     d, _client, _sessions, transport = _make(provider=provider)

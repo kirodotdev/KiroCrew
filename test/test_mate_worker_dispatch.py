@@ -26,6 +26,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_MATE_WORKER_KIT,
 )
 from kiro_crew.config import loader
+from kiro_crew.crewmate_harness import harness_label
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -360,7 +361,7 @@ def test_a_worker_on_a_backend_that_loads_no_member_spec_is_refused(
         _create(state, caller)
 
     assert refused.value.code == "capability_harness_unsupported"
-    assert "goose" in str(refused.value) and "kas" in str(refused.value)
+    assert "goose" in str(refused.value) and harness_label("kas") in str(refused.value)
     assert set(state._slots) == before  # nothing was allocated
 
 
@@ -378,7 +379,7 @@ def test_a_worker_that_lands_on_kiro_cli_is_refused(
         _create(state, caller)
 
     assert refused.value.code == "capability_harness_unsupported"
-    assert "(kiro)" in str(refused.value) and "kas" in str(refused.value)
+    assert "(kiro)" in str(refused.value) and harness_label("kas") in str(refused.value)
     assert set(state._slots) == before  # nothing was allocated
 
 
@@ -436,7 +437,7 @@ def test_every_backend_carries_the_kit_or_refuses_the_worker(backend, monkeypatc
     worker is refused with a remedy."""
     refusal = mate_worker.worker_kit_backend_refusal(backend)
     if backend not in ACP_BACKENDS_MATE_WORKER_KIT:
-        assert refusal and "agent.member_acp_backend" in refusal
+        assert refusal and "change Settings → Agent Harness" in refusal
         return
     assert refusal is None
     from kiro_crew.config import paths as paths_mod

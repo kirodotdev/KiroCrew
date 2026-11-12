@@ -1,24 +1,30 @@
-"""Name tables from kiro-cli's tool names to goose's, opencode's, Strands' and claude's own.
+"""Name tables from kiro-cli's tool names to goose's, opencode's, Strands', claude's, codex's.
 
 A spec hook's tool matcher is written in kiro-cli's names (``execute_bash``,
 ``fs_write``). KAS states its own id for a call and
 :func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` maps it back. goose,
-opencode and claude state no such id on a permission request, but each names the
-tool on the ``tool_call`` frame that comes first:
+opencode, claude and codex state no such id on a permission request, but each
+names the tool on the ``tool_call`` frame that comes first:
 
 * goose in ``_meta.goose.toolCall.toolName`` (``shell`` for its builtin shell);
 * opencode in the frame's ``title``, which on that first frame is the tool's own
   name (``bash``); later updates reuse the title for the command;
 * claude-agent-acp in ``_meta.claudeCode.toolName`` (``Bash``, ``Edit``); a frame
   carrying that block is never named by its title, which the adapter builds from
-  the call's arguments.
+  the call's arguments;
+* codex-acp in its adapter-authored fields: a top-level ``name`` on some calls
+  (``exec_command``, ``write_stdin``), else the ``kind`` and the shape of ``rawInput`` its reporters
+  write (``codex_tool_name``). Its title is a command or prose and is never read.
 
 The permission event carries that name as its ``harness_tool_id``, joined to the
 backend by :data:`HARNESS_TOOL_ID_SEPARATOR` (``goose#shell``). A KAS id never
 contains that character (``_dispatch._HARNESS_TOOL_ID_RE``), so a KAS id can never
-be read through these tables, and a goose id never through KAS's. Crew fires no
-spec hooks on claude, so there the id is what a Hooks-page PreToolUse matcher
-meets; it is read by hook matching alone, and a hook can only refuse a call.
+be read through these tables, and a goose id never through KAS's. On codex the
+``tool_call`` event carries the id too, because codex runs most calls without a
+permission request. Crew fires no ``preToolUse`` spec hooks on claude or codex, so
+there the id is what a Hooks-page PreToolUse matcher and a spec's ``postToolUse``
+matcher meet; it is read by hook matching alone, and a hook can only refuse or
+observe a call.
 
 Most ids below are tools the live harness offered, measured on goose 1.50.1 (its
 tool list as its request log sent it to the model) and on opencode 1.18.30 (as
@@ -53,6 +59,7 @@ from collections.abc import Iterable
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
@@ -145,6 +152,24 @@ CLAUDE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
     "use_subagent": ("Task", "Agent"),
 }
 
+#: kiro-cli tool name -> the codex model tools that do the same job, as codex-acp
+#: 2.3.0 offered them to the model (``exec_command``, ``write_stdin``,
+#: ``web_search``; ``shell`` is the classic shell tool of older codex releases).
+#: codex turns an ``apply_patch`` command into a file change, which it reports as
+#: kind ``edit``. ``view_image`` has no row: codex-acp reports it as one
+#: ``tool_call`` frame that is already ``completed`` and sends no update after it,
+#: so the turn gets no result for it and its ``postToolUse`` hooks could not fire. codex states no tool id on a permission
+#: request, and its ``tool_call`` frame states a tool name only for some calls, so
+#: the name is read from the frame's adapter-authored fields
+#: (:func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), never
+#: from its title, which is a command or prose. An MCP call is named only by its
+#: ``@server/tool`` identity.
+CODEX_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("exec_command", "write_stdin", "shell"),
+    "fs_write": ("apply_patch",),
+    "web_search": ("web_search",),
+}
+
 #: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
 #: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
 #: built-in that does the same job. It names that built-in on a Side Chat
@@ -183,6 +208,7 @@ HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_OPENCODE: OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_STRANDS: STRANDS_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_CLAUDE: CLAUDE_TOOL_IDS_BY_KIRO_TOOL,
+    ACP_BACKEND_CODEX: CODEX_TOOL_IDS_BY_KIRO_TOOL,
 }
 
 #: Every harness id in these tables, for the spec reader's "names no tool" warning.

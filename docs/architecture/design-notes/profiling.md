@@ -49,7 +49,7 @@ With no `--call`, the sampler attaches to another process: `--pid`, or the
 running gateway's PID read from `$KIROCREW_HOME/gateway.lock`.
 
 ```bash
-pip install 'py-spy>=0.3,<1'
+pip install "py-spy>=0.3,<1"
 KIROCREW_DEBUG=1 kirocrew perf sample --seconds 30 --output /tmp/gateway.folded
 ```
 

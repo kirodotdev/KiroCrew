@@ -22,14 +22,16 @@ from kiro_crew.history_cache import (
     _TranscriptIndexBase,
     _TranscriptRowIndexEntry,
 )
+from kiro_crew.history_metadata_line import (
+    METADATA_LINE_READABLE,
+    METADATA_LINE_TRANSIENT,
+    parse_metadata_line,
+)
 from kiro_crew.history_projection_contract import (
     _HISTORY_LOGGER,
     _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS,
     _TRANSCRIPT_PAGE_INDEX_STRIDE,
     _TRANSCRIPT_PAGE_READ_ATTEMPTS,
-    METADATA_LINE_CORRUPT,
-    METADATA_LINE_READABLE,
-    METADATA_LINE_TRANSIENT,
     ChainRevision,
     TranscriptPage,
     TranscriptRevisionChanged,
@@ -62,6 +64,9 @@ class TranscriptReadProjection:
         from kiro_crew import history_page_index
 
         history_page_index.forget(path)
+        from kiro_crew.transcript_count import forget_count
+
+        forget_count(path)
 
     def recent(
         self,
@@ -1027,6 +1032,8 @@ class TranscriptReadProjection:
         worker thread and must not make a blocking event-loop writer wait. With
         nothing published, no memo depends on the lock.
         """
+        from kiro_crew.transcript_count import count_and_store, stored_count
+
         path = self._log._path(key)
         try:
             identity = self._log._cache_identity(path.stat())
@@ -1042,10 +1049,13 @@ class TranscriptReadProjection:
         with fill_lock:
             if not path.exists():
                 return 0
+            stored = stored_count(path)
+            if stored is not None:
+                return stored
             attempts = _history_facade()._METADATA_READ_ATTEMPTS
             for attempt in range(attempts):
                 try:
-                    return count_messages(path)
+                    return count_and_store(path, count_messages)
                 except FileNotFoundError:
                     return 0
                 except OSError:
@@ -1508,29 +1518,15 @@ class TranscriptReadProjection:
                     exc_info=True,
                 )
                 return {}, METADATA_LINE_TRANSIENT
-            try:
-                first = raw_first.decode("utf-8").strip()
-            except UnicodeDecodeError:
-                # Every line writer encodes UTF-8, so bytes that do not decode
-                # are damage (a torn or foreign write), exactly like bytes that
-                # are not JSON. Reporting them TRANSIENT made every writer defer
-                # for good, so the line could never be rewritten and the session
-                # refused every turn.
-                return {}, METADATA_LINE_CORRUPT
-            if not first:
+            # Damaged bytes are reported CORRUPT, never TRANSIENT: reporting them
+            # transient made every writer defer for good, so the line could never
+            # be rewritten and the session refused every turn.
+            metadata, state = parse_metadata_line(raw_first)
+            if state != METADATA_LINE_READABLE:
+                return {}, state
+            if not raw_first.decode("utf-8").strip():
+                # An empty first line is readable and holds nothing to cache.
                 return {}, METADATA_LINE_READABLE
-            try:
-                data = json.loads(first)
-                metadata = (
-                    data if isinstance(data, dict) and data.get("_type") == "metadata" else {}
-                )
-            except json.JSONDecodeError:
-                # A damaged first line cannot establish whether this was a
-                # member session. Keep get_metadata's legacy empty-dict view,
-                # but tell identity-sensitive readers to refuse the operation.
-                # Every line writer replaces the file atomically, so bytes that
-                # are not JSON are not a write in flight: no retry reads them.
-                return {}, METADATA_LINE_CORRUPT
             self._log._publish_if_current(
                 self._log._meta_cache,
                 key,

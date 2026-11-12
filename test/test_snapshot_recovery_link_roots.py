@@ -91,7 +91,7 @@ class TestAContainedLinkRootDoesNotHalfRestore:
 
         recovery = inspect.getsource(snap._restore_everything_from_rollback)
         raw = recovery.splitlines()
-        sites = [i for i, ln in enumerate(raw) if ln.strip() == "shutil.rmtree(str(target))"]
+        sites = [i for i, ln in enumerate(raw) if ln.strip() == "_rmtree_or_raise(target)"]
         assert sites, "recovery no longer clears a live directory target at all"
 
         def _indent(line: str) -> int:

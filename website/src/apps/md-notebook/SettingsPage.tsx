@@ -648,10 +648,16 @@ export function SettingsPage({
                 }
                 style={{ ...field, flex: 1, minWidth: 0 }}
               />
+              {/* While busy: aria-disabled plus the busy guard, NOT native
+                  disabled, which drops a keyboard user's focus to the page for
+                  the whole save. An empty field still disables it natively. */}
               <button
                 type="button"
-                disabled={busy || !pat}
+                disabled={!busy && !pat}
+                aria-disabled={busy || undefined}
+                aria-busy={busy || undefined}
                 onClick={async () => {
+                  if (busy || !pat) return
                   setBusy(true)
                   setPatNote(null)
                   try {

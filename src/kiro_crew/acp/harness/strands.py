@@ -2,7 +2,8 @@
 
 Kiro Crew runs the official Strands CLI (``@strands-agents/cli``) in its Python-project
 ACP mode: ``strands --acp-server --agent <project>``. Four things are this harness's
-own, each measured on the verified release (``STRANDS_VERIFIED_VERSION``):
+own, each measured on 0.2.3, whose code the verified release
+(``STRANDS_VERIFIED_VERSION``) ships unchanged:
 
 * **The project is Crew's gate module.** In this mode the CLI sends
   ``session/request_permission`` only for a Strands interrupt, and nothing in the CLI
@@ -73,6 +74,8 @@ from kiro_crew.agent_sdk.backends import (
     STRANDS_VERIFIED_VERSION,
     launch_effort_supported,
 )
+from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
 from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
@@ -252,13 +255,15 @@ def strands_python_env_issue(project_dir: str) -> str:
     if not os.path.isfile(python):
         return (
             "the Strands harness needs a Python environment (3.10 or newer) at "
-            f"{os.path.join(project_dir, '.venv')}, and there is none. Create it with: "
+            f"{os.path.join(project_dir, '.venv')}, and there is none. Create it in a "
+            f"terminal on the gateway host. {HOST_TERMINAL_NOTE} Run: "
             f"{strands_python_setup_command(project_dir)}"
         )
     if not any((site / "strands_harness").is_dir() for site in _site_packages(project_dir)):
         return (
             f"the Python environment at {os.path.join(project_dir, '.venv')} does not "
-            f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it with: "
+            f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it in a terminal on "
+            f"the gateway host. {HOST_TERMINAL_NOTE} Run: "
             f'{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
         )
     return ""
@@ -415,7 +420,7 @@ def _strands_user_project() -> tuple[str, str]:
 
 
 #: The provider prefixes the pinned CLI's ``--model`` accepts
-#: (``provider/<model>``, ``tui/provider/environment.js`` in 0.2.3).
+#: (``provider/<model>``, ``tui/provider/environment.js``).
 STRANDS_PROVIDERS = frozenset(STRANDS_PROVIDER_CHOICES)
 
 
@@ -714,7 +719,7 @@ def _read_marker(marker_path: str) -> object:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or not 0 <= metadata.st_size <= _MARKER_MAX_BYTES:
             return None
-        payload = os.read(fd, metadata.st_size + 1)
+        payload = bounded_read_fd(fd, metadata.st_size + 1)
         if len(payload) != metadata.st_size:
             return None
     except OSError:
@@ -809,6 +814,8 @@ def _verify_strands_gate(
             stdin=subprocess_mod.PIPE,
             stdout=subprocess_mod.DEVNULL,
             stderr=subprocess_mod.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         return f"the gate's load marker could not be read back ({exc})", remedy
@@ -829,7 +836,7 @@ def _verify_strands_gate(
         try:
             process.wait(timeout=_READBACK_EXIT_S if published else 0)
         except subprocess_mod.TimeoutExpired:
-            process.kill()
+            platform_compat.kill_popen_tree(process)
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_READBACK_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError, ValueError) as exc:
@@ -841,7 +848,7 @@ def _verify_strands_gate(
                 if process.stdin is not None:
                     process.stdin.close()
             with suppress(OSError, subprocess_mod.SubprocessError):
-                process.kill()
+                platform_compat.kill_popen_tree(process)
             with suppress(OSError, subprocess_mod.SubprocessError):
                 process.wait(timeout=_READBACK_EXIT_S)
     if not published and not os.path.lexists(marker_path):

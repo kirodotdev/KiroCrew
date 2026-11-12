@@ -166,6 +166,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "fails": item.fails,
         "status": item.status,
         "reason": item.reason,
+        "wake_at": getattr(item, "wake_at", None) or None,
         "summary": item.summary or None,
         "artifacts": item.artifacts,
         "pr": item.pr,
@@ -282,8 +283,9 @@ async def _refuse_unrecorded(
     locks for the files it puts back -- the board lock this caller holds is an
     in-process one, so it does not exclude a second gateway on the same store.
     When even that fails the refusal stands and a rebuild converges.
-    Answered as a failure so the caller never believes the mutation is recorded;
-    the committed `item_id` is returned so a `create` is not repeated on retry.
+    Answered as a failure so the caller never believes the mutation is recorded.
+    The `item_id` is returned unless the undo completed and so removed the item
+    this write created: that id names nothing, and repeating the `create` is safe.
     """
     logger.error("work ledger %s for %s committed without a crew-log record", operation, key)
     _audit(key, operation, "error", resources=item_id or "", error="crew_log_unrecorded")
@@ -291,6 +293,7 @@ async def _refuse_unrecorded(
     # undo puts back only a file still holding it, so a write a second gateway
     # committed in between survives and flags the cache instead of being replaced.
     after = await asyncio.to_thread(work_ledger.current_bytes, snapshot)
+    undone = True
     try:
         await asyncio.to_thread(
             functools.partial(
@@ -303,8 +306,12 @@ async def _refuse_unrecorded(
                 expected=after,
             )
         )
+        # A restore that passed over a file another gateway changed returns
+        # normally but flags the cache, so the write is only partly undone.
+        undone = not await asyncio.to_thread(work_ledger.cache_dirty, slot)
     except Exception:  # noqa: BLE001 - the refusal is the answer either way
         logger.warning("could not undo the unrecorded write on %s", slot, exc_info=True)
+        undone = False
         try:
             await asyncio.to_thread(
                 work_ledger.mark_cache_dirty, slot, "an unrecorded write could not be undone"
@@ -314,9 +321,14 @@ async def _refuse_unrecorded(
     return web.json_response(
         {
             "ok": False,
-            "error": "the write was stored but its crew-log record was not confirmed",
+            "error": (
+                "the write was not recorded and has been undone; retry it"
+                if undone
+                else "the write was not recorded and could not be undone; "
+                "read the board before retrying"
+            ),
             "code": "crew_log_unrecorded",
-            "item_id": item_id,
+            "item_id": None if created and undone else item_id,
         },
         status=503,
     )

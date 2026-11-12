@@ -28,9 +28,10 @@ export interface ArtifactPublication {
   notice: string
   /** Machine discriminator for `notice`, so the UI can pick the right copy
    *  instead of assuming every notice is "still rolling out". One of
-   *  `"rolling_out"` | `"distribution_disabled"` | `"unknown"`, or empty when
-   *  there is no notice. The frontend selects its string from this and falls
-   *  back to a generic (no time promise) line for an unrecognised value.
+   *  `"rolling_out"` | `"distribution_disabled"` | `"origin_mismatch"` |
+   *  `"unknown"`, or empty when there is no notice. The frontend selects its
+   *  string from this and falls back to a generic (no time promise) line for an
+   *  unrecognised value.
    *  Optional so an older gateway that omits it reads as "". */
   notice_code?: string
 }
@@ -64,6 +65,13 @@ export interface PublishProviderDescriptor {
     supports_expiration: boolean
     programmable: boolean
     out_of_band_url: string
+    /** Expiry periods in days a first publish may pick, ascending. Optional: older
+     *  gateways omit it, and an absent or empty list means no expiry choice. */
+    expiration_choices_days?: number[]
+    /** Whether "no expiry" may be picked alongside `expiration_choices_days`. */
+    allows_no_expiration?: boolean
+    /** The preselected period; `null` is "no expiry". */
+    default_expiration_days?: number | null
   }
   sync_model: { authority: string; concurrency: string; collab_mode: 'mirror' | 'live' }
   discovery_model: {

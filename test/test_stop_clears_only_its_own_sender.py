@@ -1016,9 +1016,9 @@ class TestATransitionForAnotherChatIsSilentHere:
             queue = ReceiptQueue()
             alices_chat, bobs_chat = _Surface("alice"), _Surface("bob")
             async with queue.lock:
-                # Bob's first message got no entry (a transient refused send), so
-                # ALICE's opened the bubble -- while the drain still takes its origin
-                # from the first queued entry, which is Bob's.
+                # Bob's first send was refused and Alice's, from her own chat, replaced
+                # his held line, so ALICE's opened the bubble -- while the drain still
+                # takes its origin from the first queued entry, which is Bob's.
                 await queue.create_or_grow_locked("s", alices_chat, "alice asked", ALICE)
                 await queue.flip_answering_locked("s", bobs_chat, ["bob asked"], owner=BOB)
             return queue, alices_chat, bobs_chat

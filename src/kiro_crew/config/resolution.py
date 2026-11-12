@@ -197,9 +197,11 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
 }
 
 #: The subset of ``_SECTION_KEYS_RETIRED`` worth ONE load-time warning: keys an
-#: operator set by hand whose feature is gone.
+#: operator set by hand whose feature is gone. Each maps to the default the last
+#: build that modelled it wrote into every config it saved, so a key still at
+#: that value is Kiro Crew's own and is dropped without a notice.
 _RETIRED_SECTION_KEYS_WARNED: dict = {
-    "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
+    "dashboard": {"use_builtin_browser": True, "browser_view_port": 0},
 }
 
 
@@ -303,18 +305,23 @@ def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
 
 
 def warn_retired_section_keys(data: dict) -> None:
-    """One WARNING naming retired keys still present in the loaded document.
+    """One WARNING naming retired keys the operator changed from their old default.
 
     The keys are inert (nothing reads them) and the next ``save()`` drops them
     (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this line is the only notice
-    an operator who set one gets. Silent when none is present.
+    an operator who set one gets. Silent when none is present, and for a key
+    still at the default an older build wrote into every config it saved.
     """
     found: list[str] = []
-    for section, keys in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
+    for section, defaults in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
         raw = data.get(section)
         if not isinstance(raw, dict):
             continue
-        found.extend(f"{section}.{key}" for key in sorted(keys) if key in raw)
+        found.extend(
+            f"{section}.{key}"
+            for key, written_default in sorted(defaults.items())
+            if key in raw and raw[key] != written_default
+        )
     if found:
         logger.warning(
             "Config: %s no longer exist and are ignored; they are dropped from "

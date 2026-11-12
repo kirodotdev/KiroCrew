@@ -18,6 +18,7 @@ import { useLabelTip } from '../../components/InstantTip'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Glass from '../../components/Glass'
 import HeaderControl from './HeaderControl'
+import BotLinkedChannels from './BotLinkedChannels'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import { createPortal } from 'react-dom'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -87,7 +88,7 @@ export function MembersPageThreadHeader({
   const { pillFaceRef, openProfile, schedGuardRef, schedAtStakeRef, requestCloseProfile, togglePanel } = profileCard
   const { rosterDrawerOpen, openRosterDrawer, rosterDrawerAvailable } = drawers
   const { isRunning, orderedMembers, toggleStar, starPending } = rosterView
-  const { activeSlot, entranceFaceHidden } = thread
+  const { activeSlot, confirmedSlot, entranceFaceHidden } = thread
   const {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, pillActivity,
   } = threadView
@@ -299,7 +300,7 @@ export function MembersPageThreadHeader({
           announcing it taught the user a term for a thing that can
           never be otherwise. The member's edit entry is not a peer of
           this toggle: it is the identity pill in the middle. */}
-      <div className="flex items-center justify-end min-w-0 [&>*]:pointer-events-auto">
+      <div className="flex items-center justify-end gap-1.5 min-w-0 [&>*]:pointer-events-auto">
         {/* The activity line for assistive tech: the same text, outside
             the button so it never joins the crewmate's name, and NOT a
             live region — a line that changes several times a turn
@@ -309,6 +310,12 @@ export function MembersPageThreadHeader({
         {/* A Glass chip over the pane, like the switcher opposite
             (#18325): there a bare icon sat on scrolled text. Bare in the
             shell bar, like the bell beside it and the Sessions bar. */}
+        {/* A Bot chat has no session menu, so its channel link's pause,
+            unlink and connect live here, beside the opener, while it has a
+            link or a channel it can connect to. Only on
+            the CONFIRMED slot: these rows write, and a cached or roster key
+            can name a session the thread endpoint refused. */}
+        {confirmedSlot && <BotLinkedChannels slotKey={confirmedSlot} inBar={headerInBar} />}
         {showOpener && <PanelOpener inBar={headerInBar} pressed={panelVisible} onToggle={togglePanel} />}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher

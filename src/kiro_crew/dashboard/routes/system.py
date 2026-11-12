@@ -20,8 +20,13 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_plugins_list
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
+from kiro_crew.dashboard.handlers.remote_control import (
+    api_remote_control_get,
+    api_remote_control_put,
+)
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
 from kiro_crew.edition_locks import local_enable_locked
@@ -113,6 +118,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/tasks", handlers.api_tasks_list)
     app.router.add_get("/api/tasks/summary", handlers.api_tasks_summary)
     app.router.add_get("/api/tasks/{task_id}", handlers.api_task_detail)
+    app.router.add_get("/api/tasks/{task_id}/timeline", handlers.api_task_timeline)
     app.router.add_post("/api/tasks/{task_id}", handlers.api_task_action)
     app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
@@ -123,6 +129,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
     app.router.add_get("/api/wakatime/stats", handlers.api_wakatime_stats)
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)
+    app.router.add_post("/api/wakatime/oauth/authorize", handlers.api_wakatime_oauth_authorize)
+    app.router.add_get("/api/wakatime/oauth/callback", handlers.api_wakatime_oauth_callback)
+    app.router.add_post("/api/wakatime/oauth/disconnect", handlers.api_wakatime_oauth_disconnect)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
@@ -207,6 +216,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Agent Plugins list (Customize > Kiro Powers). Read-only and owner-gated in
+    # the handler: it names each plugin's stdio server commands. There is
+    # no write route; turning a plugin on is held (agent-plugins spec §6).
+    app.router.add_get("/api/agent-plugins", agent_plugins_list.api_agent_plugins_get)
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.
@@ -251,6 +264,9 @@ def register(app: web.Application) -> None:
 
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)
+    # Personal Remote Control: the setting, its notice and one-click off. Owner-only.
+    app.router.add_get("/api/remote-control", api_remote_control_get)
+    app.router.add_put("/api/remote-control", api_remote_control_put)
 
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)

@@ -8,6 +8,7 @@ for, and which messaging channels ``setup`` configures.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -481,6 +482,22 @@ class TestEnsurePrerequisites:
         with patch("kiro_crew.cli_setup.shutil.which", return_value=None):
             assert _ensure_prerequisites() is True
 
+    @pytest.mark.parametrize("bundle_route", [True, False])
+    def test_node_advice_follows_the_kas_bundle_route(self, monkeypatch, capsys, bundle_route):
+        """On the bundle route the engine runs its bundle's own Node, as doctor says."""
+        from kiro_crew.agent_sdk import kas_bundle
+        from kiro_crew.cli_setup import _ensure_prerequisites
+
+        monkeypatch.setattr("kiro_crew.cli_setup.shutil.which", lambda name, **_kw: None)
+        monkeypatch.setattr(kas_bundle, "kas_bundle_route", lambda: bundle_route)
+        monkeypatch.setattr(
+            kas_bundle, "installed_bundle", lambda: SimpleNamespace(node_version="22.23.3")
+        )
+        _ensure_prerequisites()
+        out = capsys.readouterr().out
+        assert ("install Node.js" in out) is not bundle_route
+        assert ("not needed (KAS runs its engine bundle's own Node 22.23.3)" in out) is bundle_route
+
 
 class TestConfigDirOverride:
     """Tests that CLI functions respect KIROCREW_HOME env var via config_dir()."""
@@ -520,6 +537,23 @@ class TestConfigDirOverride:
         from kiro_crew.cli import _detect_project_dir
 
         assert _detect_project_dir() == str(proj)
+
+    def test_detect_project_dir_reads_a_non_utf8_saved_file_as_none(self, tmp_path, monkeypatch):
+        """A saved path that is not UTF-8 reads as none, so startup reaches doctor."""
+        config_home = tmp_path / "custom_config"
+        config_home.mkdir()
+        (config_home / "project_dir").write_bytes(b"/home/\xff\xfe/clone\n")
+        monkeypatch.setattr("kiro_crew.cli.config_dir", lambda: config_home)
+        # Marker-free CWD, pinned the same way as the test above.
+        monkeypatch.setattr(
+            Path,
+            "cwd",
+            classmethod(lambda cls: cls("/kc-detect-project-dir-has-no-markers/cwd")),
+        )
+
+        from kiro_crew.cli import _detect_project_dir
+
+        assert _detect_project_dir() is None
 
     def test_detect_project_dir_no_agents_dir(self, tmp_path, monkeypatch):
         """Detection works without a project-level agents/ dir (removed in bbbc1f6e).
@@ -737,6 +771,19 @@ class TestSetupChannelGating:
         out = capsys.readouterr().out
         assert "Messaging Channels" in out
         assert "setup --slack" in out
+
+    def test_the_closing_hint_names_each_command_without_an_and_chain(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Windows PowerShell 5.1 rejects `&&`, so a pasted chain runs nothing.
+        The line still says the gateway follows a clean doctor run, the stop
+        that `&&` gave on other shells."""
+        self._run_setup(monkeypatch, tmp_path)
+        closing = capsys.readouterr().out.rstrip().splitlines()[-1]
+        assert "&&" not in closing
+        assert (
+            "Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`." in closing
+        )
 
     def test_a_rebuild_that_did_not_write_is_not_reported_installed(
         self, tmp_path, monkeypatch, capsys

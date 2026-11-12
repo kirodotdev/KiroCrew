@@ -30,7 +30,6 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     store,
 )
 from kiro_crew.mcp_tools import app_tools
-from kiro_crew.mcp_tools import apps as apps_tools
 
 _TOOLS = frozenset(
     {"issue_radar_crew_read", "issue_radar_crew_record", "issue_radar_record_investigation"}
@@ -55,7 +54,7 @@ def test_the_core_reads_this_apps_tools_from_its_own_manifest():
     assert {t.route for t in declared.values()} == {"agent-tools"}
     # Every declared tool is one the app serves, and no core table keys them.
     assert set(agent_tools.TOOLS) == _TOOLS
-    assert _TOOLS.isdisjoint(apps_tools.TOOL_APPS)
+    assert _TOOLS.isdisjoint(app_tools._core_tool_names())
 
 
 def test_the_crew_log_off_refusal_names_the_env_file_the_gateway_reads():

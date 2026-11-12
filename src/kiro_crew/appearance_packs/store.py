@@ -36,11 +36,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
+from kiro_crew.appearance_packs.ids import DEFAULT_PACK, pack_id_key, safe_pack_id
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
 from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
+from kiro_crew.platform_compat import chmod_safe, is_link_or_junction, remove_with_retry
 from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
@@ -540,7 +540,14 @@ class AppearanceStore:
                 return False
             if not resolved.is_dir():
                 return False
-            shutil.rmtree(resolved)
+            # Where rmtree walks by path anyway (Windows, where a held file can stop it), walk the
+            # pack here with ``manifest.json`` last, so a pack a hold interrupts stays listed.
+            hint = "Close the program using that file, then delete the pack again"
+            if not shutil.rmtree.avoids_symlink_attacks:
+                for child in resolved.iterdir():
+                    if child.name.casefold() != "manifest.json":
+                        remove_with_retry(child, retry_hint=hint)
+            remove_with_retry(resolved, retry_hint=hint)
         except OSError as exc:
             logger.warning("appearance-packs: pack delete failed: %s", exc)
             return False
@@ -630,7 +637,7 @@ class AppearanceStore:
                 shutil.rmtree(staging)
             staging.mkdir(parents=True)
             (staging / "manifest.json").write_text(manifest_text, "utf-8")
-            seen_casefolded: set[str] = set()
+            seen_keys: set[str] = set()
             for name, content in files.items():
                 safe = _safe_filename(name)
                 if safe is None or not isinstance(content, str):
@@ -643,17 +650,20 @@ class AppearanceStore:
                     logger.warning("appearance-packs: unsafe pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
-                if safe.casefold() in seen_casefolded:
+                if pack_id_key(safe) in seen_keys:
                     # Two names differing only in case (`idle.svg` / `IDLE.SVG`)
                     # are distinct dict keys but ONE file on the case-insensitive
                     # filesystems macOS and Windows default to — the second
                     # write silently replaced the first while the import
-                    # reported success. Same all-or-nothing rule as above: a
-                    # save that would lose one file's art refuses entirely.
+                    # reported success. macOS also folds the NFC and NFD
+                    # spellings of one name, which casefold alone does not, so
+                    # the key is `pack_id_key` (NFC, then casefold). Same
+                    # all-or-nothing rule as above: a save that would lose one
+                    # file's art refuses entirely.
                     logger.warning("appearance-packs: case-colliding pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
-                seen_casefolded.add(safe.casefold())
+                seen_keys.add(pack_id_key(safe))
                 if safe.lower() == "manifest.json":
                     # RESERVED: the manifest is generated above from the
                     # validated payload. A pack file with this name overwrites

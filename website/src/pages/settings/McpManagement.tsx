@@ -28,8 +28,10 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
+  type CurrentLaunch,
   DOCS_URL,
   type GatewayStatus,
   launchIsApprovable,
@@ -45,7 +47,9 @@ import {
   autoShareCandidates,
   reloadChats,
   settleSkipped,
+  staleDisplayLaunch,
   waitingForApproval,
+  withCurrentLaunch,
 } from './mcpManagementModel'
 import {
   DetailsToggle,
@@ -57,7 +61,14 @@ import {
   ShareAction,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
-import { ApprovalCard, ConfirmReload, type ReviewItem, ReviewApprovalsDialog, SharingHero } from './McpManagementHero'
+import {
+  ApprovalCard,
+  ConfirmReload,
+  type ReviewAnswer,
+  type ReviewItem,
+  ReviewApprovalsDialog,
+  SharingHero,
+} from './McpManagementHero'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
@@ -84,13 +95,19 @@ import { retryPolicy } from '../../api/queryClient'
  * form; the compare-and-set on `expected_launch` is what pins the
  * approval to the exact launch the gateway resolved. When the command, args or
  * declared env later change, the row reads "Paused · command changed" and
- * waits for "Approve update", which pins the refused launch the same way.
+ * waits for "Approve update", which pins the refused launch the same way. A
+ * launch that moved again after the gateway recorded that refusal is refused
+ * with the launch it runs now, which the row and the Review block then show
+ * and pin in the refusal's place.
  * Turning the switch off stops sharing. "Enable all shareable" lists the
  * servers by name first and shares only on the button under that list.
  *
  * The second sub-view, "Sharing assessment", is read-only evidence for anyone
  * who wants to know why a server is or is not a good fit. It changes nothing.
  */
+
+/** The pre-install row's one-line explanation, which also describes its button. */
+const RESOLVE_DESC_ID = 'mcp-resolve-desc'
 
 export function McpManagement({
   initialAdvancedOpen = false,
@@ -111,6 +128,32 @@ export function McpManagement({
   const [restartNotice, setRestartNotice] = useState<string | null>(null)
   // Which rows have their Details sub-row open.
   const [openDetails, setOpenDetails] = useState<ReadonlySet<string>>(() => new Set())
+  // Per server, the launch an approve of a moved-past refusal was answered
+  // with. The status route keeps serving that refusal until the gateway
+  // starts again, so the row and the Review block show and pin this one.
+  const [currentLaunches, setCurrentLaunches] = useState<Readonly<Record<string, CurrentLaunch>>>({})
+  // The server a row's Approve update was last answered for with its newer
+  // launch. That answer rejected the write, so the page says it through
+  // ErrorNotice, once, while that server still waits.
+  const [launchMovedFor, setLaunchMovedFor] = useState<string | null>(null)
+  // True when the refusal brought a launch the row and the block can show.
+  const keepCurrentLaunch = (name: string, refused: string | undefined, err: unknown): boolean => {
+    const launch = staleDisplayLaunch(err)
+    if (!launch || !refused) return false
+    setCurrentLaunches(prev => ({ ...prev, [name]: { refused, launch } }))
+    return true
+  }
+  // An approval that landed drops the refusal it stood in for, and the notice
+  // that asked for it.
+  const dropCurrentLaunch = (name: string) => {
+    setLaunchMovedFor(prev => (prev === name ? null : prev))
+    setCurrentLaunches(prev => {
+      if (!Object.hasOwn(prev, name)) return prev
+      const { [name]: _approved, ...rest } = prev
+      void _approved
+      return rest
+    })
+  }
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [resolveError, setResolveError] = useState<string | null>(null)
 
@@ -199,10 +242,12 @@ export function McpManagement({
   }
 
   const setStub = useMutation({
-    mutationFn: ({ name, stub, expectedLaunch }: { name: string; stub: boolean; expectedLaunch?: string }) =>
+    // `refused` is the stored refusal's own `expected_launch` behind the press.
+    mutationFn: ({ name, stub, expectedLaunch }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string }) =>
       api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
+      dropCurrentLaunch(vars.name)
       if (vars.stub && supported && res?.sharing_on !== true && !status?.enabled) {
         void askToTurnOnSharing()
       }
@@ -214,7 +259,8 @@ export function McpManagement({
     },
     onError: (err, vars) => {
       invalidate()
-      setError(i18nT(stubErrorKey(err), { name: vars.name }))
+      if (keepCurrentLaunch(vars.name, vars.refused, err)) setLaunchMovedFor(vars.name)
+      else setError(i18nT(stubErrorKey(err), { name: vars.name }))
     },
   })
 
@@ -378,10 +424,10 @@ export function McpManagement({
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
       if (!r.pingOk) setError(i18nT('pages.mcpManagement.sharing_not_live'))
       if (r.skippedNames.length > 0) {
-        setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.skippedNames.join(', ') }))
+        setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) }))
       }
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (r.restart) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
     },
@@ -479,13 +525,13 @@ export function McpManagement({
         return
       }
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (r.plan.length === 0) {
         // Servers whose launch can't be approved are still unshared: name them
         // rather than claiming there is nothing left.
         if (r.unreadable.length > 0) {
-          setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.unreadable.join(', ') }))
+          setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.unreadable, { style: 'narrow' }) }))
         } else if (r.failed.length === 0) {
           setNotice(i18nT('pages.mcpManagement.enable_all_review_nothing'))
         }
@@ -536,13 +582,13 @@ export function McpManagement({
             { count: r.shared },
           ),
           ...(r.skippedNames.length > 0
-            ? [i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.skippedNames.join(', ') })]
+            ? [i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) })]
             : []),
         ].join(' '),
       )
       // Failed requests are errors: they go through ErrorNotice, not the status line.
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (!r.sharingOn && r.shared > 0 && supported) void askToTurnOnSharing()
       if (r.restart) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
@@ -580,14 +626,20 @@ export function McpManagement({
   const closeReview = useCallback(() => setReviewItems(null), [])
   // The table button's own write and checks: one stub POST pinned to the
   // shown `expected_launch`. A launch that moved is refused by the endpoint,
-  // and the refusal comes back as the line the dialog shows in that block.
-  const approveFromReview = async (name: string, expectedLaunch: string): Promise<string | null> => {
+  // and the refusal comes back as the error line the dialog shows in that
+  // block; a moved-past refusal instead brings the launch the block then
+  // shows, with an error above it asking for its approval.
+  const approveFromReview = async (name: string, expectedLaunch: string, refused?: string): Promise<ReviewAnswer> => {
     try {
       const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
+      dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
       return null
     } catch (err) {
-      return i18nT(stubErrorKey(err), { name })
+      if (keepCurrentLaunch(name, refused, err)) {
+        return { launchMoved: i18nT('pages.mcpManagement.launch_moved_review_notice', { name }) }
+      }
+      return { error: i18nT(stubErrorKey(err), { name }) }
     } finally {
       // The card, the table and the nav dot all read this one status query.
       invalidate()
@@ -618,6 +670,19 @@ export function McpManagement({
           <span>{restartNotice}</span>
         </div>
       )}
+      {/* The endpoint's compare-and-set rejected the write and handed back the
+          newer launch, which that row's Details shows. A rejected request, so
+          an ErrorNotice; it stands while that server still waits. */}
+      <ErrorNotice
+        message={
+          launchMovedFor !== null && waiting.some(s => s.name === launchMovedFor)
+            ? i18nT('pages.mcpManagement.launch_moved_row_notice', { name: launchMovedFor })
+            : null
+        }
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+        onDismiss={() => setLaunchMovedFor(null)}
+      />
 
       <SharingHero
         on={!!status?.enabled}
@@ -714,6 +779,7 @@ export function McpManagement({
               setError(null)
               setNotice(null)
               setRestartNotice(null)
+              setLaunchMovedFor(null)
               prepareAll.mutate()
             }}
             disabled={
@@ -757,7 +823,7 @@ export function McpManagement({
               ))}
             </ul>
             {allSkipped.length > 0 && (
-              <p>{i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: allSkipped.join(', ') })}</p>
+              <p>{i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(allSkipped, { style: 'narrow' }) })}</p>
             )}
             <div className="flex flex-wrap items-center gap-2">
               <Btn
@@ -810,7 +876,8 @@ export function McpManagement({
             {servers.map(s => {
               const state = rowState(s, !!status?.enabled, status?.launch_refused)
               const waiting = state === 'needs_reapproval'
-              const refusal = waiting ? status?.launch_refused?.[s.name] : undefined
+              const stored = waiting ? status?.launch_refused?.[s.name] : undefined
+              const refusal = stored ? withCurrentLaunch(stored, currentLaunches, s.name) : undefined
               const flagged = sharedWithoutSupport(s, !!status?.enabled, status?.launch_refused)
               // The row keeps a line only where it has no control that could
               // fix things: a refused launch with no approvable identity. Every
@@ -884,16 +951,19 @@ export function McpManagement({
                         onShare={() => {
                           setError(null)
                           setRestartNotice(null)
+                          setLaunchMovedFor(null)
                           previewLaunch.mutate(s.name)
                         }}
                         onConfirm={expectedLaunch => {
                           setError(null)
                           setRestartNotice(null)
-                          setStub.mutate({ name: s.name, stub: true, expectedLaunch })
+                          setLaunchMovedFor(null)
+                          setStub.mutate({ name: s.name, stub: true, expectedLaunch, refused: stored?.expected_launch })
                         }}
                         onStop={() => {
                           setError(null)
                           setRestartNotice(null)
+                          setLaunchMovedFor(null)
                           setStub.mutate({ name: s.name, stub: false })
                         }}
                       />
@@ -938,6 +1008,9 @@ export function McpManagement({
             <div className="text-[14px] font-medium text-[var(--text)]">
               {i18nT('pages.mcpManagement.resolve_label')}
             </div>
+            <p id={RESOLVE_DESC_ID} className="mt-0.5 text-[12.5px] text-[var(--muted)]">
+              {i18nT('pages.mcpManagement.resolve_description')}
+            </p>
             {resolveNotice && (
               <p role="status" className="mt-1 text-[12.5px] text-[var(--text)]">
                 {resolveNotice}
@@ -947,6 +1020,7 @@ export function McpManagement({
           </div>
           <button
             type="button"
+            aria-describedby={RESOLVE_DESC_ID}
             disabled={resolveRefresh.isPending}
             onClick={() => {
               setError(null)
@@ -992,6 +1066,7 @@ export function McpManagement({
         items={reviewItems ?? []}
         supported={supported}
         returnFocusTo={reviewOpener}
+        currentLaunches={currentLaunches}
         onApprove={approveFromReview}
         onClose={closeReview}
       />
@@ -1069,7 +1144,7 @@ function ConfirmSharing({
             className="mt-1"
             message={
               failed.length > 0
-                ? i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: failed.join(', ') })
+                ? i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(failed, { style: 'narrow' }) })
                 : null
             }
             askAgent={!handoffWouldLoseEdits}
@@ -1077,7 +1152,7 @@ function ConfirmSharing({
           />
           {skipped.length > 0 && (
             <p className="mt-1 break-words text-[12.5px] text-muted [overflow-wrap:anywhere]">
-              {i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: skipped.join(', ') })}
+              {i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(skipped, { style: 'narrow' }) })}
             </p>
           )}
           {/* The verdict belongs at the decision point, not only after the fact:

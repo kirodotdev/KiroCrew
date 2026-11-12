@@ -32,6 +32,7 @@ import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessio
 import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
+import { useLaunchedDraftDiscard } from './useLaunchedDraftDiscard'
 import { PENDING_OPEN_LEASE_MS, resumeStillOpening } from '../../store/chatSlice'
 
 /** Read a URL-derived key from the close-hold record without traversing its prototype. */
@@ -89,6 +90,8 @@ interface UseChatPageSessionControllerArgs {
   saveDrafts: () => void
   searchParams: URLSearchParams
   slots: ChatSlot[]
+  /** Whether split view is showing (an app's draft launch shown there is kept). */
+  splitMode: boolean
   tokenConsumingRef: MutableRefObject<boolean>
 }
 
@@ -128,6 +131,7 @@ export function useChatPageSessionController({
   saveDrafts,
   searchParams,
   slots,
+  splitMode,
   tokenConsumingRef,
 }: UseChatPageSessionControllerArgs) {
   // Older-sessions history is fetched lazily, not on mount: the
@@ -292,6 +296,9 @@ export function useChatPageSessionController({
   // The claimed launch's new-session shape (`openChat`'s `memoryMode` /
   // `sessionFolder`), spent with the create exactly like the agent above.
   const appDraftSlotOptionsRef = useRef<{ memory_mode?: string; sessionFolder?: false }>({})
+  // Whether the pending create is an app's draft launch, whose session is
+  // discarded if the user leaves it untouched (useLaunchedDraftDiscard).
+  const appDraftLaunchRef = useRef(false)
   /**
    * A prompt to seed the new session's composer with, carried by the SAME cold
    * URL that asks for the session: `/chat?new=1&prefill=<text>`. This is the deep
@@ -462,6 +469,7 @@ export function useChatPageSessionController({
     })
   }, [connected, dispatch, embedded, filteredSlots, locationKey, searchParams, activeSlot, appLaunchListWaitTick])
 
+  const { track: trackLaunchedDraft, interacted: launchedDraftInteracted } = useLaunchedDraftDiscard(activeSlot, splitMode)
   // ?new=1: create a blank slot for an embed or a fresh desktop window.
   const newSlotMutation = useMutation({
     // The launcher's prompt rides the create itself: the thunk stages it before
@@ -470,9 +478,11 @@ export function useChatPageSessionController({
     // onSuccess would land after that read, so nothing would consume it.
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
+      const appDraftLaunch = appDraftLaunchRef.current
       const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
+      if (appDraftLaunch && slot?.key) trackLaunchedDraft(slot, prompt)
       // Spent once: a retry of a failed create still carries the same intent, but
       // must not re-seed a session the user has since typed into.
       if (prompt && slot?.key) {
@@ -528,6 +538,7 @@ export function useChatPageSessionController({
     const launch = launchWindow.__mc_chat_launch
     appDraftAgentRef.current = undefined
     appDraftSlotOptionsRef.current = {}
+    appDraftLaunchRef.current = false
     // A launch that shapes the NEW session (memory mode, no session folder) is a
     // draft too: its message is staged, never sent, so the session's mode is
     // settled before a first turn could read or write memory.
@@ -539,6 +550,7 @@ export function useChatPageSessionController({
       // mutation is the single owner of the prefill handoff.
       initialPrefillRef.current = launch.message ?? ''
       appDraftAgentRef.current = launch.agent
+      appDraftLaunchRef.current = true
       appDraftSlotOptionsRef.current = {
         ...(launchMemoryMode ? { memory_mode: launchMemoryMode } : {}),
         ...(launchNoSessionFolder ? { sessionFolder: false as const } : {}),
@@ -1396,6 +1408,7 @@ export function useChatPageSessionController({
     appSlotLaunch,
     setAppSlotLaunch,
     highlightTs,
+    launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
     initialSidRef,

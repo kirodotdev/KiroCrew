@@ -21,7 +21,7 @@ from kiro_crew.mcp_gateway.backend import _DEFAULT_INITIALIZE_TIMEOUT_SECS, Back
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import _caller_for_backend
 from kiro_crew.mcp_gateway.daemon.identity import _StubConn
-from kiro_crew.mcp_gateway.daemon.launch import TargetResolver, _TargetUnknown
+from kiro_crew.mcp_gateway.daemon.launch import OwnerPortUnproven, TargetResolver, _TargetUnknown
 from kiro_crew.mcp_gateway.host_budget import HostBudgetExhausted
 from kiro_crew.mcp_gateway.pool import BackendPool, BackendUnavailable, PoolAtCapacity, PoolKey
 
@@ -323,6 +323,7 @@ async def _respawn_backend_for_stub_unrecorded(
         HostBudgetExhausted,
         SpawnGateTimeout,
         SpawnGateClosed,
+        OwnerPortUnproven,
         OSError,
     ) as exc:
         logger.info(

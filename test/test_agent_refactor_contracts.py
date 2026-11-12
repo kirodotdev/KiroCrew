@@ -3,7 +3,7 @@
 ``kiro_crew.agent`` is the import path everyone uses; the code lives under
 ``kiro_crew.agent_materialization``. Pinned: the module surface, the
 ``toolsSettings.subagent.availableAgents`` allowlist (read by
-``subagent_parts/agent_policy.py``) byte-for-byte on every path, the guest spec, and the
+``subagent_parts/spawn_allowlists.py``) byte-for-byte on every path, the guest spec, and the
 conductor prompts and grants. ``test_agent_refactor_spec_bytes.py`` freezes whole output.
 """
 
@@ -57,7 +57,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str c30136c7c4ec7e2d",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str df77e4c7d4df4b41",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -85,7 +85,7 @@ BASE_SURFACE: dict[str, str] = {
     "_KNOWLEDGE_SYSTEM_PROMPT": "value str 23af593eebd8222f",
     "_LAUNCHER_EXEC_ENV_KEYS": "value frozenset 8c69b5e74a77bb5d",
     "_LEDGER_CONDUCTOR_AGENT_FILENAME": "value str a87e496fff7c15e0",
-    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 5f54567a0d1add76",
+    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple f34c6f243c0fc463",
     "_LEGACY_KIROCREW_HOOK_KEYS": "value frozenset 41cb57ce40df86b2",
     "_LITE_AGENT_FILENAME": "value str 55e6029e6c753857",
     "_MAIN_AGENT_NAME": "value str 153b868d134ec50e",
@@ -122,14 +122,14 @@ BASE_SURFACE: dict[str, str] = {
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
     "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 40ca7692611062ec",
     "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
-    "_TEAM_LEAD_SYSTEM_PROMPT": "value str a50f6cd36ae3cad0",
+    "_TEAM_LEAD_SYSTEM_PROMPT": "value str a20ee51c39338e8f",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
     "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
-    "_WORKER_SYSTEM_PROMPT": "value str aeb6a9e42c47369f",
+    "_WORKER_SYSTEM_PROMPT": "value str 976f0b8249a8b0ef",
     "_WORKER_WORK_GRANTS": "value tuple 2617544a8ba41753",
     "_agent_identity_enabled": "callable _agent_identity_enabled() -> 'bool'",
     "_agentcore_capability_permitted": "callable _agentcore_capability_permitted() -> 'bool'",

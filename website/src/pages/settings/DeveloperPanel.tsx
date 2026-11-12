@@ -6,12 +6,12 @@ import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav
 import { ContentSkeleton } from '../../components/ui'
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
-import { CrewmatesSection } from './CrewmatesSection'
 import { DefaultMcpGrantsSection } from './DefaultMcpGrantsSection'
 import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
 import { MCP_MANAGEMENT_PATH } from '../overview/McpShareRefusedNotice'
-import { LEGACY_DEVELOPER_MCP_POOL_SUB } from './developerSubs'
+import { DEVELOPER_DEBUG_TOOLS_SUB, LEGACY_DEVELOPER_MCP_POOL_SUB } from './developerSubs'
+import { LOCKED_DEBUG_TOOLS, useControlLocked } from '../../utils/editionLocks'
 
 /**
  * Lazy: every internals page loads its chunk when it is first opened. They sit
@@ -51,6 +51,8 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
   const { localGatewayEnabled, localGatewaySupported, setLocalGatewayEnabled } = useLocalGateway()
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  // An LTS build hides Debug tools (RFC D12); a link to it self-heals to the first page.
+  const debugToolsLocked = useControlLocked(LOCKED_DEBUG_TOOLS)
 
   // MCP Management lives in Customize → Connections → MCP Servers. Its old
   // page key here survives in bookmarks and older links; without this the
@@ -74,10 +76,11 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'debug-tools', label: i18nT('pages.developerPage.tabs.debugTools.label'), icon: <Bug size={16} /> },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} /> },
   ]
+  const shownRailItems = debugToolsLocked ? railItems.filter(item => item.key !== DEVELOPER_DEBUG_TOOLS_SUB) : railItems
 
   return (
     <SettingsSubNav
-      items={railItems}
+      items={shownRailItems}
       basePath={basePath}
       guideTargetPrefix="settings.sub.developer."
       railWidth={220}
@@ -87,50 +90,53 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
         switch (active) {
 
         case 'feature-previews':
+          // One page, one reading column: the grouped preview cards first, then
+          // the developer settings that are not previews, boxed the same way.
           return (
-            <>
+            <div className="max-w-[720px]">
+              <FeaturePreviewsSection />
               {/* Automatic cards for every session: a gateway-wide spend
                   opt-in, off by default. Its own card because it is a server
                   setting, not a per-device switch. */}
               <SettingsSection title={i18nT('pages.settings.developerPanel.developer_tools')}>
-                <SettingsCard>
+                <SettingsCard boxed>
                   <div data-testid="developer-automatic-cards">
                     <AutomaticCardSetting active />
                   </div>
                 </SettingsCard>
               </SettingsSection>
-              <FeaturePreviewsSection />
-              {/* The crewmate feature switches (`CrewmatesSection.tsx`). */}
-              <CrewmatesSection />
               {/* The default agent's opt-in MCP sets (`DefaultMcpGrantsSection.tsx`). */}
-              <DefaultMcpGrantsSection />
+              <DefaultMcpGrantsSection boxed />
               {localGatewaySupported && (
                 <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
-                  <SettingsCard>
-                    <SettingsToggle
-                      label={i18nT('pages.settings.developerPanel.run_a_local_gateway')}
-                      description={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers_summary')} hint={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers')}
-                      checked={localGatewayEnabled}
-                      onChange={setLocalGatewayEnabled}
-                    />
-                    {/* "Off" has a prerequisite: this app's port must reach a
-                        crew saved for it (Set Remote Host…), through the
-                        app-held tunnel or one the user runs. A hand-run tunnel
-                        with no saved crew is refused as a foreign holder
-                        (#3810). The guide's SSH-tunnel section covers it. */}
-                    <a
-                      href={LOCAL_GATEWAY_TUNNEL_GUIDE}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline py-1"
-                    >
-                      {i18nT('pages.settings.developerPanel.how_to_set_up_an_ssh_tunnel')}
-                      <ExternalLink size={13} className="lucide-inline" />
-                    </a>
+                  <SettingsCard boxed>
+                    {/* One row: the switch and the guide its "off" depends on. */}
+                    <div>
+                      <SettingsToggle
+                        label={i18nT('pages.settings.developerPanel.run_a_local_gateway')}
+                        description={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers_summary')} hint={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers')}
+                        checked={localGatewayEnabled}
+                        onChange={setLocalGatewayEnabled}
+                      />
+                      {/* "Off" has a prerequisite: this app's port must reach a
+                          crew saved for it (Set Remote Host…), through the
+                          app-held tunnel or one the user runs. A hand-run tunnel
+                          with no saved crew is refused as a foreign holder
+                          (#3810). The guide's SSH-tunnel section covers it. */}
+                      <a
+                        href={LOCAL_GATEWAY_TUNNEL_GUIDE}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline py-1"
+                      >
+                        {i18nT('pages.settings.developerPanel.how_to_set_up_an_ssh_tunnel')}
+                        <ExternalLink size={13} className="lucide-inline" />
+                      </a>
+                    </div>
                   </SettingsCard>
                 </SettingsSection>
               )}
-            </>
+            </div>
           )
 
         case 'logs':
@@ -154,7 +160,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
           return loading(<ConfigPage />)
 
         case 'debug-tools':
-          return loading(<DebugToolsTab />)
+          return debugToolsLocked ? null : loading(<DebugToolsTab />)
 
         case 'archive':
           return loading(<SessionArchive />)

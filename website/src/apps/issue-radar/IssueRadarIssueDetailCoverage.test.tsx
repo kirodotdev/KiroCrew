@@ -1038,8 +1038,9 @@ describe('IssueDetail — activity timeline', () => {
     expect(rail).toContain('changed the title')
     expect(rail).toContain('Old title')
     expect(rail).toContain('New title')
-    expect(rail).toContain('added this to the')
-    expect(rail).toContain('removed this from the')
+    // One message per sentence: the milestone name sits inside it.
+    expect(rail).toContain('added this to the v2.0 milestone')
+    expect(rail).toContain('removed this from the v2.0 milestone')
     // An unmodelled kind still renders its actor + the raw kind, not a blank row.
     expect(rail).toContain('committed')
     // …and a null actor reads as "someone" rather than "null".

@@ -70,13 +70,15 @@ _VERSION = 1
 #: Maximum records retained in either server population of one snapshot.
 _MAX_SERVER_RECORDS = 512
 #: Maximum total argv entries retained for operator display, including its marker.
-_MAX_DISPLAY_ARGS = 32
+#: A launch is approvable only from a display that holds it in full, so the
+#: count sits past what a readable launch passes (255 ``--include-tools <tool>``
+#: pairs fit) and still bounds the quoting each entry adds to a stored display.
+_MAX_DISPLAY_ARGS = 512
 #: Maximum characters retained across one whole display list -- an argv or a
 #: declared environment -- including its partial marker. The budget is the
 #: list's, not each entry's: a launch may pass one long value and still be
-#: readable in full, and only a list this large is cut. The ceiling is
-#: deliberately the product the retired per-entry cap allowed
-#: (32 entries x 512 characters), so no stored record grows.
+#: readable in full, and only a list this large is cut. It is what keeps one
+#: stored display small.
 _MAX_DISPLAY_TOTAL_CHARS = 16384
 #: Characters held back from :data:`_MAX_DISPLAY_TOTAL_CHARS` for the marker that
 #: says a display was cut, and the ceiling on that marker.
@@ -230,6 +232,11 @@ class LaunchApprovals:
     launch_identities: dict[str, dict[str, tuple[list[str] | None, list[str] | None]]] = field(
         default_factory=dict
     )
+    #: Approved pairs this pass admitted once :attr:`launch_identities` held the
+    #: per-server cap for their stem (stem -> pairs). They are live, so a save
+    #: retires none of them as unseen. Each is in :attr:`approved_pairs`, which
+    #: the same cap bounds.
+    live_overflow: dict[str, set[str]] = field(default_factory=dict)
     #: Identities whose command or environment display was bounded. They remain
     #: refused but cannot be approved from an incomplete operator display.
     incomplete_identities: dict[str, set[str]] = field(default_factory=dict)
@@ -315,7 +322,8 @@ class LaunchApprovals:
                     continue
                 if self.refused.get(stem) != REFUSED_TOO_MANY:
                     logger.warning(
-                        "mcp launch approvals: refusing %s; per-server launch cap %d reached",
+                        "mcp launch approvals: refusing %s; per-server launch cap "
+                        "_MAX_SERVER_LAUNCHES=%d reached",
                         display_name,
                         _MAX_SERVER_LAUNCHES,
                     )
@@ -348,6 +356,47 @@ class LaunchApprovals:
                 tuple(sorted(_coerced_env(env).items())),
             )
 
+    def _note_identity(
+        self,
+        stem: str,
+        identity: str,
+        launch: tuple[str, list[str]] | None,
+        env: Mapping[str, Any] | None,
+    ) -> tuple[list[str] | None, list[str] | None, bool]:
+        """Retain one launch identity seen this pass with its redacted displays.
+
+        Returns the command and env displays and whether both are complete.
+        """
+        command_display, env_display, display_complete = _launch_displays(launch, env)
+        if not display_complete:
+            self.incomplete_identities.setdefault(stem, set()).add(identity)
+        identities = self.launch_identities.setdefault(stem, {})
+        prior_command, prior_env = identities.get(identity, (None, None))
+        identities[identity] = (
+            command_display if command_display is not None else prior_command,
+            env_display if env_display is not None else prior_env,
+        )
+        return command_display, env_display, display_complete
+
+    def _note_live(
+        self,
+        stem: str,
+        identity: str,
+        launch: tuple[str, list[str]] | None,
+        env: Mapping[str, Any] | None,
+    ) -> tuple[list[str] | None, list[str] | None, bool]:
+        """Retain an approved launch this pass admits, whatever the per-server cap.
+
+        Other agents declaring the same name with launches of their own fill
+        :attr:`launch_identities` in file order. A pair with no room left there
+        goes to :attr:`live_overflow` instead, so a save still counts it live.
+        """
+        identities = self.launch_identities.get(stem, {})
+        if identity in identities or len(identities) < _MAX_SERVER_LAUNCHES:
+            return self._note_identity(stem, identity, launch, env)
+        self.live_overflow.setdefault(stem, set()).add(identity)
+        return _launch_displays(launch, env)
+
     def admit(
         self,
         name: str,
@@ -369,6 +418,16 @@ class LaunchApprovals:
         stem = target_stem(name)
         command_hash, _declared_env_hash = _split(fingerprint)
         identity = launch_pair(command_hash, derived_env_hash)
+        # Decided before the per-server cap, which bounds what this pass retains
+        # for display: other agents declaring the same name with launches of
+        # their own fill it in file order, and must not refuse the approved one.
+        if (
+            not self.probe
+            and fingerprint in self.approved.get(stem, ())
+            and self.admits_launch(stem, command_hash, derived_env_hash)
+        ):
+            self._note_live(stem, identity, launch, env)
+            return True
         # The operator approved this exact declared launch -- resolved command,
         # args and the env text with its ``${VAR}`` references unexpanded -- and
         # only the expansion moved. Those values come from the gateway process
@@ -381,7 +440,9 @@ class LaunchApprovals:
             and not self.admits_launch(stem, command_hash, derived_env_hash)
         )
         additions: list[tuple[Mapping[str, Collection[Any]], Collection[Any]]] = []
-        if not self.probe:
+        # A rebind is an approved launch, so like the exact one above it is not
+        # counted against the display set; what it adds to the store stays capped.
+        if not self.probe and not rebind:
             additions.append((self.launch_identities, (identity,)))
         if self.probe or managed or rebind:
             additions.extend(
@@ -398,26 +459,11 @@ class LaunchApprovals:
         if self.probe:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
             return True
-        identities = self.launch_identities.setdefault(stem, {})
-        command_display: list[str] | None = None
-        env_display: list[str] | None = None
-        display_complete = False
-        if launch is not None:
-            command_display, command_complete = _bounded_display_argv_with_completeness(launch)
-            if env is not None:
-                env_display, env_complete = _bounded_display_env_with_completeness(env)
-                display_complete = command_complete and env_complete
-        if not display_complete:
-            self.incomplete_identities.setdefault(stem, set()).add(identity)
-        prior_command, prior_env = identities.get(identity, (None, None))
-        identities[identity] = (
-            command_display if command_display is not None else prior_command,
-            env_display if env_display is not None else prior_env,
+        command_display, env_display, display_complete = (
+            self._note_live(stem, identity, launch, env)
+            if rebind
+            else self._note_identity(stem, identity, launch, env)
         )
-        if fingerprint in self.approved.get(stem, ()) and self.admits_launch(
-            stem, command_hash, derived_env_hash
-        ):
-            return True
         if managed:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
             return True
@@ -514,7 +560,14 @@ def _bounded_display_argv_with_completeness(
     a fraction of what the display may hold. The cut display is then
     unapprovable, so that server's backend can never leave the sandbox and each
     session starts its own copy. A total budget shows such a launch whole and
-    still refuses one genuinely too large to read.
+    still refuses one genuinely too large to read. The entry count works the
+    same way: a launch that passes one flag and value per tool is read in full
+    up to :data:`_MAX_DISPLAY_ARGS`, and only a longer one is cut.
+
+    A cut display stays unapprovable because an approval covers only a launch
+    the operator can read: a row's Details and the Review dialog show this
+    display beside the Approve that pins it, and a change past the cut would be
+    approved unseen.
     """
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -578,6 +631,21 @@ def _bounded_display_env_with_completeness(
 def _bounded_display_env(env: Mapping[str, Any]) -> list[str]:
     """Return the bounded display portion of a declared environment."""
     return _bounded_display_env_with_completeness(env)[0]
+
+
+def _launch_displays(
+    launch: tuple[str, list[str]] | None, env: Mapping[str, Any] | None
+) -> tuple[list[str] | None, list[str] | None, bool]:
+    """Bounded command and env displays of one launch, and whether both are complete."""
+    command_display: list[str] | None = None
+    env_display: list[str] | None = None
+    complete = False
+    if launch is not None:
+        command_display, command_complete = _bounded_display_argv_with_completeness(launch)
+        if env is not None:
+            env_display, env_complete = _bounded_display_env_with_completeness(env)
+            complete = command_complete and env_complete
+    return command_display, env_display, complete
 
 
 def display_launches(name: str, launches: Iterable[ResolvedLaunch]) -> dict[str, Any]:
@@ -957,9 +1025,11 @@ def _settle_rebinds(
     what the pass started from: an operator approval or another pass that
     landed meanwhile is newer, and wins. A rebind whose fingerprint is absent
     from the current store is dropped too. Where it is written, the pairs
-    under that command hash become the ones this full pass saw live, so a
-    ``${VAR}`` that keeps changing replaces its older expansions instead of
-    filling the per-server launch cap, whichever agents declare the launch.
+    under that command hash become the ones this full pass saw live
+    (``launch_identities``, plus the approved pairs admitted past its cap in
+    ``live_overflow``), so a ``${VAR}`` that keeps changing replaces its older
+    expansions instead of filling the per-server launch cap, whichever agents
+    declare the launch.
 
     Retiring what the pass did not see needs the pass to have seen everything:
     a pass that kept an agent's overlay without reading its source
@@ -972,7 +1042,7 @@ def _settle_rebinds(
     if approvals.rebind_incomplete:
         return set(), set(), set()
     base = approvals.rebind_base.get(stem, frozenset())
-    live = set(approvals.launch_identities.get(stem, {}))
+    live = set(approvals.launch_identities.get(stem, {})) | approvals.live_overflow.get(stem, set())
     by_command: dict[str, set[str]] = {}
     for pair, fingerprint in approvals.rebound.get(stem, {}).items():
         if fingerprint in before:
@@ -1295,10 +1365,10 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return result
 
 
-def refused_shares(
+def refused_share_records(
     asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
-) -> dict[str, str]:
-    """Refusal reason per share-list name whose launch is refused, keyed as configured.
+) -> dict[str, Mapping[str, Any]]:
+    """Refusal record per share-list name whose launch is refused, keyed as configured.
 
     ``asked`` is ``mcp_gateway.stub_servers`` as config states it; ``refused`` is
     :func:`refused_servers`. The rewriter admits a slash-named server under its
@@ -1308,13 +1378,49 @@ def refused_shares(
     """
     from kiro_crew.mcp_utils import mcp_server_alias
 
-    result: dict[str, str] = {}
+    result: dict[str, Mapping[str, Any]] = {}
     for name in asked:
         rec = refused.get(name)
         if rec is None:
             rec = refused.get(mcp_server_alias(name))
         if rec is not None:
-            result[name] = str(rec.get("reason", ""))
+            result[name] = rec
+    return result
+
+
+def refused_shares(
+    asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
+) -> dict[str, str]:
+    """Refusal reason per share-list name, matched as :func:`refused_share_records` does."""
+    return {
+        name: str(rec.get("reason", ""))
+        for name, rec in refused_share_records(asked, refused).items()
+    }
+
+
+def unapproved_share_names(asked: Iterable[Any], path: Path | None = None) -> list[str]:
+    """Share-list names, as configured, the store holds no approved launch for.
+
+    Writing a name to ``mcp_gateway.stub_servers`` approves nothing: the next
+    gateway start refuses its launch as ``added_outside_dashboard`` until the
+    operator approves it in MCP Management, so a writer outside the dashboard
+    names these. Each name is looked up under itself and under its slash-free
+    alias, as :func:`refused_share_records` does. A reserved ``kirocrew-*`` server is
+    left out, since its managed launch needs no approval, and so is a
+    never-pooled one, since no approval shares it.
+    """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    approvals = load_approvals(path)
+    unpoolable = _unpoolable_stems()
+    result: list[str] = []
+    for name in dict.fromkeys(n for n in asked if isinstance(n, str) and n):
+        stems = {target_stem(name), target_stem(mcp_server_alias(name))}
+        if name in KIROCREW_BIN_MCP_SERVERS or stems & unpoolable:
+            continue
+        if not any(approvals.approved_pairs.get(stem) for stem in stems):
+            result.append(name)
     return result
 
 

@@ -356,9 +356,13 @@ class NotificationCoordinator:
             self._logger_provider().warning("Web push fan-out failed to schedule", exc_info=True)
 
     @staticmethod
-    def _set_quiet(note: dict[str, Any], replaced: list[dict[str, Any]]) -> None:
+    def _stamp_replacement(note: dict[str, Any], replaced: list[dict[str, Any]]) -> None:
         note.pop("quiet", None)
-        if replaced and _priority_rank(note) >= min(_priority_rank(old) for old in replaced):
+        note.pop("replaced", None)
+        if not replaced:
+            return
+        note["replaced"] = True
+        if _priority_rank(note) >= min(_priority_rank(old) for old in replaced):
             note["quiet"] = True
 
     def _replacement_rows(
@@ -367,7 +371,7 @@ class NotificationCoordinator:
         source = note.get("source")
         key = note.get("key")
         replaced = _notes_held_under(state, source, key)
-        self._set_quiet(note, replaced)
+        self._stamp_replacement(note, replaced)
         held_snapshot = [
             held
             for held in state._notification_log

@@ -8,6 +8,7 @@ import { themeDesignPrompt } from '../lib/themeDesign.prompt'
 import { copyToClipboard } from '../utils/clipboard'
 import { askAppConfirm } from '../lib/appConfirm'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 /* ── CSS variable groups for the color picker ── */
@@ -517,10 +518,15 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
     </div>
   )
 
-  /** At most ten names, so a pasted framework stylesheet stays one readable line. */
-  const nameList = (names: string[]) => names.length <= 10
-    ? names.join(', ')
-    : i18nT('components.themeEditor.css_more_names', { names: names.slice(0, 10).join(', '), extra: names.length - 10 })
+  /** At most ten names, so a pasted framework stylesheet stays one readable line.
+   *  "N more" is the last item of the same list, so each language places its one
+   *  conjunction (de: "a, b und 5 weitere"). */
+  const nameList = (names: string[]) => fmtList(
+    names.length <= 10
+      ? names
+      : [...names.slice(0, 10), i18nT('components.themeEditor.css_more_count', { extra: names.length - 10 })],
+    { style: 'narrow' },
+  )
 
   const cssCounts = {
     dark: Object.keys(cssImport.dark).length,

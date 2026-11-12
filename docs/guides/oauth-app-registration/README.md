@@ -8,6 +8,7 @@ The redirect URI is fixed per provider (host, port and path) and is shown with a
 |---|---|
 | [github.md](github.md) | `http://127.0.0.1:48101/callback` |
 | [asana.md](asana.md) | `http://127.0.0.1:48102/callback` |
+| [google.md](google.md) | **One setup for every Google card** (Gmail, Drive, Calendar, Sheets, Docs, Slides): a script, three clicks, paste once |
 | [google-drive.md](google-drive.md) | `http://127.0.0.1:48103/callback` |
 | [gmail.md](gmail.md) | `http://127.0.0.1:48104/callback` |
 | [google-calendar.md](google-calendar.md) | `http://127.0.0.1:48105/callback` |
@@ -19,17 +20,6 @@ The redirect URI is fixed per provider (host, port and path) and is shown with a
 | [box.md](box.md) | `http://127.0.0.1:48108/callback` |
 | [microsoft-365.md](microsoft-365.md) | none — Microsoft 365 is not a Connections entry; the runbook explains the status and an optional Entra registration to prepare |
 
-## One Google client for every Google card
+## One Google app for every Google card
 
-Each Google product has its own card in **Settings → OAuth Apps**, its own fixed port and its own redirect URI, but one Google OAuth client can serve all six. Create the client once (any Google runbook, section 1), add every redirect URI below to its **Authorized redirect URIs**, enable each product's API and MCP API in the same project, and add each product's scopes on **Data Access**. Then paste the same Client ID and Client secret into each Google card you use.
-
-| Card | Redirect URI to add to the shared client |
-|---|---|
-| Google Drive | `http://127.0.0.1:48103/callback` |
-| Gmail | `http://127.0.0.1:48104/callback` |
-| Google Calendar | `http://127.0.0.1:48105/callback` |
-| Google Sheets | `http://127.0.0.1:48109/callback` |
-| Google Docs | `http://127.0.0.1:48110/callback` |
-| Google Slides | `http://127.0.0.1:48111/callback` |
-
-The client must have **Use this client for an AI-powered agent** ticked. Removing the app at [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) revokes every Google card connected through that project at once.
+All six Google cards share one Google OAuth client. Follow [google.md](google.md): `scripts/google-oauth-setup.sh` (or `scripts/google-oauth-setup.ps1`) creates the project and enables the APIs, then three console steps make the client. Saving its Client ID and secret on any Google card in **Settings → OAuth Apps**, with **Also save on …** on, fills the other five. The per-product pages keep only that product's scopes, endpoint and gotchas.

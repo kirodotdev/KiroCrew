@@ -3,7 +3,9 @@
 Three in-process queues bound an agent start, and all three are a
 :class:`PrioritySemaphore`: ``SessionManager._start_sem`` (provider cold starts),
 the gateway-wide cold-start admission (runtime spawn + ``initialize``) and the
-``SessionStartGate`` (``session/new``).
+``SessionStartGate`` (``session/new``). The MCP gateway daemon's spawn gate
+(``mcp_gateway.admission.SpawnGate``) queues a session's MCP server starts by the
+same order, :class:`StartOrder`, at the priority its session start has.
 
 THE RULE (stated here once; call sites and docs point back to it).
 
@@ -33,7 +35,7 @@ import contextlib
 import enum
 import logging
 from collections import deque
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Callable, Generic, TypeVar
 
 
 class StartPriority(enum.Enum):
@@ -89,6 +91,100 @@ def notify_start_queue(
         logger.debug("start-queue callback raised", exc_info=True)
 
 
+# How a start's priority crosses a process boundary: the environment variable a
+# session's MCP gateway stubs are launched with, and the value that claims
+# FOREGROUND. Anything else, or nothing, is BACKGROUND, so a peer that predates
+# the field is served as before.
+START_PRIORITY_ENV = "KIROCREW_STUB_START_PRIORITY"
+
+
+def priority_from_wire(value: object) -> StartPriority:
+    """The priority a wire or environment *value* claims; BACKGROUND unless it is exactly ``fg``."""
+    return (
+        StartPriority.FOREGROUND
+        if value == StartPriority.FOREGROUND.value
+        else StartPriority.BACKGROUND
+    )
+
+
+_W = TypeVar("_W")
+
+
+class StartOrder(Generic[_W]):
+    """Which queued start is served next: the module docstring's ordering, once.
+
+    Holds the waiters of both priorities and answers :meth:`pop_next`. FIFO
+    within a priority, ``FOREGROUND`` first, and after
+    :data:`_FOREGROUND_BYPASS_LIMIT` consecutive ``FOREGROUND`` picks that passed
+    a queued ``BACKGROUND`` waiter the oldest ``BACKGROUND`` waiter is next. The
+    owner counts permits; this only orders. *is_done* tells a waiter that no
+    longer waits (granted, cancelled or failed), which is skipped.
+    """
+
+    def __init__(self, is_done: Callable[[_W], bool]) -> None:
+        self._is_done = is_done
+        self._queues: dict[StartPriority, deque[_W]] = {
+            StartPriority.FOREGROUND: deque(),
+            StartPriority.BACKGROUND: deque(),
+        }
+        # FOREGROUND picks since the oldest queued BACKGROUND waiter arrived.
+        self._foreground_streak = 0
+        #: FOREGROUND picks that passed a queued, servable BACKGROUND waiter.
+        self.bypasses = 0
+
+    def live(self, priority: StartPriority) -> int:
+        """Queued waiters of *priority* that are still waiting."""
+        return sum(1 for w in self._queues[priority] if not self._is_done(w))
+
+    def waiting(self) -> list[_W]:
+        """Every waiter still waiting, in the order a free permit would serve them
+        were no bypass due: ``FOREGROUND`` first, FIFO within each."""
+        return [
+            w
+            for priority in (StartPriority.FOREGROUND, StartPriority.BACKGROUND)
+            for w in self._queues[priority]
+            if not self._is_done(w)
+        ]
+
+    def push(self, priority: StartPriority, waiter: _W) -> None:
+        if priority is StartPriority.BACKGROUND and not self.live(priority):
+            # First background waiter in the queue: the streak counts foreground
+            # picks since it arrived, so one left by an earlier waiter that
+            # stopped waiting must not carry over.
+            self._foreground_streak = 0
+        self._queues[priority].append(waiter)
+
+    def discard(self, priority: StartPriority, waiter: _W) -> None:
+        """Remove *waiter* at once; a no-op when it is not queued."""
+        with contextlib.suppress(ValueError):
+            self._queues[priority].remove(waiter)
+
+    def pop_next(self, *, background_servable: bool = True) -> "tuple[_W, StartPriority] | None":
+        """Pop the waiter the next permit goes to, or None when nobody may take it.
+
+        *background_servable* is False while the owner may not hand a
+        ``BACKGROUND`` waiter a permit (a foreground-only reserve); such a waiter
+        is neither served nor counted as passed.
+        """
+        foreground = self._queues[StartPriority.FOREGROUND]
+        background = self._queues[StartPriority.BACKGROUND]
+        for queue in (foreground, background):
+            while queue and self._is_done(queue[0]):
+                queue.popleft()
+        background_waits = bool(background) and background_servable
+        if background_waits and (
+            not foreground or self._foreground_streak >= _FOREGROUND_BYPASS_LIMIT
+        ):
+            self._foreground_streak = 0
+            return background.popleft(), StartPriority.BACKGROUND
+        if foreground:
+            if background_waits:
+                self._foreground_streak += 1
+                self.bypasses += 1
+            return foreground.popleft(), StartPriority.FOREGROUND
+        return None
+
+
 class PrioritySemaphore:
     """A counting semaphore that serves ``FOREGROUND`` waiters before ``BACKGROUND``.
 
@@ -127,17 +223,15 @@ class PrioritySemaphore:
         self._value = value
         self._background_cap = value - foreground_reserve
         self._held = {StartPriority.FOREGROUND: 0, StartPriority.BACKGROUND: 0}
-        self._waiters: dict[StartPriority, deque[asyncio.Future[None]]] = {
-            StartPriority.FOREGROUND: deque(),
-            StartPriority.BACKGROUND: deque(),
-        }
+        self._order: StartOrder[asyncio.Future[None]] = StartOrder(asyncio.Future.done)
         self._queued = {StartPriority.FOREGROUND: 0, StartPriority.BACKGROUND: 0}
-        # FOREGROUND grants since the oldest queued BACKGROUND waiter arrived.
-        self._foreground_streak = 0
-        #: FOREGROUND grants that passed a queued, grantable BACKGROUND waiter.
-        self.bypasses = 0
         self._drain_held: int | None = None
         self._drain_full: asyncio.Future[None] | None = None
+
+    @property
+    def bypasses(self) -> int:
+        """FOREGROUND grants that passed a queued, grantable BACKGROUND waiter."""
+        return self._order.bypasses
 
     @property
     def held_count(self) -> int:
@@ -157,10 +251,6 @@ class PrioritySemaphore:
         """The queue's state for a log line: ``queued_fg=… queued_bg=… bypasses=…``."""
         foreground, background = self.queued_by_priority()
         return f"queued_fg={foreground} queued_bg={background} bypasses={self.bypasses}"
-
-    def _live_waiters(self, priority: StartPriority) -> int:
-        """Queued futures of *priority* that are still waiting."""
-        return sum(1 for w in self._waiters[priority] if not w.done())
 
     @property
     def limit(self) -> int:
@@ -209,16 +299,8 @@ class PrioritySemaphore:
         if self._may_take_now(priority):
             self._grant(priority)
             return True
-        if priority is StartPriority.BACKGROUND and not self._live_waiters(priority):
-            # First background waiter in the queue: the streak counts foreground
-            # grants since it arrived, so a streak left by an earlier (cancelled)
-            # waiter must not carry over. Read from the deque, which a cancel
-            # updates at once, rather than from the count a cancelled waiter
-            # decrements only when its task resumes.
-            self._foreground_streak = 0
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        queue = self._waiters[priority]
-        queue.append(waiter)
+        self._order.push(priority, waiter)
         self._queued[priority] += 1
         try:
             await waiter
@@ -227,8 +309,7 @@ class PrioritySemaphore:
                 # Never granted, so it stops waiting here: removed at once rather
                 # than left for the head sweep, so it cannot linger mid-queue.
                 self._queued[priority] -= 1
-                with contextlib.suppress(ValueError):
-                    queue.remove(waiter)
+                self._order.discard(priority, waiter)
             else:
                 # Granted, then cancelled before this task resumed: pass it on.
                 self.release(priority)
@@ -259,33 +340,15 @@ class PrioritySemaphore:
                 full.set_result(None)
             return
         while self._value > 0:
-            picked = self._next_waiter()
+            picked = self._order.pop_next(
+                background_servable=self._may_hold(StartPriority.BACKGROUND)
+            )
             if picked is None:
                 return
             waiter, priority = picked
             self._queued[priority] -= 1
             self._grant(priority)
             waiter.set_result(None)
-
-    def _next_waiter(self) -> "tuple[asyncio.Future[None], StartPriority] | None":
-        """Pop the waiter the next permit goes to, or None when nobody may take it."""
-        foreground = self._waiters[StartPriority.FOREGROUND]
-        background = self._waiters[StartPriority.BACKGROUND]
-        for queue in (foreground, background):
-            while queue and queue[0].done():
-                queue.popleft()
-        background_waits = bool(background) and self._may_hold(StartPriority.BACKGROUND)
-        if background_waits and (
-            not foreground or self._foreground_streak >= _FOREGROUND_BYPASS_LIMIT
-        ):
-            self._foreground_streak = 0
-            return background.popleft(), StartPriority.BACKGROUND
-        if foreground:
-            if background_waits:
-                self._foreground_streak += 1
-                self.bypasses += 1
-            return foreground.popleft(), StartPriority.FOREGROUND
-        return None
 
     @contextlib.asynccontextmanager
     async def held(self, priority: StartPriority) -> AsyncIterator[None]:

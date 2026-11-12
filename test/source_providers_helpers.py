@@ -98,6 +98,7 @@ def _app(
     app.router.add_post("/api/source/pull-request/auto-merge", source.api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", source.api_pull_request_ready)
     app.router.add_post("/api/source/issue", source.api_issue_source)
+    app.router.add_post("/api/source/issues", source.api_issue_search)
     app.router.add_post("/api/source/contributors", source.api_app_contributors)
     return app
 

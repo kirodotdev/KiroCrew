@@ -25,6 +25,7 @@ import pytest
 from cli_commands_coverage_helpers import _FakeResponse, _http_error, _ns
 
 from kiro_crew import cli_commands as cc
+from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.eval.scenario import AssertionType
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
@@ -59,7 +60,7 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.INSERTED)
             cc._learn(_ns(learn_action="add", rule="do x", category="tool", negative="not y"))
-        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y")
+        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y", applies=None)
         h.jsonl.save.assert_not_called()
         h.vs.close.assert_called_once()
         assert "Saved: do x (not y) [tool]" in capsys.readouterr().out
@@ -1099,7 +1100,10 @@ class TestTelemetryCli:
             cc._telemetry(_ns(telemetry_action="disable"))
         data = json.loads(path.read_text())
         assert data["telemetry"]["beacon_enabled"] is False
+        # Both switches: "disable" turns usage data off, not only the heartbeat.
+        assert data["telemetry"]["enabled"] is False
         assert data["dashboard"]["privacy_acked"] is True
+        assert "privacy_ack_version" not in data["dashboard"]
         # Unrelated sections survive the rewrite.
         assert data["agent"] == {"model": "auto"}
         assert "DISABLED" in capsys.readouterr().out
@@ -1108,6 +1112,7 @@ class TestTelemetryCli:
         path = tmp_path / "nested" / "config.json"
         effective = KiroCrewConfig()
         effective.telemetry.beacon_enabled = True
+        effective.telemetry.enabled = True
         with (
             patch.object(KiroCrewConfig, "load", return_value=effective),
             patch("kiro_crew.cli_commands.config_path", return_value=path),
@@ -1115,7 +1120,10 @@ class TestTelemetryCli:
         ):
             beacon.is_governance_pinned_off.return_value = False
             cc._telemetry(_ns(telemetry_action="enable"))
-        assert json.loads(path.read_text())["telemetry"]["beacon_enabled"] is True
+        written = json.loads(path.read_text())
+        assert written["telemetry"]["beacon_enabled"] is True
+        assert written["telemetry"]["enabled"] is True
+        assert written["dashboard"]["privacy_ack_version"] == PRIVACY_NOTICE_VERSION
 
     def test_enable_refused_when_governance_pins_off(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

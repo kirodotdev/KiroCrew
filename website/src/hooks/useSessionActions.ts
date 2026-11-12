@@ -113,8 +113,9 @@ export interface SessionActions {
   toggleMutesOpened: (slotKey: string) => void
   /** Toggle the per-row mute of this session. */
   toggleMuted: (slotKey: string) => void
-  /** Copy the session's share link. */
-  copyLink: (slotKey: string) => void
+  /** Copy the session's share link. Resolves whether the link reached the
+   *  clipboard, so the menu can confirm it or say that it did not. */
+  copyLink: (slotKey: string) => Promise<boolean>
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
   move: (slotKey: string, folderId: string | null) => void
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
@@ -488,7 +489,7 @@ export function useSessionActions(mode?: string, opts?: {
 
   const copyLink = useCallback((slotKey: string) => {
     const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
-    copySessionLink(slotKey, slot?.title, undefined, mode)
+    return copySessionLink(slotKey, slot?.title, undefined, mode)
   }, [mode])
 
   const move = useCallback((slotKey: string, folderId: string | null) => {

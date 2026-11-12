@@ -114,9 +114,12 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         # A crewmate's Daily Goal Reminder is not an ordinary cron turn: it
         # runs as one hidden turn in the crewmate's own thread, built from
         # its current goal record (dashboard.goal_reminder).
-        from kiro_crew.dashboard import goal_reminder
+        from kiro_crew.dashboard import goal_reminder, stale_wake
 
-        if goal_reminder.is_reminder_job(job):
+        # The stale-wake job (preview dashboard_stale_wake) takes the same path: it
+        # starts hidden turns in Bots' own threads, so it passes the same gate.
+        is_stale_wake = stale_wake.is_stale_wake_job(job)
+        if is_stale_wake or goal_reminder.is_reminder_job(job):
             # It still starts an agent turn, so it passes the same fire-time
             # governance gate as a message job first: a `capabilities.cron`
             # ceiling tightened after the switch was turned on must stop it.
@@ -144,7 +147,13 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                     )
                 await self._alert_cron_failure(job, gate_reason, denied=True)
                 return None
-            outcome = await goal_reminder.fire(self.dashboard_state, job)
+            if is_stale_wake:
+                outcome = await stale_wake.fire(self.dashboard_state, self.cron_svc)
+                # A tick every ten minutes that woke no one would fill the
+                # shared run history, so it writes no row.
+                job.quiet_run = stale_wake.quiet_outcome(outcome)
+            else:
+                outcome = await goal_reminder.fire(self.dashboard_state, job)
             # The run's summary in the job's history: a check-in delivers
             # nothing itself, so without it a skip ("the mate is busy") would
             # read as a success that said nothing, silent job or not.
@@ -164,7 +173,20 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
 
         # ── Code-based script execution (deterministic, no LLM) ──
         if job.script:
-            result = await self._cron_run_script(job)
+            # The script's tool calls present `cron:<id>`, and a spawn refuses a key
+            # with no admitted memory mode: admit it with the captured mode for this
+            # run only, in memory, unless the message arm already admitted it. Store
+            # and member come from the job's record already (member_request_scope).
+            script_key = f"cron:{job.id}"
+            modes = getattr(self.ctx_builder, "_session_memory_modes", None)
+            admitted = modes if isinstance(modes, dict) and script_key not in modes else None
+            if admitted is not None:
+                admitted[script_key] = cap.cron_execution.memory_mode
+            try:
+                result = await self._cron_run_script(job)
+            finally:
+                if admitted is not None:
+                    admitted.pop(script_key, None)
             if job.last_status == "error" and not getattr(job, "run_never_started", False):
                 # A failed run writes no record, so the crewmate's page would keep the
                 # last good one as current: the gateway records the failure there. A
@@ -269,6 +291,9 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
     # A run its deadline ends never returns to _cron_callback, whose failure
     # paths are the only ones that alert; the service hands it back here.
     self.cron_svc.set_timeout_alert(self._alert_cron_timeout)
+    # A run the service's stop cuts short is filed cancelled and not retried,
+    # so the owner is told here rather than left with only the history row.
+    self.cron_svc.set_interrupt_alert(self._alert_cron_interrupted)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:
@@ -706,10 +731,10 @@ async def _acquire_with_model_fallback(
     *,
     execution: ExecutionContext | None = None,
     replace_execution: bool = False,
-) -> "tuple[LLMProvider, bool, bool, bool]":
+) -> "tuple[LLMProvider, bool, bool, bool, Any]":
     """get_or_create honoring job.model; if that model is
     unavailable, retry once with the registry default.
-    Returns (client, is_new, resumed, downgraded).
+    Returns (client, is_new, resumed, downgraded, claim_token).
 
     ``agent_id`` is the RESOLVED kiro agent mode (an alias must be
     collapsed via _resolve_cron_agent before this call), ``cwd``
@@ -724,6 +749,7 @@ async def _acquire_with_model_fallback(
     """
 
     assert self.sessions is not None
+    from kiro_crew.agent_sdk.spec_hooks import make_claim_token as _claim_token
     from kiro_crew.execution_context import (
         bind_session_execution,
         read_session_execution,
@@ -795,6 +821,10 @@ async def _acquire_with_model_fallback(
             extra_env=_cron_extra_env(job),
             cwd=cwd,
         )
+        # Minted the instant the claim returns, BEFORE the rebind await below: a
+        # hard Stop and a successor claim during that await cannot make the token
+        # name the successor. See spec_hooks re-projection.
+        _token = _claim_token(self.sessions, key)
         await _rebind_prepared_execution(client)
         # A config-option backend refuses a pin without raising and
         # stays on its default: the same downgrade as the except
@@ -804,6 +834,7 @@ async def _acquire_with_model_fallback(
             is_new,
             resumed,
             bool(job.model) and provider_model_pin_refused(client),
+            _token,
         )
     except Exception as model_exc:
         if not job.model:
@@ -830,8 +861,10 @@ async def _acquire_with_model_fallback(
             extra_env=_cron_extra_env(job),
             cwd=cwd,
         )
+        # Minted before the rebind await, as on the primary arm.
+        _token = _claim_token(self.sessions, key)
         await _rebind_prepared_execution(client)
-        return client, is_new, resumed, True
+        return client, is_new, resumed, True, _token
 
 
 def _retained_session_agent_mismatch(
@@ -878,6 +911,12 @@ async def _start_cron_after_memory_ready(self: GatewayOrchestrator) -> None:
         raise RuntimeError("Cron scheduler cannot start before memory preparation completes")
     await self.cron_svc.start()
     self._cron_armed = True
+    # The stale-wake job follows its preview switch, which the config watcher only
+    # reports when it moves: a switch already on (or off) at start is matched once
+    # here, off the boot path.
+    from kiro_crew.dashboard import stale_wake
+
+    stale_wake.schedule_sync(self.cron_svc)
     if self.sessions:
         self.cron_svc.start_reaper(self.sessions)
     else:

@@ -1,16 +1,16 @@
 """A remote MCP server's ``oauth`` block on the KAS projection.
 
-KAS's ``mapClientMcpServers`` rebuilds each remote entry from ``url``/``headers``/
-``env``/``timeout`` only, so ``oauth`` never arrives and a pre-registered client
-cannot sign in. :mod:`kiro_crew.acp.kas_agents` withholds the block (it can hold a
-``clientSecret``) and reports the loss through its existing session-start notice;
-this leaf holds the pieces both that module and the notice read.
+KAS engines before 0.66.104 drop the block a ``customAgents`` entry carries, so a
+pre-registered client cannot sign in there; 0.66.104 keeps it. :mod:`kiro_crew.acp.kas_agents`
+sends it to every engine (``kas_engine_features.carry_oauth``), narrowed by
+:func:`wire_oauth`, and the session-start notice names the loss where Crew knows
+the engine is older, and on any engine for a block :func:`oauth_withheld` says
+sends nothing. This leaf holds the pieces both read.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from kiro_crew.mcp_cleanup import (
@@ -26,16 +26,61 @@ MCP_OAUTH_KEY_SUFFIX = ".oauth"
 
 _MANAGED = frozenset(KIROCREW_BIN_MCP_SERVERS)
 
+#: The ``oauth`` keys Crew sends over ACP. ``clientSecret`` is not one, and neither
+#: is ``clientMetadataUrl``: without a ``clientId`` it changes the engine's grant key.
+OAUTH_WIRE_KEYS = ("clientId", "redirectUri")
+OAUTH_SCOPES_KEY = "oauthScopes"
+
 
 def registry_withheld(name: str, entry: dict[str, Any], registry_mode: bool) -> bool:
     """Whether the KAS projection withholds *entry* for the registry filter."""
     return name not in _MANAGED and (registry_mode or mcp_entry_is_registry_governed(entry))
 
 
+def names_client_secret(oauth: Any) -> bool:
+    """Whether an ``oauth`` block names a ``clientSecret``, so KAS never receives it."""
+    return isinstance(oauth, Mapping) and bool(oauth.get("clientSecret"))
+
+
+def wire_scopes(value: Any) -> list[str] | None:
+    """*value* as an ``oauthScopes`` list Crew sends, else None."""
+    if isinstance(value, list) and all(isinstance(s, str) for s in value):
+        return list(value)
+    return None
+
+
+def wire_oauth(oauth: Any) -> tuple[dict[str, str], list[str] | None]:
+    """What Crew sends over ACP for an ``oauth`` block: the narrowed block and the
+    nested ``oauthScopes`` it moves to the entry.
+
+    The block keeps :data:`OAUTH_WIRE_KEYS` with non-empty string values. A
+    non-object block, or one that names a ``clientSecret``, sends nothing:
+    ``({}, None)``.
+    """
+    if not isinstance(oauth, Mapping) or names_client_secret(oauth):
+        return {}, None
+    kept = {k: oauth[k] for k in OAUTH_WIRE_KEYS if isinstance(oauth.get(k), str) and oauth[k]}
+    return kept, wire_scopes(oauth.get(OAUTH_SCOPES_KEY))
+
+
+def oauth_withheld(oauth: Any) -> bool:
+    """Whether a set ``oauth`` block reaches no engine: :func:`wire_oauth` sends
+    nothing from it (a ``clientSecret``, only a ``clientMetadataUrl``, only
+    unknown keys)."""
+    return bool(oauth) and wire_oauth(oauth) == ({}, None)
+
+
 def servers_with_discarded_oauth(
-    spec: dict[str, Any], registry_governed: Callable[[], bool]
+    spec: dict[str, Any],
+    registry_governed: Callable[[], bool],
+    *,
+    withheld_only: bool = False,
 ) -> list[str]:
     """Names of *spec*'s declared MCP servers whose ``oauth`` block KAS discards.
+
+    With *withheld_only*, only the blocks :func:`oauth_withheld` names count: the
+    projection sends nothing from those on any engine, while an engine that keeps
+    the block receives the others.
 
     An entry the projection never declares (muted, or withheld by the registry
     filter) is skipped: it does not run at all, so naming its sign-in would
@@ -51,6 +96,7 @@ def servers_with_discarded_oauth(
         and name
         and isinstance(entry, dict)
         and entry.get("oauth")
+        and (not withheld_only or oauth_withheld(entry["oauth"]))
         and not mcp_entry_is_muted(entry)
     ]
     if not with_oauth:
@@ -72,31 +118,3 @@ def oauth_servers_in(keys: Iterable[str]) -> list[str]:
         for k in keys
         if k.startswith(pre) and k.endswith(suf) and len(k) > len(pre) + len(suf)
     ]
-
-
-def withhold_oauth(
-    projected: dict[str, Any],
-    *,
-    agent_id: str,
-    name: str,
-    logger: logging.Logger,
-) -> None:
-    """Pop *projected*'s ``oauth`` block and log only how many keys it had.
-
-    Withheld rather than sent to be discarded, because the block can hold a
-    ``clientSecret``; that is also why it is not a discarded-entry key.
-    """
-    oauth = projected.pop("oauth", None)
-    if not oauth:
-        return
-    # A fixed message and an integer only: nothing derived from the block's
-    # keys or values reaches the log.
-    count = len(oauth) if isinstance(oauth, dict) else 0
-    logger.info(
-        "agent %r: MCP server %r declares an oauth block (%d keys), which this "
-        "backend discards, so its sign-in cannot work here; the kiro-cli "
-        "backend supports it.",
-        agent_id,
-        name,
-        count,
-    )

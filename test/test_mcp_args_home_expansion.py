@@ -71,6 +71,51 @@ def test_non_list_args_and_the_source_list_are_untouched() -> None:
     assert expand_spec_args(None) is None
 
 
+@pytest.fixture
+def windows_no_home_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows shape: HOME/USER/LOGNAME unset, home and login in the twins."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    for name in ("HOME", "USER", "LOGNAME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\alice")
+    monkeypatch.setenv("USERNAME", "alice")
+    monkeypatch.setenv("SOME_SECRET", "s3cr3t")
+
+
+@pytest.mark.usefixtures("windows_no_home_env")
+def test_windows_fills_home_and_user_from_the_profile_twins() -> None:
+    # On Windows HOME/USER are unset, so a POSIX-written ${HOME}/${USER} must
+    # resolve from USERPROFILE/USERNAME instead of reaching the child raw.
+    assert expand_spec_args(
+        [r"${HOME}\x", "${env:HOME}\\y", "${USER}", r"${USERPROFILE}\z", "${USERNAME}"]
+    ) == [r"C:\Users\alice\x", r"C:\Users\alice\y", "alice", r"C:\Users\alice\z", "alice"]
+    # A non-home/login name is still never dereferenced.
+    assert expand_spec_args(["${SOME_SECRET}"]) == ["${SOME_SECRET}"]
+
+
+@pytest.mark.usefixtures("windows_no_home_env")
+def test_windows_set_home_still_wins_over_the_profile_twin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A set HOME is not overridden by USERPROFILE.
+    monkeypatch.setenv("HOME", r"C:\home\explicit")
+    monkeypatch.setenv("USER", "explicit")
+    assert expand_spec_args([r"${HOME}\x", "${USER}"]) == [r"C:\home\explicit\x", "explicit"]
+
+
+def test_posix_home_unset_stays_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Off Windows the twin fallback does not apply: an unset HOME stays literal,
+    # so POSIX behaviour is unchanged.
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("USERPROFILE", "/profile")
+    assert expand_spec_args(["${HOME}/x"]) == ["${HOME}/x"]
+
+
 @pytest.mark.usefixtures("home_env")
 def test_the_emitted_agent_spec_carries_the_expanded_launch_path(
     monkeypatch: pytest.MonkeyPatch,

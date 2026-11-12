@@ -298,7 +298,14 @@ class TestClientSeam:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("requested", "mounted"), [("default", True), ("auto", False), (None, True)]
+        ("requested", "mounted"),
+        [
+            ("default", True),
+            ("auto", True),
+            ("bypassPermissions", True),
+            ("plan", False),
+            (None, True),
+        ],
     )
     async def test_a_request_for_the_pinned_mode_keeps_crews_tools(
         self, tmp_path, agents_dir, monkeypatch, requested, mounted
@@ -307,7 +314,9 @@ class TestClientSeam:
 
         So a settings.local.json Crew does not govern (a project's, or another open
         session's seed in a shared work dir) does not cost it Crew's tools, and it
-        still starts pinned to ``default``. Any other requested mode keeps the
+        still starts pinned to ``default``. A request for a mode that approves on
+        its own (``auto``) is one the pin moves to ``default``, so it keeps the
+        tools too and runs in the asking mode. Any other requested mode keeps the
         array withheld.
         """
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
@@ -630,6 +639,33 @@ class TestClientSeam:
         if mode is not None:
             resp["modes"] = {"currentModeId": mode}
         await client._pin_claude_starting_mode(resp)
+        assert sent == [("session/set_mode", {"sessionId": "s-1", "modeId": "default"})]
+        assert killed == []
+
+    @pytest.mark.asyncio
+    async def test_a_requested_auto_that_takes_the_exclusion_is_still_pinned(
+        self, tmp_path, agents_dir, monkeypatch
+    ):
+        """Keeping Crew's tools for a requested ``auto`` must not keep ``auto``.
+
+        On this path the request is not the session's own mode: Crew's inline
+        settings may start it in ``auto``, and the read-back moves it to
+        ``default`` before the first prompt, exactly as for a file-picked ``auto``.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        self._project_owned_settings(tmp_path, {"permissions": {}})
+        client = AcpClient(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            permission_mode="auto",
+        )
+        client._write_claude_local_settings()
+        assert client._claude_local_settings_excluded is True
+        sent, killed = self._pin_harness(client, monkeypatch)
+        await client._pin_claude_starting_mode(
+            {"sessionId": "s-1", "modes": {"currentModeId": "auto"}}
+        )
         assert sent == [("session/set_mode", {"sessionId": "s-1", "modeId": "default"})]
         assert killed == []
 
@@ -1428,14 +1464,16 @@ class TestClientSeam:
         assert client._claude_session_meta()["claudeCode"]["options"]["settingSources"] == ["user"]
 
     def test_a_requested_mode_still_withholds_the_array(self, tmp_path, agents_dir):
-        """A mode Crew asked for cannot be pinned without the local file."""
+        """A mode Crew asked for that the pin neither sets nor moves away
+        cannot be kept without the local file. (``auto`` is moved to ``default``
+        and keeps the array: see the parametrised test above.)"""
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         self._project_owned_settings(tmp_path, {"permissions": {"allow": ["mcp__foo__write"]}})
         client = AcpClient(
             work_dir=tmp_path,
             agent="kirocrew",
             acp_backend=ACP_BACKEND_CLAUDE,
-            permission_mode="auto",
+            permission_mode="plan",
         )
         client._write_claude_local_settings()
         assert client._session_mcp_servers() == []

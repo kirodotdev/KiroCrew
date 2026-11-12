@@ -133,6 +133,7 @@ from kiro_crew.agent_parts.spec_build import (
     is_managed_prompt,
 )
 from kiro_crew.agent_parts.spec_files import (
+    _SPEC_LOCK_REFUSALS,
     KIRO_AGENTS_DIR,
     _atomic_json_write,
     _atomic_json_write_unguarded,
@@ -141,6 +142,7 @@ from kiro_crew.agent_parts.spec_files import (
     agents_spec_lock,
     kiro_agents_dir_path,
     missing_required_agent_specs,
+    one_spec_lock_wait,
     present_required_agent_specs,
     write_owner_derived_spec,
 )
@@ -484,6 +486,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_team_lead_agent,
         knowledge_agent_model,
         knowledge_view_without_registered_injection,
+        repair_guest_agent_spec,
         repair_knowledge_agent_spec,
     )
     from kiro_crew.agent_materialization.shared_template_view import (  # noqa: F401
@@ -1080,6 +1083,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     ),
     "kiro_crew.agent_materialization.service_agents": (
         "_install_guest_agent",
+        "repair_guest_agent_spec",
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
         "knowledge_agent_model",

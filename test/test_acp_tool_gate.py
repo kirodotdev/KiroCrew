@@ -370,6 +370,7 @@ def test_aws_stays_masked_with_only_config_reexposed() -> None:
     hidden = gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
     assert gate.adapter_expose_files(ACP_BACKEND_CODEX, hidden) == (
         os.path.join(home, ".aws", "config"),
+        os.path.join(home, ".ssh", "known_hosts"),
     )
     assert (
         ".aws" in sensitive_home_dirs()
@@ -388,6 +389,16 @@ def test_every_exposed_leaf_sits_under_a_masked_dir() -> None:
         ACP_BACKEND_CODEX, gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
     ):
         assert any(exposed.startswith(m + os.sep) for m in masked), exposed
+
+
+@pytest.mark.parametrize("backend", ENFORCED_BACKENDS)
+def test_known_hosts_is_the_one_ssh_file_given_back(backend) -> None:
+    """git over SSH verifies the host only if ``known_hosts`` survives the ``~/.ssh`` mask."""
+    hidden = gate.adapter_hidden_credential_dirs(backend)
+    ssh = os.path.join(os.path.expanduser("~"), ".ssh")
+    assert ssh in hidden, "the private keys must stay masked"
+    exposed = gate.adapter_expose_files(backend, hidden)
+    assert [p for p in exposed if p.startswith(ssh + os.sep)] == [os.path.join(ssh, "known_hosts")]
 
 
 @pytest.mark.parametrize("backend", (*AGENT_SPEC_BACKENDS, ACP_BACKEND_CLAUDE))

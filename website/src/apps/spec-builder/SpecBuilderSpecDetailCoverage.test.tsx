@@ -474,7 +474,10 @@ describe('SpecDetail phase actions', () => {
     const approve = await screen.findByRole('button', { name: /Approve → Design/ })
     fireEvent.click(approve)
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Sending/ })).toBeDisabled())
+    // Busy, not native disabled, while the approval write is in flight: it reads
+    // aria-disabled and ignores clicks but keeps keyboard focus (#32999).
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sending/ })).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByRole('button', { name: /Sending/ })).not.toBeDisabled()
     const sent = calls.filter((c) => c.url.includes('/message'))
     expect(sent).toHaveLength(1)
     expect(JSON.parse(sent[0].body).text).toContain('Requirements approved')
@@ -483,8 +486,10 @@ describe('SpecDetail phase actions', () => {
     // It must NOT spring back to "Approve → Design". The phase is derived from
     // the documents on disk, so it stays 'requirements' until the agent has
     // written design.md — showing the approval button again in that window read
-    // as "nothing happened" and invited a second approval into the same turn.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Drafting design/ })).toBeDisabled())
+    // as "nothing happened" and invited a second approval into the same turn. It
+    // stays inert via aria-disabled (busy), so it still keeps focus.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Drafting design/ })).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByRole('button', { name: /Drafting design/ })).not.toBeDisabled()
     expect(screen.queryByRole('button', { name: /Approve → Design/ })).not.toBeInTheDocument()
   })
 
@@ -548,7 +553,9 @@ describe('SpecDetail phase actions', () => {
     renderDetail()
 
     fireEvent.click(await screen.findByRole('button', { name: /Approve → Design/ }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Sending/ })).toBeDisabled())
+    // Busy (aria-disabled, focusable), not native disabled, while in flight (#32999).
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sending/ })).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByRole('button', { name: /Sending/ })).not.toBeDisabled()
 
     // A decision answered while the approval is still in flight.
     fireEvent.click(screen.getByTestId('state-send'))
@@ -557,7 +564,8 @@ describe('SpecDetail phase actions', () => {
     releaseApproval?.()
 
     await waitFor(() => expect(screen.getByRole('button', { name: /Drafting design/ })).toBeInTheDocument())
-    expect(screen.getByRole('button', { name: /Drafting design/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Drafting design/ })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: /Drafting design/ })).not.toBeDisabled()
     expect(screen.queryByRole('button', { name: /Sending/ })).not.toBeInTheDocument()
   })
 

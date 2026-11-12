@@ -175,6 +175,9 @@ def _build_export_zip(
     # configured spelling would return an empty archive on such a host.
     mc_real = os.path.realpath(mc)
     dir_counts: dict[str, int] = {}
+    # ``skill_count`` counts skill directories, not files, the same way the CLI
+    # backup manifest does: a skill with scripts and references is still one skill.
+    skill_dirs: set[str] = set()
     # A memory-only export walks only the memory half of the workspace; its
     # files still count as ``workspace_files`` so the import preview reads them.
     trees = _pf.MEMORY_ONLY_TREES if memory_only else ("workspace", "plan_memory", "skills")
@@ -188,12 +191,14 @@ def _build_export_zip(
             finally:
                 os.close(fd)
             count += 1
+            if dirname == "skills" and len(rel.parts) > 2:
+                skill_dirs.add(rel.parts[1])
         top = dirname.split("/", 1)[0]
         dir_counts[top] = dir_counts.get(top, 0) + count
     contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
     if not memory_only:
         contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
-        contents_summary["skill_count"] = dir_counts.get("skills", 0)
+        contents_summary["skill_count"] = len(skill_dirs)
 
     # Named memory stores: the same pinned walk, with the tree's own filter and the
     # fence lifted (see `_open_verified`). A store's databases go through the backup

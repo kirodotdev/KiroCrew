@@ -245,9 +245,10 @@ def session_memory_parts(
                 query=query_text,
                 inject_activity=inject_activity,
             ) or read_session_memory(memory, caps, query_text, inject_activity=inject_activity)
-            from kiro_crew import context_omissions
+            from kiro_crew import context_omissions, injection_receipts
 
             context_omissions.replay(reads.omissions)
+            injection_receipts.replay(reads.receipts)
             memory_ctx = reads.memory_ctx
             if memory_ctx:
                 # Preferences are read complete below the model-safe ceiling.
@@ -386,6 +387,9 @@ class SessionMemoryReads:
     activity_ctx: str
     activity_ranked: bool
     omissions: dict[str, dict[str, Any]]
+    #: Injection-receipt records the reads made (a stage's shadow ids), replayed
+    #: into the build's own collection like *omissions*.
+    receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def chars(self) -> int:
         """The text this result holds, for the size bound on a held prefetch."""
@@ -438,9 +442,14 @@ def read_session_memory(
     Blocking. The omission records the reads make are returned rather than left in
     the caller's collection, so a prefetch can hand them to the build that takes it.
     """
-    from kiro_crew import context_omissions
+    from kiro_crew import context_omissions, injection_receipts
+    from kiro_crew import memory_relevance_rule as _relevance_rule
 
-    with context_omissions.collect() as omissions:
+    relevance = _relevance_rule.configured_mode()
+    gated: dict[str, str] = (
+        {} if relevance == _relevance_rule.MODE_OFF else {"relevance_rule": relevance}
+    )
+    with context_omissions.collect() as omissions, injection_receipts.collect() as receipts:
         memory_ctx = memory.get_context(
             prefs_cap=caps.prefs,
             projects_cap=caps.projects,
@@ -461,9 +470,12 @@ def read_session_memory(
                 semantic_cap=caps.semantic,
                 episodic_cap=min(_budgets._EPISODIC_INJECT_CAP, caps.episodic),
                 query=query,
+                **gated,
             )
             activity_ranked = memory.ranks_activity_against(query)
-    return SessionMemoryReads(memory_ctx, activity, activity_ctx, activity_ranked, dict(omissions))
+    return SessionMemoryReads(
+        memory_ctx, activity, activity_ctx, activity_ranked, dict(omissions), dict(receipts)
+    )
 
 
 def _lstat(path: Any) -> tuple[int, int] | None:
@@ -522,12 +534,17 @@ def _memory_read_inputs(
     file_stats = _admitted_file_stats(memory)
     if file_stats is None:
         return None
+    from kiro_crew import memory_relevance_rule as _relevance_rule
+
     vector_store = memory.vector_store
     return (
         id(memory),
         id(vector_store),
         _query_digest(query),
         inject_activity,
+        # The read gates activity and facts by this mode, so a flip between
+        # the prefetch and the build must not hand over the other mode's block.
+        _relevance_rule.configured_mode(),
         (
             caps.prefs,
             caps.projects,
@@ -715,8 +732,6 @@ def _lessons_renderer(
     the same store under the same population rule. The renderer takes the hard
     character cap it may fill.
     """
-    from kiro_crew import context as ctx  # circular import: the facade imports this owner
-
     # V1 only: the JSONL store answers when the vector store is absent OR not yet
     # populated, and stays silent once it holds lessons.
     #
@@ -729,6 +744,22 @@ def _lessons_renderer(
     # filling that store. Population tells the two apart: no rows at all
     # means the JSONL store is still the authority, rows-but-none-in-scope
     # means this store already answered.
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import memory_lesson_fold as _lesson_fold
+    from kiro_crew import memory_rule_authority as _rule_authority
+
+    # Read once per renderer: a refit after the protected ceiling renders again
+    # under the same order and fold. ``off`` passes nothing, so the call is today's.
+    mode = _rule_authority.configured_mode()
+    order: dict[str, Any] = {} if mode == _rule_authority.MODE_OFF else {"authority_order": mode}
+    fold_mode = _lesson_fold.configured_mode()
+    if fold_mode != _lesson_fold.MODE_OFF:
+        order["lesson_fold"] = fold_mode
+    from kiro_crew import memory_relevance_rule as _relevance_rule
+
+    relevance = _relevance_rule.configured_mode()
+    if relevance != _relevance_rule.MODE_OFF:
+        order["relevance_rule"] = relevance
     if member_vectors is not None:
         member_store = member_vectors
 
@@ -741,6 +772,7 @@ def _lessons_renderer(
                 hard_cap=hard_cap,
                 directive_budget=caps.lessons_startup,
                 experience_budget=caps.lesson_experience,
+                **order,
             )
 
         return _render_member_lessons
@@ -763,6 +795,7 @@ def _lessons_renderer(
                 hard_cap=hard_cap,
                 directive_budget=caps.lessons_startup,
                 experience_budget=caps.lesson_experience,
+                **order,
             )
 
         return _render_vector_lessons

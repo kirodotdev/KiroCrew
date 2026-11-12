@@ -66,7 +66,7 @@ _SRC = _FACADE_PATH.parents[3]
 #: on the removal of an unused import.
 _BASE_NAMES = frozenset("""
         BINARY_MIME_ALLOWLIST BinaryIO BodyPartReader Callable
-        ClientConnectionResetError DashboardState FILE_READ_SCHEMA FileTooLargeError
+        DashboardState FILE_READ_SCHEMA FileTooLargeError
         KiroCrewConfig LINK_PATTERNS_MAX LINK_PATTERN_PATTERN_MAX_LEN
         LINK_PATTERN_URL_MAX_LEN MODEL_ID_RE NamedTuple OutboundFile Path PdfExtraction
         PurePath SNIFF_BYTES TypeVar VALID_MEMORY_MODES ValidationError WorkspaceConfig

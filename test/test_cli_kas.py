@@ -27,7 +27,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +39,13 @@ from kiro_crew import cli_kas
 from kiro_crew.agent_sdk import kas_bundle
 
 _PIN = cli_kas.KAS_PIN_VERSION
+
+
+def _set_route(monkeypatch, *, bundle: bool, reason: str = "") -> None:
+    """Pin the route `_report_installed` reads (the predicate doctor shares)."""
+    from kiro_crew.acp.kas_route import KasRoute
+
+    monkeypatch.setattr(kas_bundle, "kas_route", lambda: KasRoute(bundle=bundle, reason=reason))
 
 
 def _installed(root: Path, version: str = _PIN) -> kas_bundle.InstalledKasBundle:
@@ -159,6 +168,7 @@ class TestInstallFromDir:
             return _installed(tmp_path / "engines")
 
         monkeypatch.setattr(kas_bundle, "install_bundle", fake_install)
+        _set_route(monkeypatch, bundle=False)  # the relay runs: the switch is genuinely off
         assert cli_kas.kas_cmd(self._args(local_source, force=True)) == 0
         assert seen == {"version": _PIN, "source": str(local_source.resolve()), "force": True}
         out = capsys.readouterr().out
@@ -174,11 +184,27 @@ class TestInstallFromDir:
         self, cfg, host, local_source, tmp_path, monkeypatch, capsys
     ):
         cfg.kas_bundle = True
+        _set_route(monkeypatch, bundle=True, reason="configured")
         monkeypatch.setattr(kas_bundle, "install_bundle", lambda m, **k: _installed(tmp_path))
         assert cli_kas.kas_cmd(self._args(local_source)) == 0
         out = capsys.readouterr().out
         assert "agent.kas_bundle is on; `kirocrew restart` picks the new engine up." in out
         assert "config set agent.kas_bundle true" not in out
+
+    def test_automatic_route_does_not_tell_the_user_to_turn_it_on(
+        self, cfg, host, local_source, tmp_path, monkeypatch, capsys
+    ):
+        # The flag is off but no kiro-cli resolves, so the route is the bundle
+        # automatically -- the same thing `kirocrew doctor` reports. The
+        # installer must not contradict it by telling the user to turn it on.
+        cfg.kas_bundle = False
+        _set_route(monkeypatch, bundle=True, reason="no_kiro_cli")
+        monkeypatch.setattr(kas_bundle, "install_bundle", lambda m, **k: _installed(tmp_path))
+        assert cli_kas.kas_cmd(self._args(local_source)) == 0
+        out = capsys.readouterr().out
+        assert "The bundle route is off" not in out
+        assert "config set agent.kas_bundle true" not in out
+        assert "Kiro Crew will use this engine" in out
 
     def test_a_version_the_harness_does_not_run_names_the_override_env(
         self, cfg, host, local_source, tmp_path, monkeypatch, capsys
@@ -392,6 +418,20 @@ class TestInstallWhenAlreadyInstalled:
         out = capsys.readouterr().out
         assert f"✅ KAS {_PIN} is already installed at {tmp_path / 'engines' / _PIN}" in out
         assert "kirocrew config set agent.kas_bundle true" in out
+
+    def test_the_pinned_engine_on_disk_still_sweeps_a_stale_staging_tree(
+        self, cfg, present, tmp_path, monkeypatch
+    ):
+        """No install runs, so the stale staging sweep ``install_bundle`` would have
+        run runs here: a refresh ended from outside left a tree an hour old."""
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched"))
+        orphan = tmp_path / "engines" / f".staging-{_PIN}-orphan1"
+        (orphan / "downloads").mkdir(parents=True)
+        old = time.time() - 2 * 3600
+        for entry in (orphan / "downloads", orphan):
+            os.utime(entry, (old, old))
+        assert cli_kas.kas_cmd(self._args()) == 0
+        assert not orphan.exists()
 
     def test_from_a_directory_the_installed_pin_is_not_reinstalled(
         self, cfg, present, local_source, monkeypatch, capsys

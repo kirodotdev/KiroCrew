@@ -166,11 +166,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
-    # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
-    # goal's item count, and whether it has gone past ``item_cap`` (which the
-    # conductor tells the user once), both read off the same header.
-    # Advisory: the compact read carries them so a patrol that reads only the
-    # status columns still sees a goal spending past what the user expected.
+    # ``goal_items_used`` is derived, never stored: the goal's item count, read
+    # off the header. The compact read carries it so a round report can state
+    # the goal's total from a patrol that reads only the status columns.
     # ``max_depth`` is the conducting depth cap in force right now (never stored),
     # so a conductor can see how many levels may still dispatch below its own.
     # Read off the loop: it consults the config file.
@@ -178,7 +176,6 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     conductor = dict(
         record.to_dict(),
         goal_items_used=record.goal_items_used,
-        cap_exceeded=record.cap_exceeded,
         max_depth=depth_cap,
     )
     payload: dict[str, Any] = {"conductor": conductor, "items": rows}
@@ -233,16 +230,21 @@ def _row_with_flags(
     """
     row = item.to_dict()
     row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-    running, closed, looping = work_ledger.item_liveness(
+    running, closed, looping, held = work_ledger.item_liveness(
         board,
         item,
         running=lambda k: _slot_running(state, k),
         closed=lambda k: _slot_closed(state, k),
         looping=_slot_looping,
+        held=_slot_loop_held,
         remote=remote_live if item.worker_instance_id else None,
     )
     row["stale"] = work_ledger.is_stale(
-        item, worker_running=running, worker_closed=closed, worker_looping=looping
+        item,
+        worker_running=running,
+        worker_closed=closed,
+        worker_looping=looping,
+        worker_loop_held=held,
     )
     row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
     row["unpatrolled"] = item.state == "open" and not patrolled
@@ -425,6 +427,13 @@ def _slot_looping(key: str) -> bool:
     from kiro_crew.autonudge import get_instance
 
     return ledger_wake.worker_looping(get_instance(), key)
+
+
+def _slot_loop_held(key: str) -> bool:
+    """Whether *key*'s session holds an active loop that cannot fire, as the wake gate reads it."""
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_loop_held(get_instance(), key)
 
 
 def worker_holds_open_item(slot_key: str) -> bool:

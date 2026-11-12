@@ -26,15 +26,11 @@ MAX_NAME_LEN = 200
 MAX_DESCRIPTION_LEN = 2_000
 
 #: Maximum length of a file-backed artifact's ``source_path`` / ``source_root``.
-#: These are REJECTED past the cap rather than truncated: a truncated path is a
-#: different path — usually a nonexistent one — so silently storing it produced
-#: an artifact whose live pointer could never resolve, which is precisely the
-#: dead-pointer failure ``source_missing`` exists to expose. Comfortably above
-#: PATH_MAX on the platforms we support for any realistic project layout.
+#: A longer value is rejected, never truncated: a truncated path points somewhere
+#: else, usually nowhere, leaving an artifact whose live pointer cannot resolve.
 MAX_SOURCE_PATH_LEN = 512
 
-#: Allowed kinds (extensible — agents pass plain strings, but a soft allow-list
-#: keeps the dashboard's filter UI tractable).
+#: Allowed kinds: a soft allow-list that keeps the dashboard's filter UI tractable.
 ALLOWED_KINDS = frozenset(
     {
         "widget",  # default — sandboxed HTML/JS via mcwidget
@@ -57,9 +53,8 @@ ALLOWED_KINDS = frozenset(
 #: Allowed source markers (provenance).
 ALLOWED_SOURCES = frozenset(
     {
-        # Provenance/creation buckets (back-compat) + actual session origins from
-        # ``infer_use_case`` so an artifact's source can reflect WHERE the saving
-        # session came from rather than a generic "manual".
+        # Creation buckets plus the session origins from ``infer_use_case``, so a
+        # source can say where the saving session came from, not a generic "manual".
         "chat",
         "cron",
         "subagent",
@@ -73,7 +68,6 @@ ALLOWED_SOURCES = frozenset(
     }
 )
 
-#: Maximum number of tags per artifact. Per-tag length is bounded by ``MAX_TAG_LEN``.
 MAX_TAGS = 16
 
 #: Maximum length of one tag, in code points of its NFC form: the count a reader
@@ -108,12 +102,9 @@ _TAG_MARK_CATEGORIES = frozenset({"Mn", "Mc"})
 #: leading separator reads as a flag or a path.
 _TAG_FIRST_CATEGORIES = _TAG_BODY_CATEGORIES - _TAG_MARK_CATEGORIES
 
-#: How many combining marks one character may carry. Writing needs few: Hebrew
-#: pointing stacks a dagesh, a vowel and a cantillation mark; a Tibetan syllable
-#: stacks subjoined letters and a vowel sign; both stay within four. Unicode's
-#: own Stream-Safe bound of 30 is for text buffers, not for a label of at most
-#: 64 code points: ``a`` under 63 acute accents is a 64-code-point tag that is
-#: not writing but a glyph, one that overflows the chip drawn for it.
+#: How many combining marks one character may carry. Real writing stays within
+#: four (Hebrew pointing, Tibetan stacks); Unicode's Stream-Safe bound of 30 would
+#: admit ``a`` under 63 accents, a glyph that overflows the chip drawn for it.
 MAX_CONSECUTIVE_MARKS = 4
 
 #: Compatibility characters kept as typed. NFC leaves compatibility forms alone
@@ -184,8 +175,6 @@ _DEFAULT_IGNORABLE = frozenset(
     cp for lo, hi in _DEFAULT_IGNORABLE_RANGES for cp in range(lo, hi + 1)
 )
 
-# Slug pattern: lowercase letters, digits, hyphens. 1-80 chars. No leading or
-# trailing hyphen. Single-character slugs are allowed for trivial names.
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 _SLUG_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 
@@ -320,17 +309,18 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
-#: Kinds a HUMAN may select for an artifact from the dashboard's type control.
-#: A strict subset of :data:`ALLOWED_KINDS`, and deliberately the same set the
-#: frontend's ``isEditableKind`` treats as inline-editable: ``widget`` / ``html``
-#: render in a sandboxed iframe with no editor, so offering them would let the
-#: user strand the document they are typing in, and ``webapp`` carries deploy
-#: metadata that a hand-flip would desynchronise. Agents and importers still
-#: reach the full :data:`ALLOWED_KINDS` set; this bounds the UI surface only.
+#: Kinds a person may pick in the dashboard's type control: the set the frontend's
+#: ``isEditableKind`` treats as inline-editable. ``widget`` / ``html`` render in an
+#: iframe with no editor, and ``webapp`` carries deploy metadata a hand-flip would
+#: desynchronise. Agents and importers still reach all of :data:`ALLOWED_KINDS`.
 USER_SELECTABLE_KINDS = frozenset({"markdown", "text", "json", "svg"})
 
 
 def _validate_kind(kind: str) -> str:
+    # Checked first, as in _validate_source: a list or object is unhashable, so
+    # the set lookup below would raise TypeError instead of the 400 error.
+    if not isinstance(kind, str):
+        raise ArtifactValidationError(f"kind must be str, got {type(kind).__name__}")
     if kind not in ALLOWED_KINDS:
         raise ArtifactValidationError(
             f"invalid kind {kind!r}: must be one of {sorted(ALLOWED_KINDS)}"
@@ -377,27 +367,16 @@ _SVG_ROOT_RE = re.compile(
 def detect_editor_kind(content: str) -> str | None:
     """Detect the structured kind of hand-authored ``content``, or ``None``.
 
-    Used by :meth:`ArtifactStore.update` to re-type a document that was created
-    blank (``kind_auto``) once its content becomes recognizable. It only ever
-    returns an **editable** kind — ``json`` or ``svg`` — and returns ``None``
-    for anything it cannot positively identify.
+    :meth:`ArtifactStore.update` uses it to re-type a document created blank
+    (``kind_auto``). It returns only an editable kind, ``json`` or ``svg``:
 
-    Two deliberate exclusions:
+    * never ``html`` / ``widget``: they are not inline-editable, so promoting a
+      document the user is typing in would remove the editor mid-sentence.
+    * a bare JSON scalar (``42``, ``true``) is more likely prose, so only an
+      object or array counts as JSON.
 
-    * ``html`` / ``widget`` are never returned. Both render in a sandboxed
-      iframe and are NOT inline-editable (see ``isEditableKind`` on the
-      frontend), so promoting a document the user is *typing in* to either one
-      would rip the editor away mid-sentence. Markdown passes raw HTML through
-      to its renderer anyway, so a hand-written HTML document still renders
-      while staying editable.
-    * a bare JSON scalar (``42``, ``true``, a quoted string) is valid JSON but
-      far more likely to be prose, so only a whole document parsing as an
-      object or an array counts.
-
-    Returning ``None`` rather than ``"markdown"`` for unrecognized content is
-    what makes re-typing stable: a JSON document left mid-edit with a syntax
-    error detects as nothing and keeps the kind it already had, instead of
-    flapping back to markdown on every save.
+    Unrecognized content returns ``None``, not ``"markdown"``, so a JSON document
+    with a mid-edit syntax error keeps its kind instead of flapping on each save.
     """
     sniff = (content or "").strip()
     if not sniff:
@@ -414,10 +393,8 @@ def detect_editor_kind(content: str) -> str | None:
     return None
 
 
-#: Text document extensions used by the "session docs" feature (virtual All
-#: list + materialize-on-save). Deliberately text-only: binary docs (.pdf,
-#: .docx) don't fit the content-backed artifact model without extraction, so
-#: they're excluded here for now.
+#: Text document extensions for the "session docs" feature. Text-only: binary docs
+#: (.pdf, .docx) do not fit the content-backed artifact model without extraction.
 DOC_EXTENSIONS = frozenset({".md", ".markdown", ".mdx", ".txt", ".rst"})
 
 
@@ -428,46 +405,31 @@ def is_document_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in DOC_EXTENSIONS
 
 
-# Literal-color detector backing the theme-contrast warning. Lives with the
-# field rules (re-exported by kiro_crew.artifacts) so every artifact-authoring
-# surface computes the SAME verdict:
-# the gateway handlers stamp it on save/update responses, and the MCP tool
-# phrases its own hint from it. Hex colors are 3/4/6/8 digits -- 5 and 7 are
-# excluded on purpose so hex-ish CSS id selectors ("#added1") don't fire. The
-# leading [:=(\s"'] anchors the literal to a value position (color:#111,
-# fill="#111") rather than a fragment anchor or an id selector at line start.
-# IGNORECASE is what lets RGB(...) / HSL(...) match -- CSS functions are
-# case-insensitive. Fragment/URL hrefs (href="#abc") are excluded by
-# stripping href attributes BEFORE scanning (see _HREF_ATTR_RE) rather than
-# by a lookbehind: Python lookbehinds must be fixed-width, so a lookbehind
-# cannot tolerate `href = "#abc"` spacing -- the strip is whitespace-tolerant
-# and covers xlink:href and any case for free.
-# Accepted noise, documented rather than parsed away: a whitespace-preceded
-# hex-ish id selector ("... } #decade {") can still fire, but whitespace must
-# stay in the prefix class or true positives like "border: 1px solid #ccc"
-# are lost -- and every consumer surfaces this as a soft warning, never a
-# rejection.
+# Literal-color detector behind the theme-contrast warning; the gateway handlers
+# and the MCP tool both use it so they give the same verdict. Hex colors are
+# 3/4/6/8 digits: 5 and 7 are left out so id selectors like "#added1" don't fire.
+# The leading [:=(\s"'] anchors the literal to a value position (color:#111).
+# IGNORECASE lets RGB(...) / HSL(...) match. href values are stripped before the
+# scan (_HREF_ATTR_RE) because a fixed-width lookbehind cannot allow the spaces in
+# `href = "#abc"`. A whitespace-preceded id selector ("} #decade {") can still
+# fire; whitespace stays in the prefix so "border: 1px solid #ccc" matches, and
+# the result is only ever a soft warning.
 _HARDCODED_COLOR_RE = re.compile(
     r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b" r"|\brgba?\(" r"|\bhsla?\(",
     re.IGNORECASE,
 )
 
-# href / xlink:href attribute (quoted value), whitespace-tolerant around the
-# ``=``. An href value is a URL or fragment, never a rendered color, so it is
-# removed before the color scan to keep the warning's false-positive rate low.
+# href / xlink:href with a quoted value: a URL or fragment, never a rendered color.
 _HREF_ATTR_RE = re.compile(r"href\s*=\s*(\"[^\"]*\"|'[^']*')", re.IGNORECASE)
 
 
 def has_unthemed_hardcoded_colors(kind: str, content: str) -> bool:
     """True when iframe-rendered content hardcodes its palette.
 
-    Only widget/html kinds render inside the dashboard's themed iframe, so
-    only they can clash with the injected theme defaults. Content carrying a
-    single ``var(--`` reference is treated as theme-aware -- including the
-    recommended fallback form ``color:var(--text,#111)`` -- and never flags.
-    A full foreground/background *pairing* check needs a CSS parser; this
-    zero-var heuristic catches the observed failure class (partially styled
-    content clashing with the injected theme) with one regex.
+    Only widget/html kinds render in the dashboard's themed iframe, so only they
+    can clash with the injected theme. One ``var(--`` reference (including the
+    fallback form ``color:var(--text,#111)``) counts as theme-aware. A real
+    foreground/background pairing check would need a CSS parser.
     """
     if kind not in ("widget", "html"):
         return False
@@ -479,24 +441,15 @@ def has_unthemed_hardcoded_colors(kind: str, content: str) -> bool:
 def _infer_kind(content: str, source_path: str = "", explicit: str | None = None) -> str:
     """Infer an artifact ``kind`` when the caller didn't pin one.
 
-    Resolution order (first match wins):
+    First match wins:
 
-    1. **Explicit wins** — a non-empty ``explicit`` kind is returned unchanged
-       (back-compat; the caller knows best). Validation happens downstream.
-    2. **Extension** — for file-backed artifacts (``source_path`` set), map the
-       file extension (``.md`` → ``markdown``, ``.json`` → ``json`` ...). An
-       unknown extension on a real file falls back to ``text`` — a file on disk
-       is far likelier plain text than a sandboxed widget.
-    3. **Content sniff** — for inline content with no ``source_path``: HTML-ish
-       markup (``<div``, ``<table``, an ``<mcwidget`` body ...) → ``widget``; a
-       leading markdown heading or content with no HTML tags at all →
-       ``markdown``; anything else falls back to the legacy ``widget`` default
-       so ambiguous blobs keep their prior behavior.
+    1. A non-empty ``explicit`` kind, returned unchanged.
+    2. For a file-backed artifact, the extension of ``source_path``; an unknown
+       extension is ``text``, since a file on disk is likelier text than a widget.
+    3. For inline content: HTML-ish markup is ``widget``; a leading markdown
+       heading or no HTML tags at all is ``markdown``; anything else is ``widget``.
 
-    Only ``widget`` and ``markdown`` are inferred from inline content; the
-    richer kinds (``svg`` / ``json`` / ``text``) require the extension signal.
-    The returned value is not validated here — callers pass it through
-    :func:`_validate_kind`.
+    The result is not validated here; callers pass it through :func:`_validate_kind`.
     """
     if explicit:
         return explicit
@@ -517,14 +470,10 @@ def _infer_kind(content: str, source_path: str = "", explicit: str | None = None
 def _markdown_misclassification_reason(content: str, source_path: str) -> str | None:
     """Return why a ``widget``-kind artifact actually looks like ``markdown``.
 
-    Returns a short human-readable reason string, or ``None`` if the artifact
-    is a genuine widget. Used by the corrective migration
-    (:meth:`ArtifactStore.migrate_kinds`) to find markdown documents stored with
-    kind ``widget``. Deliberately conservative — it triggers
-    only on a ``.md`` / ``.markdown`` ``source_path`` or content with **no HTML
-    tags at all**, so a genuine widget (whose content always contains HTML) is
-    never reclassified. Only ever implies ``markdown``; the richer kinds are
-    out of migration scope.
+    Returns a short reason, or ``None`` for a genuine widget. Used by
+    :meth:`ArtifactStore.migrate_kinds`. It fires only on a ``.md`` / ``.markdown``
+    ``source_path`` or content with no HTML tags at all, so a real widget (whose
+    content always holds HTML) is never reclassified.
     """
     if source_path:
         ext = os.path.splitext(source_path)[1].lower()
@@ -550,40 +499,24 @@ def _validate_source(source: str) -> str:
 def _strip_session_scope(key: str) -> str:
     """Canonicalize a session key so both spellings of ONE conversation match.
 
-    The store's two provenance fields disagree by construction, and neither is
-    wrong on its own:
+    ``Artifact.session_key`` holds the BARE slot key (``chat-7-1785396512``,
+    ``slack_1785370133.085469``), while an event's ``session_id`` holds the FULL
+    session key (``dashboard:chat-7-1785396512``, ``slack:1785370133.085469``),
+    because MCP callers resolve identity through scope-qualified
+    ``KIROCREW_SESSION_KEY`` / the signed pid sidecar. A literal comparison would
+    never match an event. So each key folds to its slot name:
 
-    * ``Artifact.session_key`` is written from the dashboard's BARE slot key —
-      ``chat-7-1785396512`` for a dashboard-born tab, ``slack_1785370133.085469``
-      for a channel-born one — on the browser create path.
-    * an event's ``session_id`` comes from the caller's FULL session key —
-      ``dashboard:chat-7-1785396512``, or the channel's own
-      ``slack:1785370133.085469`` — because MCP callers resolve identity through
-      ``KIROCREW_SESSION_KEY`` / the signed pid sidecar, which are
-      scope-qualified.
+    * a dashboard key drops the ``dashboard:`` scope.
+    * a channel key goes through ``history._safe_key`` (see
+      ``channel_slots.channel_slot_name``), the fold that names the transcript.
 
-    A literal comparison therefore matches the origin case and *never* the event
-    case — the involvement scope would silently degrade to the plain origin
-    filter it exists to widen. Each family needs the fold that turns its session
-    key into its slot name, because the slot name is what the origin field
-    holds:
+    The namespace is kept (``slack:X`` becomes ``slack_X``, never ``X``) so a
+    channel conversation cannot collide with a dashboard slot. ``cron:``,
+    ``subagent:`` and ``taskrunner:`` keys are returned untouched.
 
-    * a dashboard slot's name is its session key minus the ``dashboard:`` scope.
-    * a channel-born slot's name is its session key run through
-      ``history._safe_key`` (see ``channel_slots.channel_slot_name``) — the same
-      fold that names the transcript, which is why the tab and the thread share
-      one file.
-
-    The namespace itself is never dropped: ``slack:X`` canonicalizes to
-    ``slack_X``, never to ``X``, so a channel conversation cannot collide with a
-    dashboard slot. Keys with no second spelling to reconcile (``cron:``,
-    ``subagent:``, ``taskrunner:``) are returned untouched.
-
-    Both channel helpers are imported lazily because each one leads back to the
-    artifact facade: ``kiro_crew.history`` and the ``kiro_crew.messaging``
-    package (``messaging.driver`` -> ``acp`` -> ... -> ``members``) both import
-    ``kiro_crew.artifacts``, which imports this module. A module-scope import here
-    would re-enter the half-initialised facade and fail with an ImportError.
+    Both channel helpers are imported lazily: ``kiro_crew.history`` and
+    ``kiro_crew.messaging`` both lead back to ``kiro_crew.artifacts``, which
+    imports this module, so a module-scope import fails with an ImportError.
     """
     prefix = "dashboard:"
     if key.startswith(prefix):
@@ -597,21 +530,13 @@ def _strip_session_scope(key: str) -> str:
 def _session_touched(art: "Artifact", session_key: str) -> bool:
     """True when ``session_key`` originated OR left any event on ``art``.
 
-    "Touched" is the union of the two provenance records the store keeps:
-    the create-time ``session_key`` field, and the ``session_id`` stamped on
-    each lifecycle event (``created`` / ``edited`` / ``iterated`` /
-    ``referenced`` / ``reverted``). That union is what makes the in-session
-    Artifacts tab able to list what a session *consumed*, not only what it
-    authored — a read records a ``referenced`` event and an agent edit records
-    an ``iterated`` one, so both surface here without a second index.
+    Checks the create-time ``session_key`` and the ``session_id`` on each event,
+    so the in-session Artifacts tab lists what a session read (``referenced``)
+    or edited (``iterated``), not only what it authored. Keys are compared
+    through ``_strip_session_scope`` because the two fields use different formats.
 
-    Both sides are compared scope-normalized (see ``_strip_session_scope``)
-    because the two fields are persisted in different formats.
-
-    Note the event log is FIFO-capped at ``MAX_EVENTS_PER_ARTIFACT``, so a
-    very old association on a heavily-edited artifact can age out. That is
-    acceptable for a recency-ordered panel and is why this is a best-effort
-    "did this session touch it" predicate, not an audit-grade join.
+    The event log is capped at ``MAX_EVENTS_PER_ARTIFACT``, so an old link on a
+    heavily edited artifact can age out: a best-effort check, not an audit join.
     """
     if not session_key:
         return False
@@ -700,12 +625,9 @@ def _validate_description(description: str | None) -> str:
 def _validate_source_path(value: str | None, field_name: str = "source_path") -> str:
     """Validate a filesystem-pointer field (``source_path`` / ``source_root``).
 
-    REJECTS an over-long value instead of truncating it. Silent truncation
-    (``source_path[:512]``) turns a too-long-but-valid path into a shorter path
-    that points somewhere else — practically always somewhere that doesn't
-    exist. The artifact then looks file-backed while its live read can never
-    succeed. Failing the save is the honest outcome: the caller learns
-    immediately instead of the user discovering a hollow artifact later.
+    Rejects an over-long value instead of truncating it (see
+    :data:`MAX_SOURCE_PATH_LEN`), so the caller learns at save time rather than
+    the user finding an artifact whose live read can never succeed.
     """
     if value is None:
         return ""

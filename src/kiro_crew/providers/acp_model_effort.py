@@ -1,7 +1,8 @@
 """Choose the model and reasoning effort an ``AcpProvider`` session runs at.
 
-The advertised-model revalidation the picker reads, the live model switch, and the
-reasoning-effort vocabulary, resolution, live push, rollback and clear.
+The advertised-model revalidation the picker reads, the live model switch, the
+reasoning-effort vocabulary, resolution, live push, rollback and clear, and the
+claude harness's per-session ``ultracode`` switch beside it.
 
 Each function here whose first parameter is ``self`` is an ``AcpProvider`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -48,6 +49,8 @@ from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
+    ULTRACODE_CONFIG_OPTION_ID,
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
@@ -58,7 +61,7 @@ from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SE
 if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
 
-#: The provider's own logger: this code logged under that name before the split.
+#: The provider's own logger, so these records carry the provider's name.
 logger = logging.getLogger("kiro_crew.providers.acp")
 
 
@@ -68,26 +71,18 @@ async def maybe_refresh_available_models(
     """Revalidate the advertised-model snapshot on the picker read path.
 
     The dashboard model list (`/api/models`) narrows the catalog through this
-    provider's snapshot. `self._client` becomes an `AcpSessionProvider` (an
-    `LLMProvider`) on the kiro shared-runtime path, which carries the
-    read-path revalidation; forward to it (propagating its contract: the read
-    deadline raises
-    :class:`~kiro_crew.acp.session_handle.EntitlementRevalidating` while the
-    probe keeps running, and a probe FAILURE returns the current snapshot,
-    fail open).
+    provider's snapshot. On the kiro shared-runtime path `self._client` is an
+    `AcpSessionProvider`, and this forwards to it: the read deadline raises
+    :class:`~kiro_crew.acp.session_handle.EntitlementRevalidating` while the probe
+    keeps running, and a probe failure returns the current snapshot (fail open).
 
-    On the DEDICATED transport `self._client` stays a plain kiro `AcpClient`
-    whose snapshot is the one unconfirmed `session/new` answer a startup race
-    can leave at the free tier -- the same defect on the same transport. When
-    that snapshot would actually drop a catalog row (the picker's own verdict,
-    :func:`catalog_row_would_drop`), it is re-asked through the client's
-    :meth:`~kiro_crew.acp.client.AcpClient.refresh_available_models`, which
-    asks on a throwaway probe process of its own -- never this session's stream,
-    so a read during a streaming turn races nothing (a probe
-    -confirmed list inside the probe TTL is not re-probed; a failed probe keeps
-    the snapshot). A snapshot that drops nothing, a pre-startup placeholder
-    client and a non-kiro direct client are returned unchanged, so this can
-    never worsen the picker.
+    On the DEDICATED transport `self._client` is a plain kiro `AcpClient` whose
+    snapshot is one unconfirmed `session/new` answer a startup race can leave at
+    the free tier. When it would drop a catalog row (:func:`catalog_row_would_drop`),
+    it is re-asked through
+    :meth:`~kiro_crew.acp.client.AcpClient.refresh_available_models`, which uses a
+    throwaway probe process, never this session's stream. Anything else is returned
+    unchanged, so this never worsens the picker.
     """
     if isinstance(self._client, LLMProvider):
         return await self._client.maybe_refresh_available_models(catalog_ids)
@@ -102,18 +97,12 @@ async def maybe_refresh_available_models(
     advertised = advertised_model_ids(snapshot)
     if not any(catalog_row_would_drop(cid, advertised) for cid in catalog_ids):
         return snapshot
-    # A recorded `_picker_probe_at` rate-limits the next poll regardless of
-    # whether the last probe CONFIRMED: a failed probe never sets
-    # `_available_models_probe_confirmed`, so keying the gate on that flag (as
-    # the shared read path can, because its runtime single-flight probe TTL
-    # bounds the burst) would leave an unconfirmed narrow snapshot cold-spawning
-    # a fresh probe process on every 8s poll -- a self-sustaining kiro-cli +
-    # MCP-fleet spawn loop. The dedicated transport has no such runtime TTL
-    # backstop, so the interval alone must bound it. Skip the interval entirely
-    # while a probe is already in flight: returning the snapshot here would
-    # serve the stale list as a live 200 while its own refresh is still landing,
-    # so the corrected list this in-flight probe is fetching would never reach
-    # the picker -- fall through and await that same shielded probe.
+    # `_picker_probe_at` rate-limits the next poll whether or not the last probe
+    # confirmed: a failed probe never sets `_available_models_probe_confirmed`, and
+    # this transport has no runtime probe TTL, so keying on that flag would spawn a
+    # kiro-cli + MCP-fleet probe on every 8s poll. While a probe is in flight, skip
+    # the interval and await that same shielded probe instead of serving the stale
+    # list as a live answer.
     now = time.monotonic()
     last = getattr(self, "_picker_probe_at", 0.0)
     inflight = getattr(client, "_entitlement_probe_inflight", None)
@@ -123,14 +112,10 @@ async def maybe_refresh_available_models(
         return snapshot
     self._picker_probe_at = now
     try:
-        # The client owns the probe's single-flight, so shielding the await
-        # leaves that one probe RUNNING (it lands and cleans up its throwaway
-        # session); we just stop waiting past the deadline. Without this a
-        # stalled probe would hold a picker poll or a pin-save for the probe's
-        # full init+session timeout (~270s). On a miss, signal revalidation in
-        # flight (the endpoint serves its degraded response and the frontend
-        # keeps its last-good list and polls again) rather than returning the
-        # un-revalidated snapshot as a live answer.
+        # The shield leaves the client's single-flight probe running past the
+        # deadline, so a stalled probe cannot hold a picker poll or pin-save for
+        # its full ~270s timeout. On a miss, signal revalidation in flight (the
+        # frontend keeps its last-good list) rather than serve the snapshot as live.
         fresh = await asyncio.wait_for(
             asyncio.shield(client.refresh_available_models()),
             timeout=_READ_PATH_PROBE_DEADLINE_SECS,
@@ -321,6 +306,33 @@ def supports_effort(self: AcpProvider) -> bool:
     return model_supports_effort(self._effort_model)
 
 
+def ultracode_enabled(self: AcpProvider) -> bool | None:
+    """Whether the session's ``ultracode`` switch is on; ``None`` when it offers none.
+
+    Read live from ``configOptions``: the adapter advertises the switch only on a
+    model that supports it, so a model switch can add or drop it. Crew opts into no
+    boolean config options, so the adapter sends it as an ``on``/``off`` select.
+    """
+    if self._client.backend not in ACP_BACKENDS_ULTRACODE_CONFIG_OPTION:
+        return None
+    for opt in self._client.acp_config_options:
+        if isinstance(opt, dict) and opt.get("id") == ULTRACODE_CONFIG_OPTION_ID:
+            return opt.get("currentValue") == "on"
+    return None
+
+
+async def set_ultracode(self: AcpProvider, enabled: bool) -> bool | None:
+    """Write the ``ultracode`` switch and return what the session reads back.
+
+    ``None``, with nothing sent, when the session offers no switch. The reply's
+    ``configOptions`` replace the stored ones, so the read-back is the adapter's.
+    """
+    if self.ultracode_enabled() is None:
+        return None
+    await self._client.set_config_option(ULTRACODE_CONFIG_OPTION_ID, "on" if enabled else "off")
+    return self.ultracode_enabled()
+
+
 def _resolve_effort(self: AcpProvider) -> str | None:
     """Resolve effort for the current model via the shared priority chain.
 
@@ -361,51 +373,29 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     """Push an effort level over ``session/set_config_option``, stepping down
     on reject.
 
-    Named for the CHANNEL, not a harness: every member of
-    ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` arrives here, and the
-    adapter-behaviour notes below are what that channel does in practice.
+    Serves every member of ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``.
 
-    WHICH option id carries the effort is resolved per backend through
-    ``effort_config_option_id``: claude-agent-acp spells it ``effort``,
-    codex-acp ``reasoning_effort`` and pi-acp ``thought_level``. Naming one
-    spelling here writes an id the other adapters do not know, which comes
-    back as "unknown config option" -- and the branch below reads that as "no
-    effort selector" and skips, so the session keeps whatever effort it
-    already had while the dashboard reports the level the user picked.
+    The option id is per backend (``effort_config_option_id``): claude-agent-acp
+    ``effort``, codex-acp ``reasoning_effort``, pi-acp ``thought_level``. A wrong id
+    comes back as "unknown config option", which reads as "no effort selector", so
+    the session would keep its old level while the dashboard shows the new one.
+    The value is resolved per backend too (``effort_config_option_value``), before
+    the descent, because the descent recovers from an omitted level only when the
+    refusal is a shape ``_is_config_value_rejection`` recognises.
 
-    WHICH value carries the level is resolved the same way, through
-    ``effort_config_option_value``, and before the descent rather than by it:
-    a harness whose vocabulary omits one of Crew's levels is a declared fact,
-    and the descent recovers from an omission only when the refusal arrives in
-    a shape ``_is_config_value_rejection`` recognises for that adapter.
+    claude-agent-acp rejects a level the current model does not advertise (e.g.
+    ``"max"`` with an ``"xhigh"`` ceiling) with ``Invalid value for config option
+    effort: <level>``; codex-acp with a bare ``-32602``. Letting that bubble up would
+    reset the session to the adapter default, so the push steps down the ladder to
+    the highest level the model takes. Any other failure propagates.
 
-    claude-agent-acp validates the value against the *current model's*
-    ``supportedEffortLevels`` and throws ``Invalid value for config option
-    effort: <level>`` (surfaced as an ``AcpError``) for anything the model
-    does not advertise — e.g. ``"max"`` on a model whose ceiling is
-    ``"xhigh"``. Rather than letting that bubble up (which makes the
-    dashboard reset the whole session and silently drop to the adapter
-    default), fall back down the effort ladder so the model still lands at
-    the highest level it actually supports. Only the value-rejection error
-    is retried; any other failure (transport, timeout) propagates. codex-acp
-    refuses a value with a bare ``-32602`` and no message instead of naming
-    the option, so the shared ``_is_config_value_rejection`` reader answers
-    for both shapes.
-
-    An adapter build may expose no effort config option at all and reject the
-    push with ``Unknown config option: <id>`` (a -32603 Internal error). When
-    the session advertises no effort selector, skip the push entirely — there
-    is nothing to set, and attempting it would spam errors and trigger a
-    session reset on every turn.
+    A session that advertises no effort option skips the push: the adapter would
+    answer ``Unknown config option`` (-32603) and reset the session every turn.
     """
     effort_option = effort_config_option_id(self._client.backend)
     if not self._client.supports_config_option(effort_option):
         logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
         return
-    # The harness's own spelling of the level, resolved BEFORE the write for
-    # the reason ``effort_config_option_value`` gives: a vocabulary that omits
-    # one of Crew's levels is a declared fact, and the descent below can only
-    # recover from it when the refusal shape is one this tree recognises.
     advertised = self._advertised_effort_levels()
     target = effort_config_option_value(self._client.backend, level, advertised)
     if target != level:
@@ -415,14 +405,9 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
             target,
             self._client.backend,
         )
-    # Descend from the requested level through lower levels (e.g.
-    # max → xhigh → high). Never escalate above what was asked.
-    #
-    # On a harness that is the authority on its own vocabulary, the descent
-    # walks only the rungs that session advertised, and a target it never
-    # advertised is not written at all: such a level is hidden there, not
-    # stepped onto a neighbour, and every value this sends is one the harness
-    # offered -- so no refusal shape has to be recognised for it.
+    # Descend from the requested level (max → xhigh → high), never above it. A
+    # harness that advertises its vocabulary is walked only on its advertised
+    # rungs, and a target it never advertised is not written at all.
     if advertised and target not in advertised:
         logger.info(
             "effort %r is not advertised by backend %s; skipping effort push",
@@ -506,13 +491,10 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     if via_config_option and not self._client.supports_config_option(_effort_option):
         logger.info("change_effort skipped — adapter build exposes no %r option", _effort_option)
         return False
-    # Accept any level the dynamic validation set knows about — ACP backends
-    # can report levels beyond the canonical five (effort.py), and those are
-    # already admitted by the dropdown, the API validator and persistence.
-    # Gating here on the canonical-only is_valid_effort would raise for such
-    # a level, which the caller swallows and turns into a full session reset.
-    # The empty string ("use model default") is cleared via clear_effort(),
-    # not change_effort(), so it remains invalid here.
+    # Accept any level the dynamic validation set knows: ACP backends can report
+    # levels beyond the canonical five, and the canonical-only is_valid_effort
+    # would raise, which the caller turns into a session reset. The empty string
+    # goes through clear_effort(), so it stays invalid here.
     # circular import: chat_persistence → dashboard → session → providers.acp
     from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 
@@ -741,12 +723,9 @@ async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool 
     if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY and not await asyncio.to_thread(
         _clear_cli_overlay_effort, self._client._work_dir, model
     ):
-        # NOTHING changed: not the file, and not this map once the entry
-        # goes back. Neither bool can say that -- False resets (and the reset
-        # re-reads the same level), True reports a live update, and BOTH make
-        # the handler commit the cleared slot value, so the UI would read
-        # "default" over an overlay that still holds the level. None is the
-        # third outcome, which the handler answers with a retryable 409.
+        # NOTHING changed, file or map. Either bool would make the handler commit
+        # the cleared slot value over an overlay still holding the level; None
+        # gets a retryable 409 instead.
         if cleared is not None:
             self._effort_per_model[model] = cleared
         logger.warning(
@@ -880,19 +859,11 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
     that does not support effort, or an adapter that rejects the value,
     must not break session start.
 
-    Gated on ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` -- the set that names
-    the CHANNEL -- rather than on ``is_acp_runtime_backend``, for the reason
-    harness-parity H6 gives: which harnesses take effort over
-    ``session/set_config_option`` is a fact the table already holds, and
-    "runs on the shared runtime" is a different fact. The kiro family is
-    outside the channel set because it reads effort from the spawn-time
-    cli.json overlay instead, so it still skips the push; KAS is the
-    exception, since it reads no overlay and is a member; opencode is
-    outside it because its ``session/new`` advertises no ``effort`` option at
-    all. Reading the runtime answer here instead drops a codex session's
-    configured effort as soon as the preview switch puts codex on the
-    runtime, because codex IS in the channel set and takes effort no other
-    way.
+    Gated on ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``, the set that names the
+    CHANNEL, not on ``is_acp_runtime_backend`` (harness-parity H6): codex is on the
+    runtime and takes effort no other way. The kiro family reads the spawn-time
+    cli.json overlay instead, KAS reads no overlay and is a member, and opencode
+    advertises no ``effort`` option.
     """
     if not self.capabilities.effort_via_config_option:
         return

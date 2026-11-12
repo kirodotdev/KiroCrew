@@ -43,6 +43,7 @@ from mcp_gatewayd_coverage_helpers import (  # noqa: F401 -- the autouse fixture
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.config.loader_locations import workspace_root
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway.hashing import hash_effective_env
@@ -927,7 +928,8 @@ class TestEnvTargetResolver:
         command, args, env, work_dir = resolved
         assert (command, args) == ("legacy-bin", ["--stdio"])
         assert isinstance(env, dict)
-        assert work_dir == key.work_dir
+        # The daemon's own default work dir, never the register frame's.
+        assert work_dir == str(workspace_root(create=False) / "_default")
 
     def test_python_namespace_is_stripped_from_managed_spawn_env(self, monkeypatch):
         """Control-plane resolution and the token fence share a closed namespace rule.
@@ -939,6 +941,8 @@ class TestEnvTargetResolver:
         spawn-site tests.
         """
         key = _pool_key(server="kirocrew-core")
+        # A control-plane target is resolved only once its gateway announced a port.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         monkeypatch.delenv("KIROCREW_MCP_TARGET_KIROCREW_CORE", raising=False)
         monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
         python_env = {

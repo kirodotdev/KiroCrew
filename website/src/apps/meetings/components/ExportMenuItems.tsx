@@ -11,6 +11,7 @@ import { DropdownMenuItem, DropdownMenuSeparator } from '../../../components/ui/
 import { saveBlob } from '../../../utils/download'
 import type { AgentDef } from '../api'
 import { buildSketchExport } from '../lib/sketchSrcdoc'
+import { buildMeetingBundle } from '../lib/meetingBundle'
 
 interface Props {
   agents: AgentDef[]
@@ -82,6 +83,27 @@ export default function ExportMenuItems({ agents, outputs, title, date, onError 
           </DropdownMenuItem>
         )
       })}
+      {/* One item that saves every enabled output together (#32982), as one
+          self-contained HTML file named after the meeting. Same availability as
+          the single items: disabled, not hidden, while NO agent has output yet. */}
+      <DropdownMenuItem
+        disabled={[...notesAgents, ...sketchAgents].every(agent => !outputs[agent.id])}
+        onSelect={() => {
+          onError(null)
+          buildMeetingBundle(
+            [...notesAgents, ...sketchAgents], outputs, title, date,
+            i18nT('apps.meetings.meeting.exportAllNoOutput'),
+          )
+            .then(file => saveBlob(
+              new Blob([file], { type: 'text/html;charset=utf-8' }),
+              exportFileName(title, date, '', 'html'),
+            ))
+            .catch(() => onError(i18nT('components.markdownPanel.download_failed')))
+        }}
+      >
+        <Download size={13} className="shrink-0 text-muted" />
+        <span>{i18nT('apps.meetings.meeting.exportAll')}</span>
+      </DropdownMenuItem>
     </>
   )
 }

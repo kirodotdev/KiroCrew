@@ -1,0 +1,65 @@
+rules:
+  # ─── No await inside a loop over a live `_slots` view ─────────────────
+  # `state._slots` is mutated by other coroutines while one is suspended:
+  # a tab closing pops its slot, a create assigns one. A loop that awaits
+  # while it iterates the dict itself, or its `values()` / `items()` /
+  # `keys()` view, raises `RuntimeError: dictionary changed size during
+  # iteration` the moment that happens, part-way through its work. The
+  # folder and tag deletes crashed that way. Iterate a snapshot instead:
+  #   for slot in list(state._slots.values()):
+  #
+  # The diff-time half of `test/test_slot_sweep_invariant_gates.py`, which
+  # scans the whole package. That test is the precise one: it does not
+  # count an await inside a nested `async def` the loop only defines.
+
+  - id: kirocrew.slot-live-view-await
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              for $X in $S._slots:
+                ...
+          - pattern-inside: |
+              for $X in $S._slots.values():
+                ...
+          - pattern-inside: |
+              for $X in $S._slots.items():
+                ...
+          - pattern-inside: |
+              for $X in $S._slots.keys():
+                ...
+          - pattern-inside: |
+              for $X in getattr($S, "_slots", ...):
+                ...
+          - pattern-inside: |
+              for $X in getattr($S, "_slots", ...).values():
+                ...
+          - pattern-inside: |
+              for $X in getattr($S, "_slots", ...).items():
+                ...
+          - pattern-inside: |
+              for $X in getattr($S, "_slots", ...).keys():
+                ...
+      - pattern-either:
+          - pattern: await $E
+          - pattern: |
+              async for $Y in $Z:
+                ...
+          - pattern: |
+              async with $W:
+                ...
+    paths:
+      include:
+        - src/**
+    message: >
+      This loop awaits while it iterates a live view of `_slots`. Another
+      coroutine can add or pop a slot during the await, and the loop then
+      raises "dictionary changed size during iteration" with its work half
+      done. Iterate a snapshot instead: `for slot in list(state._slots.values()):`.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: concurrency
+      cwe: "CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization"
+      references:
+        - https://docs.python.org/3/library/stdtypes.html#dictionary-view-objects

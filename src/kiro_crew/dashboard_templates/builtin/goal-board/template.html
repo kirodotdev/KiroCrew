@@ -41,6 +41,10 @@
     .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: gb-blink 1.1s ease-in-out infinite; }
     .item .line { font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
     .item .line em { color: var(--text, #e6e6e6); font-style: normal; overflow-wrap: anywhere; }
+    .nest { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border, #333); }
+    .nest .nh { font-size: 10.5px; color: var(--muted, #9aa); }
+    .nest .row { margin-top: 5px; }
+    .nest .row .rt { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--text-strong, #fff); overflow-wrap: anywhere; }
     @keyframes gb-pop { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
     @keyframes gb-grow { from { transform: scaleX(0); } to { transform: none; } }
     @keyframes gb-shimmer { to { transform: translateX(100%); } }
@@ -77,6 +81,7 @@
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown">not shown (list truncated)</span>
     <span data-dashboard-field="asks" hidden></span>
     <span data-dashboard-field="forgotten" hidden></span>
+    <span data-dashboard-field="workstreams" hidden></span>
   </div>
 
   <script>
@@ -112,7 +117,8 @@
           about: 'About "{t}" ({id}): ',
           fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
-          state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown'
+          state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown',
+          sub_board: 'Sub-tasks', sub_goal: 'goal', sub_more: '{n} more not shown'
         },
         'zh-CN': {
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
@@ -139,7 +145,9 @@
           pill_quiet: '\u65e0\u52a8\u9759 \u00b7 \u6ca1\u6709\u5b89\u6392\u4efb\u4f55\u4e8b\u5524\u9192\u5b83',
           about: '\u5173\u4e8e\u201c{t}\u201d\uff08{id}\uff09\uff1a',
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
-          state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5'
+          state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5',
+          sub_board: '\u5b50\u4efb\u52a1', sub_goal: '\u76ee\u6807',
+          sub_more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a'
         }
       };
       function locale() {
@@ -253,10 +261,16 @@
       // Only a worker actually mid-turn pulses.
       function live(it) { return view(it) === 'working' && !(it.looping === true && it.worker === 'idle'); }
       // THE CHAT BOX, never the wire: the host fills the person's composer with this
-      // text and the person presses send, so a row can offer a reply and never speak
-      // as them. Same message office and project-report post.
+      // text and the person presses send. Used for Reply, whose text is a starter.
       function act(text) {
         try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+        catch (e) { /* no host: the choice simply does nothing */ }
+      }
+      // A FINISHED answer (an offered option): asks the host to send it in one click.
+      // The host sends only when the person turned "Send replies in one click" on;
+      // otherwise, or on any refusal, it fills the composer exactly as `act` does.
+      function send(text) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:send', text: text }, '*'); }
         catch (e) { /* no host: the choice simply does nothing */ }
       }
       // A link the row names, opened BY THE HOST in a new tab: the frame has no
@@ -295,12 +309,15 @@
         var o = e && Array.isArray(e.options) ? e.options : [];
         return o.filter(function (x) { return !!text(x); }).slice(0, 6);
       }
-      function button(label, cls, say) {
+      // `post` is how the click reaches the host: `act` (fill the chat box) by default,
+      // `send` for a finished answer.
+      function button(label, cls, say, post) {
         var b = document.createElement('button');
         b.type = 'button';
         if (cls) b.className = cls;
         b.textContent = label;
-        if (say !== null) b.addEventListener('click', function () { act(say); });
+        var to = post || act;
+        if (say !== null) b.addEventListener('click', function () { to(say); });
         return b;
       }
       function actions(it) {
@@ -311,7 +328,9 @@
         row.appendChild(button(i18n('reply'), 'reply', ref));
         var opts = optionsFor(id);
         for (var i = 0; i < opts.length; i++) {
-          var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200));
+          // An option is a finished answer: sent in one click when the person allows it.
+          // Reply above stays `act`: its text is a starter the person finishes.
+          var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200), send);
           ob.title = i18n('option_title');
           row.appendChild(ob);
         }
@@ -324,6 +343,115 @@
       function items() {
         var f = (window.kirocrew || {}).fields || {};
         return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
+      }
+
+      // THE BOARDS UNDER THIS ONE. A worker of this board can be a conductor with a
+      // ledger of its own, and the `work` fold above reads this board alone, so that
+      // conductor's workers would show nowhere. The `workstreams` fold lists every
+      // board this slot reaches, each sub-board naming the task it hangs under in
+      // `parent` ({board, item_id}). Board ids there are per-read aliases.
+      var NEST_DEPTH = 4;
+      function boards() {
+        var w = ((window.kirocrew || {}).fields || {}).workstreams;
+        return Array.isArray(w) ? w.filter(function (b) { return b && typeof b === 'object'; }) : [];
+      }
+      function tasksOf(b) {
+        return Array.isArray(b.tasks) ? b.tasks.filter(function (t) { return t && typeof t === 'object'; }) : [];
+      }
+      // This page's own board among them: a board with no parent that holds one of
+      // the items the work fold lists. The two folds share item ids, not board ids.
+      function ownBoardId(list, all) {
+        var ids = {};
+        for (var i = 0; i < list.length; i++) {
+          var id = text(list[i].item_id);
+          if (id) ids[id] = true;
+        }
+        for (var b = 0; b < all.length; b++) {
+          if (all[b].parent) continue;
+          var ts = tasksOf(all[b]);
+          for (var t = 0; t < ts.length; t++) {
+            var tid = text(ts[t].item_id);
+            if (tid && Object.prototype.hasOwnProperty.call(ids, tid)) return text(all[b].id);
+          }
+        }
+        return null;
+      }
+      function childBoards(all, boardId, itemId) {
+        if (!boardId || !itemId) return [];
+        return all.filter(function (b) {
+          var p = b.parent;
+          return !!p && typeof p === 'object' && text(p.board) === boardId && text(p.item_id) === itemId;
+        });
+      }
+      // Every board reachable under one item, depth-capped and cycle-safe, so a card
+      // can tell whether anything under it changed.
+      function reach(all, boardId, itemId, depth, path, out) {
+        if (depth > NEST_DEPTH) return out;
+        var subs = childBoards(all, boardId, itemId);
+        for (var s = 0; s < subs.length; s++) {
+          var sid = text(subs[s].id);
+          if (!sid || path.indexOf(sid) !== -1) continue;
+          out.push(subs[s]);
+          var ts = tasksOf(subs[s]);
+          for (var t = 0; t < ts.length; t++) reach(all, sid, text(ts[t].item_id), depth + 1, path.concat([sid]), out);
+        }
+        return out;
+      }
+      // One sub-board under its task: its goal, its tally, and each of its tasks with
+      // its state and last report, nested again for a board under one of those.
+      function drawNest(host, all, boardId, itemId, depth, path) {
+        if (depth > NEST_DEPTH) return;
+        var subs = childBoards(all, boardId, itemId);
+        for (var s = 0; s < subs.length; s++) {
+          var sb = subs[s];
+          var sid = text(sb.id);
+          if (!sid || path.indexOf(sid) !== -1) continue;
+          var ts = tasksOf(sb);
+          var box = document.createElement('div');
+          box.className = 'nest';
+          var head = document.createElement('div');
+          head.className = 'nh';
+          var total = num(sb.total);
+          head.textContent = i18n('sub_board') + ' \u00b7 ' + i18n('done_of', {
+            d: num(sb.accepted) || 0, n: total === null ? ts.length : total
+          });
+          box.appendChild(head);
+          // The goal line only when it says more than the task title above it.
+          var goal = text(sb.goal);
+          var parentTitle = sb.parent && typeof sb.parent === 'object' ? text(sb.parent.title) : null;
+          if (goal && goal !== parentTitle) box.appendChild(line(i18n('sub_goal'), goal));
+          for (var t = 0; t < ts.length; t++) {
+            var task = ts[t];
+            var row = document.createElement('div');
+            row.className = 'row';
+            var rt = document.createElement('div');
+            rt.className = 'rt';
+            // The RECORDED state, not view(): a sub-board's task carries no runtime
+            // facts (worker, stale), so view() would call every task that last said
+            // `progress` working even after its chat went idle or closed. The worker's
+            // own last word sits beside it as a separate chip.
+            var state = text(task.state) || 'unknown';
+            var st = text(task.status);
+            var withConductor = state === 'open' && (st === 'question' || st === 'blocked');
+            rt.appendChild(chip(withConductor ? i18n('state_with_conductor') : stateLabel(state),
+              colourFor(withConductor ? 'waiting' : state)));
+            if (st) rt.appendChild(chip(statusLabel(st), null));
+            rt.appendChild(document.createTextNode(text(task.title) || text(task.item_id) || DASH));
+            row.appendChild(rt);
+            var said = text(task.summary);
+            if (said) row.appendChild(line(i18n('reported'), said));
+            drawNest(row, all, sid, text(task.item_id), depth + 1, path.concat([sid]));
+            box.appendChild(row);
+          }
+          var more = num(sb.tasks_omitted);
+          if (more) {
+            var m = document.createElement('div');
+            m.className = 'nh';
+            m.textContent = i18n('sub_more', { n: more });
+            box.appendChild(m);
+          }
+          host.appendChild(box);
+        }
       }
 
       // The closed items the fold no longer holds, counted per closing state. The
@@ -467,13 +595,15 @@
         var host = document.getElementById('items');
         if (!host) return;
         if (list.length && emptyNode) { emptyNode.remove(); emptyNode = null; }
+        var all = boards();
+        var own = ownBoardId(list, all);
         var keep = {};
         for (var i = 0; i < list.length; i++) {
           var it = list[i];
           var id = text(it.item_id) || String(i);
           if (keep[id]) id += '#' + i;
           keep[id] = true;
-          var signature = JSON.stringify([locale(), it]);
+          var signature = JSON.stringify([locale(), it, reach(all, own, text(it.item_id), 1, own ? [own] : [], [])]);
           var card = itemNodes[id];
           if (card && itemSignatures[id] === signature) {
             // Unchanged: the same node stays, moved only when the order changed.
@@ -546,6 +676,7 @@
           if (summary) card.appendChild(line(i18n('reported'), summary));
           var worker = text(it.spender);
           if (worker) card.appendChild(line(i18n('worker'), worker));
+          drawNest(card, all, own, text(it.item_id), 1, own ? [own] : []);
           host.insertBefore(card, host.children[i] || null);
         }
         Object.keys(itemNodes).forEach(function (id) {

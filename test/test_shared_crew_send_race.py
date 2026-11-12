@@ -195,27 +195,6 @@ async def test_after_a_restart_any_base_is_accepted_and_stale_tabs_still_lose():
 
 
 @pytest.mark.asyncio
-async def test_a_pending_claim_that_never_settles_bounds_the_wait():
-    clock = ManualClock(start=0.0)
-    reg = SendRaceRegistry(clock=clock.time, settle_wait_seconds=0.0)
-    hold = asyncio.Event()
-    claimed = asyncio.Event()
-
-    async def alice_send():
-        granted = await reg.claim("s", principal=ALICE, base_revision=0)
-        assert isinstance(granted, Granted)
-        claimed.set()
-        await hold.wait()
-
-    alice = asyncio.ensure_future(alice_send())
-    await asyncio.wait_for(claimed.wait(), BOUND)
-    lost = await reg.claim("s", principal=BOB, base_revision=0)
-    assert isinstance(lost, Conflict) and lost.winner.principal.id == ALICE.id
-    hold.set()
-    await asyncio.wait_for(alice, BOUND)
-
-
-@pytest.mark.asyncio
 async def test_a_claim_whose_handler_ends_unrecorded_is_given_back():
     reg = _registry()
 
@@ -432,6 +411,42 @@ async def test_a_refused_send_gives_its_claim_back(dash_state):
             assert st1 == 409 and first["code"] == "relay_archive"
             assert send_race.send_race_for(dash_state).state("s1")["revision"] == 0
             assert send_race.send_race_for(dash_state)._sessions["s1"].pending is None
+
+
+@pytest.mark.asyncio
+async def test_a_send_still_waiting_past_the_settle_wait_loses_to_nobody(dash_state):
+    slot = dash_state.get_or_create_slot("s1")
+    reg = SendRaceRegistry(settle_wait_seconds=0.0)
+    dash_state._shared_crew_send_race = reg
+    hold = asyncio.Event()
+    claimed = asyncio.Event()
+
+    async def alice_send():
+        granted = await reg.claim("s1", principal=ALICE, base_revision=0)
+        assert isinstance(granted, Granted)
+        claimed.set()
+        await hold.wait()
+        reg.release(granted.claim)
+
+    alice = asyncio.ensure_future(alice_send())
+    await asyncio.wait_for(claimed.wait(), BOUND)
+    run_chat = AsyncMock()
+    with (
+        patch("kiro_crew.dashboard.chat_handlers._run_chat", new=run_chat),
+        patch("kiro_crew.dashboard.chat_handlers._maybe_auto_title", new=AsyncMock()),
+    ):
+        async with _client(dash_state) as client:
+            status, body = await asyncio.wait_for(
+                _post(client, "bob", {"slot": "s1", "message": "b", "base_revision": 0}), BOUND
+            )
+    assert status == 409 and body["code"] == "send_pending"
+    assert body["winner"] is None and body["current_revision"] == 0
+    assert _user_rows(slot) == [] and run_chat.await_count == 0
+    hold.set()
+    await asyncio.wait_for(alice, BOUND)
+    after = await reg.claim("s1", principal=BOB, base_revision=0)
+    assert isinstance(after, Granted)
+    reg.release(after.claim)
 
 
 @pytest.mark.asyncio

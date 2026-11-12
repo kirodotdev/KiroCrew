@@ -1,6 +1,8 @@
 # App Manifest Reference
 
 The app manifest (`app.json`) declares your app's identity, resources, and requirements.
+Save it as UTF-8. One leading UTF-8 byte-order mark, which Windows editors write for
+"UTF-8 with BOM", is accepted.
 
 ## Required Fields
 
@@ -1819,6 +1821,7 @@ packages at all.
     "proposeCrewmate": false,
     "agentTurns": false,
     "workerAutoApprove": false,
+    "reachableByUserSessions": [],
     "exposeToApps": []
   }
 }
@@ -1840,6 +1843,7 @@ packages at all.
 | `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.workerAutoApprove` | boolean | May hold a bounded, audited auto-approve grant on the app's OWN worker slots through `ctx.auto_approve`, so an unattended session's tool calls run without a prompt. Absent unless the value is literally `true`; shown at the trust prompt; an update that adds it waits for the owner's approval; never above the approval-mode policy; ended when the app is disabled or removed ([api-reference](api-reference.md#worker-auto-approve-ctxauto_approve)) |
+| `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
 #### `permissions.spawn` — Background Agents
@@ -2024,15 +2028,18 @@ the endpoint; it does not import provider code.
 |-------|------|---------|-------------|
 | `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
-| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
-| `setup.onEnable` | string | `""` | Shell command run when app is enabled |
+| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed**: no code path dispatches it. Put dependency installs into the installed folder in `onEnable`, which an update of an enabled app re-runs, and build steps in an idempotent `onInstall`, which a registry update re-runs |
+| `setup.onEnable` | string | `""` | Shell command run when app is enabled, and again after every update of an enabled app (an update replaces the installed folder, and the fresh copy never carries `node_modules` or `.venv`) |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
 | `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
-stays disabled and any registered resources are deregistered. `onDisable`
+stays disabled and any registered resources are deregistered. If it fails when
+an update re-runs it, the app stays enabled on the new version: the update
+succeeds with an `onEnableFailed` reason, the user gets a notification, and the
+next enable or update runs the script again. `onDisable`
 failures are logged as warnings but do not block the disable operation. Local-path
 installs do not run `onInstall`; build first, then install. The `onEnable`,
 `onDisable` and `onUninstall` hooks always invoke `/bin/bash`, so they are
@@ -2148,7 +2155,8 @@ Control how Kiro Crew manages the app:
 For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
 not an access control. It is rendered on the App Store detail page
 (`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
-`apps/routes_enable.py` reads it once, via `_client_install_manifest()`, which returns
+The `onEnable` runner in `apps/routes_lifecycle.py` reads it, via
+`_client_install_manifest()`, which returns
 `None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
 states the rest outright — "nothing else on the enable path consults that field".
 So omitting the block does **not** stop the app being enabled anywhere.
@@ -2330,11 +2338,18 @@ hints a desktop launch needs:
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
-that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Whether
-a standard-mode launcher should hold a live user-bus address at all is under
-review in [#16520](https://github.com/kirodotdev/KiroCrew/issues/16520) — do
-not build a launcher that depends on `DBUS_SESSION_BUS_ADDRESS` being set.
-`XDG_RUNTIME_DIR` is not in question: it is where the Wayland socket lives.
+that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
+them is the stated policy, decided in
+[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+does not keep an app's children off the user session bus. The launcher reaches
+it, and so do the app's backend and its lifecycle and install commands, which is
+the same documented residual the agent's own shell has (see
+[security.md § Sandbox Modes](../system-specs/modules/security.md#sandbox-modes)).
+Withholding the two variables would not change what the child can reach, since
+the bus socket itself stays visible to it. `XDG_RUNTIME_DIR` stays in any case:
+it is where the Wayland socket lives. `DBUS_SESSION_BUS_ADDRESS` is copied only
+when the gateway's own environment has one, so do not build a launcher that
+assumes it is set.
 
 Anything not listed above — the gateway's own model credentials, API keys you
 exported in the gateway's shell, `EDITOR`, `BROWSER`, custom `MYAPP_*`

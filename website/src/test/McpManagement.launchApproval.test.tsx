@@ -7,17 +7,19 @@
 // - the row's switch reads off and, when pressed, writes NOTHING and reads
 //   nothing: it moves focus to the row's Approve button
 // - Approve re-sends stub=true pinned to the refusal's own expected_launch
+// - an Approve the gateway answers with the launch the server runs now (the
+//   refusal was moved past) shows that launch in Details and pins it next
 // - a refusal with no approvable identity has no approve control, only a
 //   Remove button that takes the mark off (stub=false), never an approval
 // - an older gateway that sends no `launch_refused` keeps the plain states
 //
 // Every label is read from the catalog.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
@@ -103,6 +105,104 @@ describe('a refused launch', () => {
     fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
     expect(setStub).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows and pins the launch a moved-past refusal is answered with, without a restart', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const now = { name: 'alpha-mcp', commands: [['/opt/alpha', '--v3']], envs: [['MODE=fast']], complete: true, expected_launch: 'c:d' }
+    const setStub = vi
+      .spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale', launch: now })))
+      .mockResolvedValueOnce({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
+    const said = M('launch_moved_row_notice', { name: 'alpha-mcp' })
+    await waitFor(() => expect(screen.getAllByRole('alert').some(a => a.textContent?.includes(said))).toBe(true), { timeout: 5000 })
+    // The status read still serves the older refusal; Details shows the launch now.
+    fireEvent.click(screen.getByRole('button', { name: M('details_aria', { name: 'alpha-mcp' }) }))
+    const pres = () => Array.from(document.querySelectorAll('pre')).map(p => p.textContent)
+    expect(pres()).toEqual(['npx -y alpha-mcp@1', '/opt/alpha --v3'])
+
+    fireEvent.click(screen.getByRole('button', { name: rowName('new_command_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledTimes(2), { timeout: 5000 })
+    expect(setStub.mock.calls.map(call => call[2])).toEqual(['a:b', 'c:d'])
+  })
+
+  it('renders a moved-past refusal through the page ErrorNotice, with the hand-off, then pins the newer launch', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const now = { name: 'alpha-mcp', commands: [['/opt/alpha', '--v3']], envs: [['MODE=fast']], complete: true, expected_launch: 'c:d' }
+    const setStub = vi
+      .spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale', launch: now })))
+      .mockResolvedValueOnce({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
+    const naming = (role: string) => screen.queryAllByRole(role).filter(e => e.textContent?.includes('alpha-mcp'))
+    // A 409 is a rejected request, so errors-use-error-notice makes it an
+    // error: one ErrorNotice on the page, with its agent hand-off on, and no
+    // hand-written status box saying the same outcome a second time.
+    await waitFor(() => expect(naming('alert')).toHaveLength(1), { timeout: 5000 })
+    expect(naming('status')).toEqual([])
+    const [banner] = naming('alert')
+    expect(within(banner).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: rowName('new_command_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledTimes(2), { timeout: 5000 })
+    expect(setStub.mock.calls.map(call => call[2])).toEqual(['a:b', 'c:d'])
+  })
+
+  it('drops the page notice once the newer launch is approved from the Review dialog', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const now = { name: 'alpha-mcp', commands: [['/opt/alpha', '--v3']], envs: [['MODE=fast']], complete: true, expected_launch: 'c:d' }
+    const setStub = vi
+      .spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale', launch: now })))
+      .mockResolvedValueOnce({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
+    const said = M('launch_moved_row_notice', { name: 'alpha-mcp' })
+    // `hidden: true`: the open dialog hides the page from the accessibility
+    // tree, which must not read as the notice having gone.
+    const shown = () => screen.queryAllByRole('alert', { hidden: true }).some(a => a.textContent?.includes(said))
+    await waitFor(() => expect(shown()).toBe(true), { timeout: 5000 })
+
+    fireEvent.click(screen.getByRole('button', { name: M('review_approve') }))
+    const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    fireEvent.click(within(dialog).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledTimes(2), { timeout: 5000 })
+    expect(setStub.mock.calls.map(call => call[2])).toEqual(['a:b', 'c:d'])
+    await waitFor(() => expect(shown()).toBe(false), { timeout: 5000 })
+  })
+
+  it('keeps the error path for a moved-past refusal that brings no launch to show', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    vi.spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale' })))
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
+    const said = M('stub_error_launch_changed', { name: 'alpha-mcp' })
+    await waitFor(() => expect(screen.getAllByRole('alert').some(a => a.textContent?.includes(said))).toBe(true), { timeout: 5000 })
+    // Nothing newer came back, so there is no next step to say.
+    expect(screen.queryAllByRole('alert').some(a => a.textContent?.includes(M('launch_moved_row_notice', { name: 'alpha-mcp' })))).toBe(false)
+  })
+
+  it.each(['constructor', 'toString'])('renders an incomplete refusal for a server named %s', async name => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({ stub: [name], launch_refused: { [name]: { reason: 'changed_needs_reapproval', complete: false } } }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [{ ...server, name }] } as never)
+
+    mount()
+    expect(await screen.findByRole('button', { name: rowName('remove_mark', name) }, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: rowName('new_command_button', name) })).toBeNull()
   })
 
   it('offers no approve control for a refusal with no approvable identity, only a Remove button', async () => {

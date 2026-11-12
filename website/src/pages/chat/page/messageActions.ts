@@ -106,8 +106,10 @@ export function useMessageActions({
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
   // `messages` dep re-rendered every mounted row on every frame.
-  const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
-    if (!activeSlot || slotRunning || activeSlotRemoteBound) return
+  // `false` when nothing is sent: an editor opened before a turn started stays
+  // open with Send enabled, and UserMessage keeps it (and its draft) only on false.
+  const handleEditResend = useCallback((index: number, ts: string, newContent: string): boolean | void => {
+    if (!activeSlot || slotRunning || activeSlotRemoteBound) return false
     const snapshot = [...messagesRef.current]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))

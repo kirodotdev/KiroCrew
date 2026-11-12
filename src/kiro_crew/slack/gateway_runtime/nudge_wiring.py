@@ -473,6 +473,7 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
             # exactly what is retained turns that loss into a later page: the
             # collector reads again from ``next_since`` while it is short of
             # ``total``, which is why ``total`` is returned too.
+            await _sc.prewarm_app_reach(state)
             payload = await asyncio.to_thread(
                 _sc.read_messages,
                 state,

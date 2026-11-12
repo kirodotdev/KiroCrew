@@ -32,6 +32,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.bounded_read import bounded_read
 
 from .errors import BenchRefusal
 
@@ -678,7 +679,7 @@ def read_bytes_nofollow(path: str | Path, *, what: str, max_bytes: int | None = 
         fh = os.fdopen(fd, "rb")
         fd = -1
         with fh:
-            data = fh.read() if max_bytes is None else fh.read(max_bytes + 1)
+            data = fh.read() if max_bytes is None else bounded_read(fh, max_bytes + 1)
     except BaseException:
         if fd >= 0:
             os.close(fd)

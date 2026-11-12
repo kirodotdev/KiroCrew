@@ -39,6 +39,7 @@ from kiro_crew.deploy.engine import (
     resolve_aws_tool_bin,
     resolve_aws_tool_bin_with_refusals,
 )
+from kiro_crew.sandbox import without_python_env
 
 logger = logging.getLogger(__name__)
 
@@ -443,11 +444,11 @@ def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
     return ""
 
 
-def session_manager_plugin_install_hint() -> str:
+def session_manager_plugin_install_hint(rerun: str = "kirocrew cloud connect") -> str:
     """Human-readable install hint for the local SSM plugin prerequisite."""
     return (
         "session-manager-plugin is not installed locally. Install the AWS "
-        f"Session Manager plugin, then rerun `kirocrew cloud connect`: "
+        f"Session Manager plugin, then rerun `{rerun}`: "
         f"{_SESSION_MANAGER_PLUGIN_DOC_URL}"
     )
 
@@ -675,7 +676,9 @@ def open_port_forward(
         stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
-        env=aws_spawn_env(argv[0]),
+        # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME would make it
+        # import the gateway's packages instead.
+        env=without_python_env(aws_spawn_env(argv[0])),
     )
     # Read while the wrapper is un-reaped, so the id names its group and no one
     # else's: kill_port_forward needs it after the wrapper exits, when

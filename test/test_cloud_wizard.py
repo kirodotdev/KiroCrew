@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from kiro_crew.cloud import aws
@@ -391,9 +393,9 @@ class TestLaunchResume:
         assert targets and all(t.is_default for t in targets)
         assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
         assert "DIFFERENT Kiro identity than Builder ID" in out
-        recovery = [ln for ln in out.splitlines() if "kirocrew cloud logout && " in ln]
+        recovery = [ln for ln in out.splitlines() if "`kirocrew cloud logout`, then " in ln]
         assert recovery and all(
-            ln.rstrip().endswith("kirocrew cloud login") and "--identity-provider" not in ln
+            ln.rstrip().endswith("`kirocrew cloud login`") and "--identity-provider" not in ln
             for ln in recovery
         )
         assert "is live on AWS" not in out
@@ -673,11 +675,53 @@ class TestLaunchResume:
         monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
         monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
         monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "find_stack", lambda *_a, **_k: None)
         monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(aws.AWSError("no")))
 
         assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
         # NOTHING persisted on failure — the broken tag never reaches cloud.json.
         assert save_calls == []
+
+    @pytest.mark.parametrize(
+        ("status", "missing_action", "keep", "bills"),
+        [
+            (
+                "ROLLBACK_COMPLETE",
+                "iam:PassRole",
+                False,
+                "It holds no instance, so it does not bill.",
+            ),
+            ("CREATE_FAILED", "", True, "It may still be billing until you remove it."),
+        ],
+    )
+    def test_a_failed_deploy_names_the_stack_it_left_and_how_to_remove_it(
+        self, monkeypatch, capsys, status, missing_action, keep, bills
+    ):
+        """The failed launch is not recorded, so a bare `cloud destroy` has no target:
+        the line names the tag, Region and profile the stack is in."""
+        cfg = LaunchState(profile="", region="us-east-1", last_tag="")
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.LaunchState, "record", classmethod(lambda cls, **k: None))
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        looked_up: list[tuple] = []
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **_k: looked_up.append(a) or {"StackStatus": status},
+        )
+        err = aws.AWSError("cloudformation deploy failed", missing_action=missing_action)
+        monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(err))
+
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, keep_on_failure=keep)
+
+        assert rc == 1
+        assert looked_up == [("kc-new", "dev", "us-west-2")]
+        out = capsys.readouterr().out
+        assert f"The stack kirocrew-kc-new is still in your account ({status}). {bills}" in out
+        assert "kirocrew cloud destroy --tag kc-new --region us-west-2 --profile dev" in out
 
     def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch):
         """The deploy is BILLED by the time the record is written, so the write cannot fail it.
@@ -742,7 +786,7 @@ class TestLaunchResume:
         wizard.launch(profile="dev", region="us-west-2", assume_yes=True)
         assert ("dev", "us-west-2", "kc-new") in save_calls
 
-    def test_discovers_single_stack_when_local_tag_missing(self, monkeypatch, capsys):
+    def test_yes_keeps_no_stack_this_installation_has_no_record_of(self, monkeypatch, capsys):
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
         calls = _patch_post_launch(monkeypatch)
         save_calls: list[tuple[str, str, str]] = []
@@ -768,30 +812,67 @@ class TestLaunchResume:
                 }
             ],
         )
-        monkeypatch.setattr(
-            ec2,
-            "describe",
-            lambda tag, *_a, **_k: {
-                "tag": tag,
-                "exists": True,
-                "stack_name": "kirocrew-kc-found",
-                "stack_status": "CREATE_COMPLETE",
-                "instance_id": "i-found",
-                "region": "us-west-2",
-            },
-        )
+        monkeypatch.setattr(ec2, "live_instance_tags", lambda *_a, **_k: {"kc-found"})
         monkeypatch.setattr(
             ec2,
             "deploy",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not deploy")),
         )
 
-        assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 0
-        assert calls["login"] and all(
-            x == "i-found" for x in calls["login"]
-        )  # sign-in + verify both check i-found
-        assert save_calls == [("dev", "us-west-2", "kc-found")]
-        assert "Resuming existing CloudFormation stack" in capsys.readouterr().out
+        assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
+        out = capsys.readouterr().out
+        assert "this installation has no record of (kc-found)" in out
+        assert "kirocrew cloud launch --new" in out
+        assert calls["login"] == []
+        assert save_calls == []
+
+    def test_a_found_stack_is_not_the_default(self, monkeypatch):
+        defaults: list[int] = []
+
+        def fake_choose(title, options, default_index=0):
+            defaults.append(default_index)
+            return default_index
+
+        monkeypatch.setattr(wizard.ui, "choose", fake_choose)
+        found = wizard._ExistingLaunch(tag="kc-found", stack_name="kirocrew-kc-found")
+        saved = wizard._ExistingLaunch(tag="kc-saved", stack_name="kirocrew-kc-saved", saved=True)
+
+        assert wizard._choose_existing_launch([found]) is None
+        assert wizard._choose_existing_launch([found, found]) is None
+        assert wizard._choose_existing_launch([saved]) == saved
+        assert defaults == [1, 2, 0]
+
+    def test_discovery_offers_only_a_stack_with_a_live_instance(self, monkeypatch, capsys):
+        rows = [
+            {"tag": "kc-live", "stack_name": "kirocrew-kc-live", "stack_status": "CREATE_COMPLETE"},
+            {"tag": "kc-gone", "stack_name": "kirocrew-kc-gone", "stack_status": "CREATE_COMPLETE"},
+            {
+                "tag": "kc-new",
+                "stack_name": "kirocrew-kc-new",
+                "stack_status": "CREATE_IN_PROGRESS",
+            },
+            {"tag": "kc-bad", "stack_name": "kirocrew-kc-bad", "stack_status": "ROLLBACK_COMPLETE"},
+        ]
+        live_reads: list[str] = []
+
+        def fake_live(*_a, **_k):
+            live_reads.append("read")
+            return {"kc-live", "kc-new", "kc-bad"}
+
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: rows)
+        monkeypatch.setattr(ec2, "live_instance_tags", fake_live)
+
+        found = wizard._discover_existing_launches(LaunchState(), "dev", "us-west-2")
+
+        assert live_reads == ["read"]  # one read for all four stacks
+
+        assert found == [wizard._ExistingLaunch("kc-live", "kirocrew-kc-live", "CREATE_COMPLETE")]
+        out = capsys.readouterr().out
+        assert "Not offered: kirocrew-kc-gone (no live Kiro Crew instance)" in out
+        assert "Not offered: kirocrew-kc-new (CREATE_IN_PROGRESS)" in out
+        assert "Not offered: kirocrew-kc-bad (ROLLBACK_COMPLETE)" in out
+        assert "kirocrew cloud status --tag kc-gone --region us-west-2 --profile dev" in out
+        assert "kirocrew-kc-live" not in out
 
     def test_interactive_existing_stack_can_create_new_installation(self, monkeypatch, capsys):
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="kc-old")
@@ -849,7 +930,7 @@ class TestLaunchResume:
             x == "i-new" for x in calls["login"]
         )  # sign-in + verify both check i-new
         assert save_calls == [("dev", "us-west-2", "kc-new")]
-        assert choices[0][0] == "Existing KiroCrew cloud deployment"
+        assert choices[0][0] == "Existing Kiro Crew cloud deployment"
         assert choices[0][1][0][0] == "Keep and resume existing"
         assert choices[0][1][1][0] == "Create a new installation"
         assert "existing stack is unchanged" in capsys.readouterr().out
@@ -878,6 +959,7 @@ class TestLaunchResume:
                 {"tag": "kc-b", "stack_name": "kirocrew-kc-b"},
             ],
         )
+        monkeypatch.setattr(ec2, "live_instance_tags", lambda *_a, **_k: {"kc-a", "kc-b"})
         monkeypatch.setattr(
             ec2,
             "describe",
@@ -909,7 +991,7 @@ class TestLaunchResume:
         assert save_calls == [("dev", "us-west-2", "kc-b")]
         assert choices == [
             (
-                "Existing KiroCrew cloud deployments",
+                "Existing Kiro Crew cloud deployments",
                 [
                     ("Keep kc-a", "kirocrew-kc-a"),
                     ("Keep kc-b", "kirocrew-kc-b"),
@@ -930,6 +1012,7 @@ class TestLaunchResume:
                 {"tag": "kc-b", "stack_name": "kirocrew-kc-b"},
             ],
         )
+        monkeypatch.setattr(ec2, "live_instance_tags", lambda *_a, **_k: {"kc-a", "kc-b"})
         monkeypatch.setattr(
             ec2,
             "deploy",
@@ -938,8 +1021,7 @@ class TestLaunchResume:
 
         assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
         out = capsys.readouterr().out
-        assert "multiple existing KiroCrew cloud stacks found" in out
-        assert "kc-a" in out and "kc-b" in out
+        assert "this installation has no record of (kc-a, kc-b)" in out
 
 
 class TestSessionManagerPluginPrereq:
@@ -986,6 +1068,23 @@ class TestSessionManagerPluginPrereq:
         out = capsys.readouterr()
         text = out.out + out.err
         assert refusal.path in text and refusal.reason in text
+
+
+class TestDeployProgressNetworkNote:
+    def test_a_fallback_network_is_printed(self, monkeypatch, capsys):
+        # `kirocrew cloud launch` prints the VPC it picked by itself.
+        def fake_deploy(*, on_network_fallback=None, **kw):
+            assert on_network_fallback is not None
+            on_network_fallback("No default VPC in us-east-2, so ...")
+            return "result"
+
+        monkeypatch.setattr(wizard.ec2, "deploy", fake_deploy)
+        monkeypatch.setattr(wizard, "_stream_progress", lambda worker, *a: worker.join())
+        out = wizard._deploy_with_progress(
+            tag="kc-1", tier=wizard.sizes.default_tier(), profile="dev", region="us-east-2"
+        )
+        assert out == "result"
+        assert "No default VPC in us-east-2, so ..." in capsys.readouterr().out
 
 
 class TestDeployProgressInterrupt:
@@ -1335,6 +1434,21 @@ class TestFirstDeployConfirmsAccount:
         assert len(prompts) == 1
         assert "111122223333" in prompts[0] and "profile prod" in prompts[0]
         assert "nothing was created" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("tty", [False, True])
+    def test_end_of_input_is_no_and_deploys_nothing(self, monkeypatch, capsys, tty):
+        deploys, _ = self._setup(monkeypatch)
+        stdin = io.StringIO("")  # `cloud launch < /dev/null`, or Ctrl-D at a terminal
+        monkeypatch.setattr(stdin, "isatty", lambda: tty)
+        monkeypatch.setattr("sys.stdin", stdin)
+
+        rc = wizard.launch(profile="prod", region="us-west-2", size_key="light")
+
+        assert rc == 0
+        assert deploys == []
+        out = capsys.readouterr().out
+        assert "nothing was created" in out
+        assert ("re-run the same command with --yes" in out) is not tty
 
     def test_prompt_names_profile_from_aws_profile_env(self, monkeypatch, capsys):
         deploys, prompts = self._setup(monkeypatch)

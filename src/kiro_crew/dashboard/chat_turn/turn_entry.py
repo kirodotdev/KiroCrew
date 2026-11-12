@@ -257,6 +257,16 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # The assistant rows this turn writes say the agent started it
         # (`_segment_row_meta`); every outermost turn sets it, so no turn inherits it.
         slot._turn_agent_started = turn._agent_started
+        slot._turn_wrote_text = False
+        # A new turn means the slot has moved past any approval that timed out
+        # in an earlier one: no prompt is open now. End a loop's approval hold
+        # here, whoever sent the turn (a person, a conductor's session_send, a
+        # wake), or the loop stays silent until a person happens to come back.
+        # A turn that stalls on approval again sets the hold again. Unarmed: this
+        # turn's own end re-arms the loop, as for a person's message.
+        from kiro_crew.autonudge import release_approval_hold_for
+
+        release_approval_hold_for(slot.key, why="a new turn started in the session", arm=False)
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message
@@ -1063,6 +1073,7 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     # Same lifecycle for the segment-cut handle: a late steer must not
     # flush into a finished turn's (already-flushed) locals.
     slot._steer_segment_cut = None
+    slot._compact_command_turn = False
     # Same lifecycle for the child-fidelity opt-in latched at turn start:
     # it is THIS consumer's promise to render the low-fidelity downgrade
     # card. Leaving it set would let a later, fidelity-UNAWARE consumer of

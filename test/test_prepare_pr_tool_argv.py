@@ -105,6 +105,28 @@ class TestResolve:
         assert refused is None
         assert argv == ["C:\\tools\\gh.exe", "api", "--jq", ".[] | .name"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="emulates the Windows lookup on POSIX")
+    def test_windows_lookup_applies_pathext_without_shutil_help(self, tmp_path, monkeypatch):
+        """Python <=3.11 ``shutil.which`` adds no PATHEXT suffix to a name with a
+        directory part, so ``which`` must try the suffixes itself."""
+        mod = _tool_argv()
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        (bindir / "git.EXE").write_bytes(b"")
+        (bindir / "gh.CMD").write_bytes(b"")
+        (bindir / "plain").write_bytes(b"")
+        monkeypatch.setenv("PATH", str(bindir))
+        monkeypatch.delenv("PATHEXT", raising=False)
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(
+            mod.shutil, "which", lambda cmd, *a, **k: cmd if os.path.isfile(cmd) else None
+        )
+        assert mod.which("git") == str(bindir / "git.EXE")
+        assert mod.which("gh") == str(bindir / "gh.CMD")
+        assert mod.which("git.EXE") == str(bindir / "git.EXE")
+        # A file without a PATHEXT suffix is not a Windows executable.
+        assert mod.which("plain") is None
+
 
 def test_the_lookup_and_the_metacharacter_set_are_spelled_only_here():
     """push_guard.py binds both from this module, so no other script carries a copy

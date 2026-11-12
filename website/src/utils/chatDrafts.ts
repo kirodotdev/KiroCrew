@@ -154,5 +154,6 @@ const store = createSlotDraftStore<string>({
 
 export const loadDrafts = store.load
 export const saveDrafts = store.save
+export const draftsSaveFailed = store.lastSaveFailed
 export const setDraft = store.set
 export const __resetForTests = store.__resetForTests

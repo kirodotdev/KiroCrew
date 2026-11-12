@@ -58,6 +58,17 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
         assert env["USERPROFILE"] == r"C:\Users\me"
         assert env["TEMP"] == r"C:\Temp"
 
+    def test_programdata_reaches_both_registry_git_envs(self, monkeypatch) -> None:
+        """Win32-OpenSSH exits 255 with no output when `ProgramData` is unset.
+
+        Every ssh:// registry clone on Windows starts from one of these two envs,
+        so without it no ssh:// registry or app repository can be cloned there.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(registry.os, "environ", {"PROGRAMDATA": r"C:\ProgramData"})
+        assert registry.minimal_env().get("PROGRAMDATA") == r"C:\ProgramData"
+        assert registry.anonymous_git_env().get("PROGRAMDATA") == r"C:\ProgramData"
+
     def test_folding_did_not_admit_secrets(self, monkeypatch) -> None:
         """The fold widens CASE, never the key set."""
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)

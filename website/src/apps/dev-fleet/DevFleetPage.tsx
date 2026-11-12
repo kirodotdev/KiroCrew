@@ -25,7 +25,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
 import { addNotification } from '../../store/notificationsSlice'
 import { setPendingInput } from '../../store/chatSlice'
-import { Server, RefreshCw, ChevronRight, Trash2, LoaderCircle } from 'lucide-react'
+import { Server, RefreshCw, ChevronRight, Trash2, LoaderCircle, Tag, Ellipsis } from 'lucide-react'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import * as api from './devFleetApi'
 import { ApiError, api as gatewayApi } from '../../api/client'
 import { restartExhaustedNotice } from '../../utils/backendStatus'
@@ -211,7 +212,7 @@ export default function DevFleetPage() {
   }, [actionError])
 
   // Every call below happens right after a user-initiated mutation (or the
-  // explicit Refresh button), so the fleet has to be REBUILT rather than
+  // Refresh menu item), so the fleet has to be REBUILT rather than
   // re-read: a plain refetch hits the backend's stale-while-revalidate cache,
   // which serves the PRE-mutation snapshot and only rebuilds behind it — so a
   // pruned worktree would keep rendering until that rebuild lands. `fresh=1`
@@ -233,6 +234,10 @@ export default function DevFleetPage() {
   }, [refetchFleetFresh, queryClient])
 
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  // The release-worktree action carries its own in-flight flag rather than a
+  // `busy['__release']` entry: the string key would be new untranslated-string debt
+  // the i18n gate refuses on a touched line, and a dedicated boolean is cleaner anyway.
+  const [releasing, setReleasing] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [detail, setDetail] = useState<Record<string, any>>({})
@@ -814,6 +819,26 @@ export default function DevFleetPage() {
       setPruneDialog({ candidates: cands, kept, scanned: r.scanned || 0 })
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag('__prune', false) }
+  }
+
+  // Create `release-channel-stable` detached at the newest stable release the remote
+  // advertises. Gateway-served (the checkout runs at a strict tier with credentials
+  // bind-masked wherever an OS sandbox backend runs it), so it goes through
+  // `postGateway`. A refusal the route returns as a 4xx/503 carries its
+  // `{ ok, code, error }` body; it is unwrapped here the way the sync single-flight 409
+  // is, so the server's worded reason reaches the toast.
+  async function createReleaseWorktree() {
+    setReleasing(true)
+    try {
+      const r = await api.postGateway<{ ok?: boolean; error?: string; name?: string; version?: string }>('/create-release-worktree', {})
+      if (r?.ok) { notify(i18nT('pages.devFleetPage.release_worktree_created', { name: r.name, version: r.version }), { type: 'success' }); invalidateAll() }
+      else notify(r?.error || i18nT('pages.devFleetPage.release_worktree_failed'), { type: 'error' })
+    } catch (e: unknown) {
+      let msg = (e as Error)?.message || String(e)
+      if (e instanceof ApiError) { try { msg = (JSON.parse(e.body) as { error?: string })?.error || msg } catch { /* body not JSON */ } }
+      notify(msg, { type: 'error' })
+    }
+    finally { setReleasing(false) }
   }
 
   async function pruneExecute(rawNames: string[], rawForceNames: string[] = [], discardPaths: Record<string, string[]> = {}) {
@@ -1427,7 +1452,35 @@ export default function DevFleetPage() {
                     progress", but nothing is deleted until the review dialog is
                     confirmed. `aria-busy` stays as-is for assistive tech. */}
                 <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
-                <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
+                {/* Prune merged and this menu's trigger are the row's two controls
+                    (max-two-buttons-per-row counts the trigger), so Refresh and
+                    "Create worktree from latest stable" go in the labelled menu.
+                    Refresh is secondary: the fleet already re-reads after every
+                    action. Creating the stable worktree is the least-used action,
+                    run about once per release, and takes a few seconds (ls-remote,
+                    a one-tag fetch, the checkout), so the trigger's glyph becomes a
+                    spinner while it runs, and the item reads "Creating stable
+                    worktree…" and is disabled if the menu is reopened. The item's
+                    visible label names the whole action and is its accessible name,
+                    so it needs no `title` hint. The trigger has no `aria-label`
+                    either: its visible text is its name. */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Btn aria-busy={releasing} data-testid="fleet-toolbar-more">{iconLabel(releasing ? <LoaderCircle className="lucide-inline animate-spin" /> : <Ellipsis size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.more_actions'))}</Btn>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem disabled={loading} onSelect={() => invalidateAll()} title={i18nT('pages.devFleetPage.refresh_fleet')} data-testid="fleet-toolbar-refresh">
+                      <RefreshCw size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                      <span>{i18nT('pages.devFleetPage.refresh')}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={releasing} onSelect={() => { void createReleaseWorktree() }}>
+                      {releasing
+                        ? <LoaderCircle size={13} className="shrink-0 animate-spin" aria-hidden="true" />
+                        : <Tag size={13} className="shrink-0 text-muted" aria-hidden="true" />}
+                      <span>{i18nT(releasing ? 'pages.devFleetPage.creating_release_worktree' : 'pages.devFleetPage.create_release_worktree')}</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
               )}
               <div className="overflow-x-auto -mx-1 px-1">

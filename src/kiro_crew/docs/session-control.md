@@ -1,11 +1,11 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, retry, continue, rename, retitle, close and revive
-another one, change its model, reload its agent process, color it, and take another one under
-itself in the sidebar. The tools come from the
+another one, change its model, reload its agent process, color it, leave it a note, and take another
+one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 39 of its tools, written for the agent that is about to use them.
+for all 40 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -13,7 +13,8 @@ owner modules. Two halves:
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
-  `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
+  `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
+  `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
   `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -54,7 +55,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one). A folder with a project gives the new session that project; without one, the new session works in your own project |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omitted, it is filled as below |
 | `reasoning_effort` | no | Reasoning effort the session starts at, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Any other value is refused with `effort_rejected` before anything is created. Omitted, it is filled as below |
-| `backend` | no | Harness (agent backend) the session runs on, spelled as `spawn_run`'s `backend` takes it: `kiro`, `claude`, `codex`, ... It is kept for the session's whole life (every turn, restart, reset and compaction), it outranks a Bot's own harness setting, and a `spawn_run` from that session with no `backend` (and no `crew`) starts its child on it too. One that is unknown, not allowed by policy or not installed is refused before anything is created (`unknown_backend`, `backend_not_installed`, `backend_restart_required`), listing the ones that can start. `model` must then be an id that harness serves (`model_rejected`). Not taken with `crew` (`backend_with_crew`). Omit to run on the default harness |
+| `backend` | no | Harness (agent backend) the session runs on, spelled as `spawn_run`'s `backend` takes it: `kiro`, `claude`, `codex`, ... It is kept for the session's whole life (every turn, restart, reset and compaction), it outranks a Bot's own harness setting, and a `spawn_run` from that session with no `backend` (and no `crew`) starts its child on it too. One that is unknown, not allowed by policy or not installed is refused before anything is created (`unknown_backend`, `backend_not_installed`, `backend_restart_required`), listing the ones that can start. `model` must then be an id that harness serves (`model_rejected`). Not taken with `crew` (`backend_with_crew`). Omit to run on the default harness. Offered only while the feature preview `dashboard.feature_previews.session_harness` is on (Settings > Developer > Feature previews > Agent Harness for worker chats); off, it is not in the schema and one passed is refused with code session_harness_preview_off (HTTP 403) and nothing is created |
 | `autocompact_pct` | no | Context-usage percent (5 to 90) at which the NEW session auto-compacts, set as its own override as if the person set "Auto-compact at" in its context meter. Only the new session gets it; the global `session.autocompact_pct` and every other session are unchanged. The tool schema refuses an out-of-range value before any request reaches the dashboard. The reply is `Error: autocompact_pct: must be <= 90.0`, or `Error: autocompact_pct: must be >= 5.0` for a value below the range. Omit to follow the agent's own default, else the global value |
 | `message` | no | The new session's first message, delivered in the same call through `session_send`'s own path: same authorization, same size limit (`message_too_long`), same `[sent by session …]` line. A message `session_send` would refuse is refused before anything is created, and so is any message from an agent that auto-approves `session_create` but not `session_send` (`message_needs_send_approval`). If the session opens but delivery fails, the reply still names the key and the delivery error, and the session is kept |
 
@@ -77,7 +78,11 @@ says so when that model was dropped.
 No argument is formally required. Without `message` the new session **starts
 empty** — nothing runs in it until the person types, or until you send it a
 message. With `message`, its first turn starts on that message in this same
-call, so you never send to a key you have not read back yet. The reply carries
+call, so you never send to a key you have not read back yet. An agent that
+auto-approves `session_create` but not `session_send` (a conductor, a team
+lead) is told so in its own prompt and leaves `message` out:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`." The reply carries
 the new session's key:
 
 ```
@@ -658,7 +663,10 @@ agent-spec fix only reaches it after a reload. The new process re-reads its
 agent spec, environment and MCP servers and resumes the same conversation. The
 transcript is not rewritten; one reload notice is appended, and it names the
 calling session's key so the person reading that tab can see who reloaded it.
-The agent, model and workspace do not change.
+A second row follows once the new process is ready, failed to start (with the
+error), or will start with the target's next message, unless the target has
+already answered a message sent after the notice: that reply then shows how the
+agent came back. The agent, model and workspace do not change.
 
 Only sessions you created can be reloaded, whatever kind of session you are.
 Only an idle one: a turn running or starting, queued messages, or attached
@@ -757,6 +765,33 @@ person's own tabs (`not_creator`), even when session control is switched on
 for everyone. Everything else
 `authorize_target` refuses stays refused.
 
+### `session_set_note`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created; your own session is refused `self_target` |
+| `note` | yes | The note text: a short statement of fact |
+
+Leaves a note without starting a turn, through the same code a cron or an app
+uses to post a note to a chat. Two things happen: a note line appears in the
+target's transcript, labelled as sent by `session_set_note`, and its next turn
+reads the same text once as background context from `"session_set_note"`. A running target holds both until its turn
+ends. Once written, the line is transcript history like any other note line, so a
+history replay carries it. The limits, redaction and reply are that note route's: a
+note a running target holds is capped at 4,000 characters (`deferred_note_too_large`),
+it holds at most ten notes of any kind (past that the note is refused,
+`deferred_notes_full`, and nothing is written), and a session takes at most ten
+notes from `session_set_note` into its next turn; past that the line is still
+written but its next turn does not read it, and the reply says so.
+
+State facts; do not ask questions. A question rides along as background
+context and may be answered on an unrelated turn.
+
+Reach is `session_set_color`'s: only sessions you created, for every caller,
+never your own session or the person's tabs, and nothing else `authorize_target`
+refuses. If the target is linked or mirrored to a channel before its next turn,
+that turn does not take the note as background context; its transcript line stays.
+
 ### `session_revive`
 
 | Argument | Required | Meaning |
@@ -795,7 +830,7 @@ Refusals only a revive gives:
 |---|---|
 | `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap (`session.max_per_creator`, 50 by default). The message says how many you hold and where the owner raises the limit |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
@@ -1166,7 +1201,11 @@ retry.
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
-them: 500 live sessions, 50 per creator, 500 folders.
+them: 500 live sessions, 50 per creator, 500 folders. The per-creator number is
+the default of `session.max_per_creator`: the owner raises it, up to 450, in
+Settings > Chat > Sessions > Sessions per creator, and the change applies to
+the next create with no restart. An agent can only propose the change on a
+card that you apply.
 
 ## Combining two chats
 

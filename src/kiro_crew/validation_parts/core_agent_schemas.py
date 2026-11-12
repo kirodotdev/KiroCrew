@@ -129,6 +129,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # silent=True drops only the run's completion notifications (the bell
+        # note; under a cron also the channel post of the cron's reply) —
+        # docs/decisions/, "a silent parent's sub-agent completions never
+        # ring the bell".
+        FieldSpec("silent", bool),
         # Legacy solo-spawn fields: unadvertised and ignored, but accepted
         # so a skill or workflow that still sends them is not refused as
         # "unknown field".
@@ -202,6 +207,8 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
             item_type=dict,
         ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # As on spawn_run: batch-wide completion-notification opt-out.
+        FieldSpec("silent", bool),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
@@ -413,6 +420,7 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+        FieldSpec("wake_on_terminal", bool),
     ],
 )
 

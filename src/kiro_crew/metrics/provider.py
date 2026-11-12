@@ -50,8 +50,16 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_endpoints, otlp_governance
+from kiro_crew.metrics import otlp_endpoints, otlp_governance, otlp_session
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
+
+# The env-var pins live in ``consent_pins`` (this module's line budget); they are
+# re-exported here, the import path every caller uses.
+from kiro_crew.metrics.consent_pins import (  # noqa: F401
+    TELEMETRY_ENV_VAR,
+    env_pin,
+    pin_env_var,
+)
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -626,38 +634,6 @@ _ever_built = False
 # thread per request. Cleared in the worker's finally, so a crash costs one window
 # rather than stranding the check.
 _check_in_flight = False
-
-# Env-var opt-in. ``KIROCREW_TELEMETRY`` lets a host turn
-# LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
-# handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
-# disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
-# default False). This gates LOCAL collection ONLY: external OTLP egress needs the
-# active telemetry provider to name a destination (the default provider does so
-# only for a non-empty ``telemetry.otlp_endpoint``), so merely flipping this var
-# never causes data to leave the host (egress stays off by default).
-# Public: a UI control over ``telemetry.enabled`` names this variable when it
-# reports the setting as pinned, and naming it from here keeps the message and the
-# lookup from drifting apart.
-TELEMETRY_ENV_VAR = "KIROCREW_TELEMETRY"
-_ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
-_ENV_FALSY = frozenset({"0", "false", "no", "off"})
-
-
-def env_pin() -> Optional[bool]:
-    """Return the ``KIROCREW_TELEMETRY`` pin, or ``None`` when the var is unset.
-
-    Public because a UI control over ``telemetry.enabled`` has to know the config
-    flag is not the last word: a pinned host would otherwise offer a switch whose
-    write can never change what is collected. Resolving the pin here (rather than
-    re-reading the env var at the call site) keeps the control and the collector
-    from disagreeing about what "on" means.
-    """
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
-    if raw in _ENV_TRUTHY:
-        return True
-    if raw in _ENV_FALSY:
-        return False
-    return None
 
 
 def _consent_enabled(cfg: object) -> bool:
@@ -1544,22 +1520,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             kwargs["headers"] = _OwnHeadersOnly(headers)
         elif headers:
             kwargs["headers"] = headers
-        # Passed only when supplied so the exporter keeps its own defaults (and
-        # its env-var fallbacks) for everything an edition did not set.
-        if dest.session is not None:
-            # An authenticated transport. requests re-evaluates Session.auth per
-            # request, which is what lets a credential that rotates mid-process
-            # keep working where a header frozen at construction would 401. A
-            # destination built in code carries its static headers on
-            # Session.headers.
-            kwargs["session"] = dest.session
-        elif own_only:
-            # A plain session of our own, so the exporter does not load the OTel
-            # credential-provider session either: that variable is process-wide
-            # in the same way the header variables are.
-            import requests
-
-            kwargs["session"] = requests.Session()
+        # A session that follows no redirect, for every destination: the policy
+        # gate and the https rule checked this endpoint only. A destination built
+        # in code gets a copy of its authenticated session (Session.auth is
+        # re-evaluated per request, so a rotating credential keeps working).
+        kwargs["session"] = otlp_session.export_session(dest.session, own_only)
         exporter = OTLPMetricExporter(**kwargs)
         # Every later export is held to the policy in force THEN, so a runtime
         # policy install stops a running reader without waiting for a rebuild.

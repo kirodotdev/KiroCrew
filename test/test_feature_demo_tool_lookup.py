@@ -174,3 +174,55 @@ def test_doctor_and_pipeline_search_the_same_directories(refs, home):
     assert refs.deps.which_any is toolpath.which_any
     assert refs.narrate.which_any is toolpath.which_any
     assert refs.verify.which_any is toolpath.which_any
+
+
+def _cwd_first_which(cmd, mode=os.F_OK | os.X_OK, path=None):
+    """shutil.which with Windows' rule that a bare name tries the cwd first, ``path=`` or not."""
+    if os.path.dirname(cmd):
+        return _REAL_WHICH(cmd, mode)
+    return _REAL_WHICH(cmd, mode, os.pathsep.join([os.curdir, path or os.environ["PATH"]]))
+
+
+@pytest.mark.skipif(_WIN, reason="emulates the Windows lookup on POSIX")
+def test_windows_lookup_skips_the_working_directory(refs, home, monkeypatch, tmp_path):
+    cwd, on_path = tmp_path / "cwd", tmp_path / "on-path"
+    cwd.mkdir()
+    on_path.mkdir()
+    _place(cwd, "ffmpeg.EXE")
+    real = _place(on_path, "ffmpeg.EXE")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(on_path)]))
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.setattr(shutil, "which", _cwd_first_which)
+    monkeypatch.setattr(os, "name", "nt")
+    assert refs.deps.check_ffmpeg()["detail"] == f"{real} (libx264 present)"
+    # The ~/.local/bin fallback is asked by full path too, so the cwd stays out.
+    monkeypatch.setenv("PATH", ".")
+    local = _place(home / ".local" / "bin", "ffmpeg.EXE")
+    assert refs.deps.which_any("ffmpeg", refs.deps._ffmpeg_dirs()) == str(local)
+    local.unlink()
+    assert refs.deps.which_any("ffmpeg", refs.deps._ffmpeg_dirs()) is None
+
+
+def _which_without_pathext(cmd, mode=os.F_OK | os.X_OK, path=None):
+    """Python <=3.11 on Windows: a name with a directory part gets no PATHEXT suffix."""
+    return _REAL_WHICH(cmd, mode) if os.path.dirname(cmd) and os.path.isfile(cmd) else None
+
+
+@pytest.mark.skipif(_WIN, reason="emulates the Windows lookup on POSIX")
+def test_windows_lookup_applies_pathext_itself(refs, home, monkeypatch, tmp_path):
+    on_path = tmp_path / "on-path"
+    on_path.mkdir()
+    real = _place(on_path, "ffmpeg.EXE")
+    local = _place(home / ".local" / "bin", "ffprobe.EXE")
+    monkeypatch.setenv("PATH", str(on_path))
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.setattr(shutil, "which", _which_without_pathext)
+    monkeypatch.setattr(os, "name", "nt")
+    assert refs.deps.which_any("ffmpeg", refs.deps._ffmpeg_dirs()) == str(real)
+    assert refs.deps.which_any("ffprobe", refs.deps._ffmpeg_dirs()) == str(local)
+    assert refs.deps.which_any("ffmpeg.EXE", []) == str(real)
+    # A file with no PATHEXT suffix is not a Windows executable.
+    _place(on_path, "ffprobe")
+    local.unlink()
+    assert refs.deps.which_any("ffprobe", refs.deps._ffmpeg_dirs()) is None

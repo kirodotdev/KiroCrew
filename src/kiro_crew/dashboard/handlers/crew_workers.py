@@ -20,7 +20,7 @@ stamped with that root. The list and the timeline also answer a CLOSED known roo
 still reads; steer and the approval card need a live Crew Mode root.
 
 A queued steer is recorded when the drain delivers it, on either route
-(``chat_send.mark_crew_steer``); a delivered one at once.
+(``crew_steer.mark_crew_steer``); a delivered one at once.
 
 The list read keeps, per root, what only moves with the session tree or a ledger
 write: the closed workers, their titles and every ledger store's facts. The live rows
@@ -1280,8 +1280,13 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
             return web.json_response(delivered)
     # The steer is also the person's word on the worker's item: one ``steer`` event
     # on the ledger that holds it, which the conductor reads before it decides and
-    # never overrules. The same transaction the worker's own composer runs.
-    delivered.update(await person_steer(state, root, worker, message, rows=rows))
+    # never overrules. The same transaction the worker's own composer runs, in the
+    # background like it: the record waits on the board lock and the crew-log
+    # writer, and a failed one reaches the composer over the socket.
+    from kiro_crew.dashboard.chat_handlers import record_crew_steer_later
+
+    record_crew_steer_later(state, root, worker, message, rows=rows)
+    delivered.update(ledger_event=None, ledger_error=None, ledger_pending=True)
     return web.json_response(delivered)
 
 

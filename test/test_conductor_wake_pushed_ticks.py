@@ -472,8 +472,8 @@ def test_an_item_whose_window_has_aged_out_leaves_both_tables():
     ``_admit`` runs only when a write lands, so an item that was pulled forward and then
     stopped writing (its ``it_<hex>`` retired when its work closed) would keep an
     aged-out key forever -- ``max_cycles = 0`` lets the loop outlive the gateway. The
-    sibling-sweep on each admit evicts it, bounding the nested table at the count of
-    items with a LIVE pull-forward (the persisted half is bounded the same way).
+    sibling-sweep on each counted admit evicts it, bounding the nested table at the count
+    of items with a LIVE pull-forward (the persisted half is count-capped instead).
     """
     svc = _admit_svc()
     window = conductor_wake._ITEM_WINDOW_SECS

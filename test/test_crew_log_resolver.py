@@ -403,29 +403,71 @@ def test_a_background_call_with_no_owner_or_no_kind_resolves_no_owner():
     assert sessions.calls == [], "an unnamed call must not even resolve a session"
 
 
-def test_a_background_owner_is_resolved_before_the_call_not_after_it():
-    """The resolver answers "now", so resolving in the teardown is the wrong now.
+def _unit_files(session_id: str) -> dict[str, int]:
+    """Every file directly in a unit's directory (log segments, cuts), by size."""
+    from kiro_crew.crew_log.store_paths import crew_log_dir
 
-    A slot reset, switch or compaction during the model call cold-starts a NEW ACP
-    session id. Resolving at teardown would hand this call's spend to the successor
-    -- a session that never incurred it -- silently, in an append-only file. So the
-    owner is pinned before the call and the teardown writes to that pin.
+    directory = crew_log_dir("session", session_id)
+    return {p.name: p.stat().st_size for p in directory.iterdir() if p.is_file()}
+
+
+def test_a_reset_during_a_background_call_writes_to_the_newest_unit_for_the_pinned_one():
+    """The owner is pinned before the call; the entry lands in the slot's newest unit.
+
+    A slot reset, switch or compaction during the model call starts a NEW unit. A
+    crew log is append-only and an older unit never grows (a write there retires the
+    savepoints beside the newest unit), so the teardown writes into the successor and
+    counts it in that unit's usage.
     """
+    from kiro_crew.llm_helpers import _background_crew_log_owner, _record_background_crew_log
+
+    _open_session()
+    successor = "successor-sid"
+    sessions = _Sessions({"dashboard:chat-7": _Provider(SESSION)})
+    owner = _background_crew_log_owner(sessions, "dashboard:chat-7", "title")
+    assert owner == SESSION
+    # The slot is reset mid-call: the registry now serves a new unit.
+    emit.on_session_opened(
+        successor, agent="kirocrew", slot="chat-7", model="m", cwd="/w", owner="default"
+    )
+    sessions._providers["dashboard:chat-7"] = _Provider(successor)
+    assert_drained()
+    before = _unit_files(SESSION)
+    _record_background_crew_log(
+        owner,
+        "title",
+        _Usage(credits=1.0),
+        model="m",
+        provider="acp",
+        elapsed_ms=1,
+        sessions=sessions,
+        crew_log_session_key="dashboard:chat-7",
+    )
+    assert_drained()
+    assert _unit_files(SESSION) == before, "the superseded unit did not grow"
+    (entry,) = [e for e in _body(successor) if e["type"] == "background/completed"]
+    assert entry["data"]["kind"] == "title"
+
+
+def test_a_background_call_with_no_reset_writes_to_the_pinned_unit():
     from kiro_crew.llm_helpers import _background_crew_log_owner, _record_background_crew_log
 
     _open_session()
     sessions = _Sessions({"dashboard:chat-7": _Provider(SESSION)})
     owner = _background_crew_log_owner(sessions, "dashboard:chat-7", "title")
-    assert owner == SESSION
-    # The slot is reset mid-call: the registry now serves a different unit.
-    sessions._providers["dashboard:chat-7"] = _Provider("successor-sid")
     _record_background_crew_log(
-        owner, "title", _Usage(credits=1.0), model="m", provider="acp", elapsed_ms=1
+        owner,
+        "title",
+        _Usage(credits=1.0),
+        model="m",
+        provider="acp",
+        elapsed_ms=1,
+        sessions=sessions,
+        crew_log_session_key="dashboard:chat-7",
     )
     assert_drained()
-    assert _entries(SESSION), "the spend stayed with the session that incurred it"
-    assert _of("background/completed")[0]["kind"] == "title"
-    assert _entries("successor-sid") == [], "and did not follow the successor"
+    (data,) = _of("background/completed")
+    assert data["kind"] == "title"
 
 
 def test_both_background_helpers_pin_the_owner_before_their_first_await():

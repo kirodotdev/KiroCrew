@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, overload
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
@@ -859,7 +860,7 @@ def _read(*, strict: bool = False) -> dict[str, Any]:
             if not stat.S_ISREG(info.st_mode) or info.st_size > RECORD_MAX_BYTES:
                 raise ValueError("template_mcp_additions_invalid")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(RECORD_MAX_BYTES + 1)
+                raw = bounded_read(stream, RECORD_MAX_BYTES + 1)
         finally:
             os.close(fd)
         if len(raw) > RECORD_MAX_BYTES:

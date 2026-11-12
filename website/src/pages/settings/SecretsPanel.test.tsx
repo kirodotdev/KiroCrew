@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 
 import { SecretsPanel } from './SecretsPanel'
 import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
@@ -546,6 +547,31 @@ describe('SecretsPanel', () => {
       'href',
       'https://wakatime.com/settings/api-key',
     )
+  })
+
+  it('lists the WakaTime sign-in tokens read-only, managed from the WakaTime panel', async () => {
+    // The vault routes refuse this name with 409, so no Save or Delete may be offered.
+    listNames = ['WAKATIME_OAUTH_TOKENS']
+    listManaged = [
+      { name: 'WAKATIME_API_KEY', kind: 'wakatime_api_key' },
+      { name: 'WAKATIME_OAUTH_TOKENS', kind: 'wakatime_oauth' },
+    ] as unknown as ManagedSecret[]
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SecretsPanel />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('WAKATIME_OAUTH_TOKENS')).toBeInTheDocument()
+    expect(screen.getByText(/Managed in the WakaTime panel/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Manage in WakaTime' })).toHaveAttribute(
+      'href',
+      '/settings/overview?view=wakatime',
+    )
+    expect(screen.queryByRole('button', { name: /WAKATIME_OAUTH_TOKENS/ })).not.toBeInTheDocument()
   })
 
   it('opens the add form and keeps Save disabled until both fields are filled', async () => {

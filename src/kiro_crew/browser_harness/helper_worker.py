@@ -1,11 +1,12 @@
 """The helper worker: Harness's own helpers, one at a time, over JSON lines.
 
 Run BY THE VENV'S INTERPRETER (``<prefix>/bin/python -I <this file>``), never imported
-by the gateway: the gateway's Python has no ``browser_harness`` package, and this file
-has no ``kiro_crew`` import for the same reason in reverse. ``-I`` keeps the script's
-own directory off ``sys.path``, so ``import browser_harness`` below resolves to the
-pinned package in the venv and never to the ``kiro_crew.browser_harness`` directory
-this file happens to live in.
+by the gateway: the gateway's Python carries no ``browser_harness`` package unless its
+runtime bundles the harness, and this file has no ``kiro_crew`` import for the same
+reason in reverse. ``-I`` keeps the script's own directory off ``sys.path``, so
+``import browser_harness`` below resolves to the package in the venv (installed from
+the lock or copied from the runtime), never to the ``kiro_crew.browser_harness``
+directory this file happens to live in.
 
 Protocol, one JSON object per line each way:
 

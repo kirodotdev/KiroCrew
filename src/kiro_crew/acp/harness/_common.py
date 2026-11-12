@@ -52,6 +52,7 @@ __all__ = [
     "MembershipHarness",
     "apply_client_application_env",
     "defer_mandatory_mcps_env",
+    "operator_mandatory_mcps",
     "pin_mandatory_mcps_env",
 ]
 
@@ -114,11 +115,21 @@ def defer_mandatory_mcps_env(env: dict[str, str]) -> None:
 
 def _apply_operator_mandatory_mcps(env: dict[str, str]) -> bool:
     """Copy an ambient value (even an empty one) into *env*; True when one was set."""
-    ambient = os.environ.get(MANDATORY_MCPS_ENV)
+    ambient = operator_mandatory_mcps()
     if ambient is None:
         return False
     env[MANDATORY_MCPS_ENV] = ambient
     return True
+
+
+def operator_mandatory_mcps() -> str | None:
+    """The operator's own never-defer list from the gateway's environment.
+
+    ``None`` when the operator set none. A value, even an empty one, is the
+    operator deciding what stays out of deferral, so it is the whole decision:
+    Crew neither replaces it nor adds a tool of its own beside it.
+    """
+    return os.environ.get(MANDATORY_MCPS_ENV)
 
 
 #: The notification spellings kiro-cli and the KAS relay share.

@@ -32,7 +32,7 @@ import sys as _sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.config.loader import config_dir
@@ -48,6 +48,7 @@ from kiro_crew.cron_script_child_env import (
     _resolve_dial_port,
 )
 from kiro_crew.cron_script_grants import (
+    GRANT_REAPPROVAL_ERRORS,
     _filter_grant_env,
     _read_script_body,
     _scrub_grant_values,
@@ -169,7 +170,12 @@ def run_script_sandboxed(
             delivery=delivery,
         )
         if secret_err:
-            return {"status": "error", "error": f"❌ {secret_err}"}
+            failure: dict[str, Any] = {"status": "error", "error": f"❌ {secret_err}"}
+            if secret_err in GRANT_REAPPROVAL_ERRORS:
+                # Healed only by re-approving the grant over the current code;
+                # the scheduler resurfaces a pending request for exactly that.
+                failure["grant_stale"] = True
+            return failure
         # Granted scripts get an EMPTY private dir as sys.path[0] (sibling
         # imports from the agent-writeable live crons/ dir fail instead of
         # running with the secrets). The verified body itself travels over
@@ -291,7 +297,12 @@ def run_script_sandboxed(
         "except Report as r:\n"
         "    _envelope = {'status': 'report', 'message': r.message}\n"
         "except Exception as e:\n"
-        "    _envelope = {'status': 'error', 'error': str(e)}\n"
+        # The type names the failure when the text is empty (a bare ``assert``)
+        # or reads as a value (``KeyError`` prints only the missing key).
+        "    _msg = str(e)\n"
+        "    _envelope = {'status': 'error', 'error': (\n"
+        "        type(e).__name__ + ': ' + _msg if _msg else type(e).__name__\n"
+        "    )}\n"
         "finally:\n"
         "    ctx.close()\n"
         # Probe again before any non-error envelope: a sandbox torn down WHILE
@@ -1088,6 +1099,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew import agent_scratch  # noqa: F401
+    from kiro_crew import mcp_structured_text as _structured_text  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
     from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
@@ -1101,7 +1113,12 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         child_persistence_preflight,
     )
     from kiro_crew.cron_script_context import (  # noqa: F401
+        _ACCOUNT_RESOURCE_RE,
+        _CFN_PHYSICAL_NAME_RE,
+        _ID_KEY_RE,
+        _OPAQUE_ID_RE,
         _REFUSAL_CODE,
+        _RESOURCE_NAME_RE,
         Done,
         DoneError,
         Report,
@@ -1109,11 +1126,15 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         ScriptContext,
         Skip,
         SkipError,
+        _account_resource_apart,
+        _changed_by_scan,
+        _changed_path,
+        _delivered_text,
+        _reads_as_credential,
         _redact_deep,
         _redact_pair,
         _refusal_code,
         _scanned_tool_args,
-        _wholly_redacted_path,
         logger,
     )
     from kiro_crew.cron_script_grants import (  # noqa: F401
@@ -1124,6 +1145,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _SECRET_ENV_MAX_ENTRIES,
         _SECRET_ENV_NAME_RE,
         _SECRET_ENV_VAULT_NAME_RE,
+        GRANT_PIN_MISSING_ERROR,
+        GRANT_PIN_STALE_ERROR,
         _grant_epoch,
         _grant_epochs_guard,
         _grant_epochs_path,
@@ -1195,10 +1218,17 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
-        CREDENTIAL_REDACTION_TAGS,
         REDACTED_CREDENTIAL_TAG,
         canonical_path_refusal,
         is_unverifiable_path_refusal,
+        redact_exfiltration_urls,
+    )
+    from kiro_crew.security.redaction import (  # noqa: F401
+        _ARN_ACCOUNT_ID_12_DIGITS_RE,
+        _BOT_ID_LENGTHS,
+        _CDK_NAME_MAX_LEN,
+        _CDK_WORDS,
+        redact_credentials_with_records,
     )
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.subprocess_utf8 import UTF8_TEXT  # noqa: F401

@@ -20,8 +20,10 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _GIT_EXEC_NEUTRALIZER_PAIRS,
     _git_network_failure_hint,
     _git_output_is_auth_shaped,
+    _git_output_is_ssh_name_unresolved,
     _git_target_is_unsupported,
     _git_transport_env,
+    _is_ssh_git_url,
     _loggable_git_transport_output,
     _redacted_git_failure_class,
     _same_git_target,
@@ -107,6 +109,38 @@ def _with_network_hint(error: str, output: str, *, named: bool = False) -> str:
     return f"{error}: could not reach the remote; {hint}"
 
 
+#: The slug and fixed sentence for a credential-free (index-originated) fetch of an
+#: ssh remote whose host name ssh could not resolve. That fetch reads no ssh config
+#: (:func:`anonymous_git_env`) and the strict sandbox hides ``~/.ssh``, so a host the
+#: operator reaches only through an ssh config route falls back to DNS. A constant,
+#: so no git output or URL reaches the banner; the proxy hint is left out because
+#: ssh never reads those variables.
+_STRICT_SSH_ROUTE_CODE = "git_clone_failed_strict_ssh_route"
+_STRICT_SSH_ROUTE_ERROR = (
+    "The app's git host could not be resolved. This App Store install fetches the "
+    "app without credentials in the strict sandbox, which hides ~/.ssh, so "
+    "~/.ssh/config (ProxyCommand, ProxyJump, Host aliases) and the ssh-agent are "
+    "not used. If this host is reachable only through your ssh config, clone the "
+    "repository from your own shell and run `kirocrew app install <dir>`."
+)
+
+
+def _strict_ssh_route_failure(git_url: str, output: str, name: str) -> dict[str, Any] | None:
+    """The strict-tier refusal when ssh could not resolve *git_url*'s host, else None.
+
+    Only for a fetch that ran credential-free in the strict sandbox; the caller
+    decides that. *output* is only classified, never copied into the result.
+    """
+    if not (_is_ssh_git_url(git_url) and _git_output_is_ssh_name_unresolved(output)):
+        return None
+    return {
+        "ok": False,
+        "name": name,
+        "code": _STRICT_SSH_ROUTE_CODE,
+        "error": _STRICT_SSH_ROUTE_ERROR,
+    }
+
+
 async def _rmtree_force_settled(path: str | Path) -> None:
     """Remove *path* fully before cancellation can escape to a path reuser.
 
@@ -126,6 +160,31 @@ async def _rmtree_force_settled(path: str | Path) -> None:
                 await asyncio.wait({worker})
             except asyncio.CancelledError:
                 continue
+        raise
+
+
+async def _mkdtemp_settled(prefix: str) -> str:
+    """Make a scratch dir off the loop; a cancel during the hop removes it.
+
+    A cancel that lands while the worker thread is still making the dir leaves the
+    caller before it binds the path, so its ``finally`` has nothing to remove and the
+    thread makes the dir anyway. Shield the hop and, on a cancel, wait for the
+    thread -- through any further cancel too -- remove what it made, then re-raise.
+    """
+    import tempfile
+
+    worker = asyncio.ensure_future(asyncio.to_thread(tempfile.mkdtemp, prefix=prefix))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                continue
+        # A failed mkdtemp made no dir; the cancel is what propagates either way.
+        if not worker.cancelled() and worker.exception() is None:
+            await _rmtree_force_settled(worker.result())
         raise
 
 
@@ -409,6 +468,7 @@ async def _git_fetch_ref(
     sandbox_mode: str,
     mask_local_git_config: bool = False,
     forward_ssh_auth_sock: bool = False,
+    index_originated: bool = False,
 ) -> dict[str, Any] | None:
     """Materialise *dest* from one remote ref. Returns None on success.
 
@@ -448,6 +508,10 @@ async def _git_fetch_ref(
     files instead of content. Only the pre-install store-art prewarm -- which reads
     a handful of image files out of a throwaway checkout and never builds or runs
     the tree -- opts in; every install path keeps *clone_env* as is.
+
+    *index_originated* says the caller runs this fetch credential-free in the
+    strict sandbox for an install (see :func:`_git_clone_or_pull`), so an ssh host
+    name that did not resolve is reported as :data:`_STRICT_SSH_ROUTE_CODE`.
     """
     transport_target = credential_target or git_url
     if _git_target_is_unsupported(transport_target):
@@ -652,6 +716,10 @@ async def _git_fetch_ref(
             # Fail closed. A server that will not serve this object (unreachable
             # commit, or one no ref contains) must not degrade into "install the
             # default branch instead" -- that is the pin silently not applying.
+            if index_originated:
+                refusal = _strict_ssh_route_failure(git_url, out, dest.name)
+                if refusal is not None:
+                    return refusal
             return {
                 "ok": False,
                 "name": dest.name,
@@ -739,8 +807,12 @@ async def _git_fetch_commit(
     clone_env: dict[str, str],
     sandbox_mode: str,
     forward_ssh_auth_sock: bool = False,
+    index_originated: bool = False,
 ) -> dict[str, Any] | None:
-    """Materialise *dest* at exactly *commit*. Returns None on success."""
+    """Materialise *dest* at exactly *commit*. Returns None on success.
+
+    *index_originated* is forwarded to :func:`_git_fetch_ref`; see there.
+    """
     return await _git_fetch_ref(
         git_url,
         commit,
@@ -750,6 +822,7 @@ async def _git_fetch_commit(
         clone_env=clone_env,
         sandbox_mode=sandbox_mode,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        index_originated=index_originated,
     )
 
 
@@ -1127,6 +1200,10 @@ async def _git_clone_or_pull(
                     # while persisting the catalog URL as its provenance would
                     # record a source the installed code was never fetched from.
                     log_lines.append(f"git pull failed (exit {proc.returncode}) — aborting")
+                    if index_originated:
+                        refusal = _strict_ssh_route_failure(git_url, pull_output, dest.name)
+                        if refusal is not None:
+                            return refusal
                     return {
                         "ok": False,
                         "error": _with_network_hint(
@@ -1165,6 +1242,7 @@ async def _git_clone_or_pull(
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
                 forward_ssh_auth_sock=forward_sock,
+                index_originated=index_originated,
             )
             if result is not None:
                 return result
@@ -1294,6 +1372,9 @@ async def _git_clone_or_pull(
                             "docs/app-kit/publishing-guide.md."
                         ),
                     }
+                refusal = _strict_ssh_route_failure(git_url, clone_output, dest.name)
+                if refusal is not None:
+                    return refusal
                 # Not auth-shaped: bare honest failure, with the redacted
                 # (allowlisted, constant) failure class when one is recognized.
                 failure_class = _redacted_git_failure_class(clone_output)

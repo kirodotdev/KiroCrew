@@ -105,6 +105,7 @@ class _Harness:
         jobs: str | None = None,
         group: str | None = None,
         cancel_fails: bool = False,
+        rate_limit_reset: str | None = None,
     ) -> None:
         self._dir = tmp_path
         # Each line of this file is one poll's `gh api ...` stdout, consumed in
@@ -128,6 +129,11 @@ class _Harness:
             group_file.write_text(group, encoding="utf-8")
         if cancel_fails:
             cancel_fail.write_text("", encoding="utf-8")
+        # `gh api rate_limit --jq ...` is answered with the value its jq would
+        # print: the spent REST bucket's reset epoch (absent = the read fails).
+        rate_limit_file = tmp_path / "gh-rate-limit"
+        if rate_limit_reset is not None:
+            rate_limit_file.write_text(rate_limit_reset, encoding="utf-8")
 
         # A `gh` that pops the next scripted response for a poll's listing. The
         # last line is reused once the list is exhausted, so a poll past the
@@ -155,6 +161,7 @@ class _Harness:
                     exit 0
                     ;;
                   *"/jobs"*) fixed {jobs_file} jobs ;;
+                  *"rate_limit"*) fixed {rate_limit_file} rate_limit ;;
                   *"head_sha="*) ;;
                   *"fast-gate.yml/runs"*) fixed {group_file} listing ;;
                   *) echo "gh: unexpected call" >&2; exit 1 ;;
@@ -166,6 +173,10 @@ class _Harness:
                 if [ "$next" -lt "$total" ]; then echo "$next" > {self._cursor}; fi
                 if [ "$line" = "__FAIL__" ]; then
                   echo "gh: simulated API failure" >&2
+                  exit 1
+                fi
+                if [ "$line" = "__RATE_LIMIT__" ]; then
+                  echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
                   exit 1
                 fi
                 printf '%s' "$line"
@@ -333,6 +344,52 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert proc.returncode == 0, proc.stdout
         assert "Fast Gate passed" in proc.stdout
         assert "No Fast Gate run found" not in proc.stdout
+
+    def _listing_reads(self, h: _Harness) -> int:
+        return sum("head_sha=" in c for c in h.calls)
+
+    def test_a_spent_rate_limit_waits_once_for_a_reset_inside_the_budget(
+        self, tmp_path: Path
+    ) -> None:
+        # A spent primary limit cannot clear in 10s. With the reset inside the
+        # budget, the barrier waits for it once and reads again, instead of
+        # retrying every 10s until TOTAL_BUDGET and failing a green gate.
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", _page(_run(16, "completed", "success"))],
+            tick=30,
+            rate_limit_reset="300",
+        )
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert "waiting" in proc.stdout and "for the reset" in proc.stdout
+        assert "Fast Gate passed" in proc.stdout
+        assert self._listing_reads(h) == 2
+        assert h.writes() == []
+
+    def test_a_spent_rate_limit_past_the_budget_fails_at_once_naming_the_reset(
+        self, tmp_path: Path
+    ) -> None:
+        h = _Harness(tmp_path, ["__RATE_LIMIT__"], tick=30, rate_limit_reset="100000")
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "rate limit is spent and resets in" in proc.stdout
+        assert "re-run this job after the reset" in proc.stdout
+        assert self._listing_reads(h) == 1
+
+    def test_a_rate_limit_with_no_spent_bucket_keeps_the_short_retry(self, tmp_path: Path) -> None:
+        # A secondary limit leaves every bucket with quota, so the jq prints
+        # nothing: no reset to wait for, and the 10s retry is kept.
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", "__RATE_LIMIT__", _page(_run(17, "completed", "success"))],
+            tick=10,
+            rate_limit_reset="",
+        )
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert "for the reset" not in proc.stdout
+        assert self._listing_reads(h) == 3
 
     def test_a_pending_fork_approval_keeps_polling_until_the_total_budget(
         self, tmp_path: Path

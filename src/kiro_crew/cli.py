@@ -174,7 +174,9 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     # One gateway per data home, the sign-in screen included: the same lock the
     # gateway takes, held until this process exits.
     try:
-        lock = GatewayLock(config_dir(), port=port or None, bind_address=signin.BIND_HOST).acquire()
+        lock = GatewayLock(
+            config_dir(), port=port or None, bind_address=signin.BIND_HOST, signed_out=True
+        ).acquire()
     except GatewayLockError as lock_err:
         print(f"👻 {lock_err}", file=sys.stderr)
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
@@ -549,6 +551,9 @@ def main() -> None:
     cli_parser_admin.register_security_parser(sub)
     cli_parser_admin.register_eval_parser(sub, _jail_opts)
     cli_parser_admin.register_tailnet_parser(sub)
+    from kiro_crew.remote_control.cli import register_parser as _register_remote_control
+
+    _register_remote_control(sub)
     cli_parser_admin.register_telemetry_parser(sub)
     cli_parser_admin.register_policy_parser(sub)
 
@@ -753,6 +758,11 @@ def main() -> None:
         parser.print_help()
         return
 
+    if args.command == "gateway":  # before companion code can repoint SSH_AUTH_SOCK
+        from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
+
+        record_boot_agent_socket()
+
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
     # services. Standalone (no companion, no KIROCREW_PROFILE) composes the
@@ -870,6 +880,13 @@ def main() -> None:
         # keys off to decide whether to arm itself (see start_dashboard). Cheap
         # and gateway-only — other CLI subcommands are short-lived and skip it.
         faulthandler.enable()
+        # Count crew-log records this process decodes per read (report mode by
+        # default; see crew_log/read_budget.py). Gateway-only for the same reason as
+        # faulthandler: a child or another subcommand never marks itself, so its
+        # reads are not counted. A stdlib-only module and one flag.
+        from kiro_crew.crew_log.read_budget import mark_gateway_process
+
+        mark_gateway_process()
         # An in-app restart reaches this image through os.execv, and execve
         # preserves ITIMER_REAL while resetting a caught SIGALRM to its default
         # disposition: the predecessor cancels its stall alarm before it execs,
@@ -1046,6 +1063,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _tailnet
 
         _tailnet(args)
+    elif args.command == "remote-control":
+        from kiro_crew.remote_control.cli import run as _remote_control
+
+        _remote_control(args)
     elif args.command == "telemetry":
         from kiro_crew.cli_commands import _telemetry
 
@@ -1077,6 +1098,13 @@ def main() -> None:
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
+            # A manual update that finished is the fix for a failed boot apply.
+            from kiro_crew import update_next_start
+
+            try:
+                update_next_start.clear_error()
+            except OSError:
+                pass  # the notice stays; the update itself succeeded
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 
@@ -1096,7 +1124,7 @@ def main() -> None:
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
-        _gateway_pid()
+        _gateway_pid(args.port)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 

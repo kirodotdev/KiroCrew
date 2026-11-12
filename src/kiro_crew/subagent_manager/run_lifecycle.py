@@ -389,9 +389,18 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # config reload between the two attempts cannot move it.
         if info.timeout_secs == 0:
             info.timeout_secs = self._manager._default_timeout
-        await asyncio.wait_for(
-            self._manager._run_inner(info, session_key), timeout=info.timeout_secs
-        )
+        # This run's turns sit under the spawn that admitted it, in the parent's
+        # trace (tracing/subagents.py). ``wait_for`` runs the body in this task.
+        from kiro_crew.tracing import subagents as trace_subagents
+        from kiro_crew.tracing import turns as trace_turns
+
+        _trace_root = trace_subagents.bind_child(info)
+        try:
+            await asyncio.wait_for(
+                self._manager._run_inner(info, session_key), timeout=info.timeout_secs
+            )
+        finally:
+            trace_turns.release_turn_root(_trace_root)
         if info._reap_started and not info.done:
             # Returned with no ending while a reap is in flight -- the tail
             # records nothing for a whole answer a reap got to first: the
@@ -792,6 +801,13 @@ async def _fire_event_impl(
         frame = extra or {}
         label = {k: v for k, v in frame.items() if k != "queued"} if "reason" in frame else None
         self._manager._published_depths.record(info.parent_session_key, frame.get("queued"), label)
+    # A retry or recovery is the newer health state, so it ends a stall here
+    # as it does on the card: a reconnect snapshot replays `info.stalled` and
+    # must not bring the older stall back over the retry. The suspicion also
+    # restarts, so the reaper needs two fresh sweeps to flag it again.
+    if etype in ("subagent_retrying", "subagent_recovering"):
+        info.stalled = False
+        info._stall_suspect_at = 0.0
     if self._manager._on_event:
         try:
             await self._manager._on_event(etype, info, extra or {})

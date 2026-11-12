@@ -416,13 +416,16 @@ def after_shows_the_write(
         written = ev[1].get("revision") if len(ev) > 1 else None
         return bool(written) and after.get("revision") == written
     if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
-        # Undo removes the record this card wrote: the same card id and entry.
+        from kiro_crew.dashboard.handlers.member_capability_catalog import mask_settings
+
+        # Undo removes the record this card wrote: the same card id and entry,
+        # read as the card shows it (the snapshot masks env and header values).
         written = ev[0].get("card_id") if ev else None
         return (
             bool(written)
             and after.get("present") is True
             and after.get("card_id") == written
-            and same(after.get("entry"), p.get("entry"))
+            and same(after.get("entry"), mask_settings(p.get("entry")))
         )
     if kind == catalog.KIND_MCP_TOGGLE:
         return after.get("enabled") is bool(p.get("enabled"))
@@ -809,8 +812,11 @@ def _template_server_state(p: dict[str, Any]) -> dict[str, Any]:
         "template_has": template_declares(p["template"], p["server"]),
     }
     if added is not None:
+        from kiro_crew.dashboard.handlers.member_capability_catalog import mask_settings
+
         out["card_id"] = added.card_id
-        out["entry"] = _jsonable(dict(added.entry))
+        # A card never holds a setting value, its snapshots included.
+        out["entry"] = _jsonable(mask_settings(dict(added.entry)))
     return out
 
 
@@ -1248,7 +1254,12 @@ async def read_context(
         return {"next_run_at": when, "timezone": zone}
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         from kiro_crew.agent_capabilities import CapabilityError
+        from kiro_crew.dashboard.handlers.member_capability_catalog import masks_unresolved
 
+        if masks_unresolved(p):
+            raise catalog.CardCatalogError(
+                "redacted_value_not_writable", "capabilities refused: redacted_value_not_writable"
+            )
         body = {"revision": before.get("revision"), **p["draft"]}
 
         def _preview() -> dict[str, Any]:
@@ -1292,6 +1303,9 @@ async def read_context(
             "impact": impact,
             "label": await asyncio.to_thread(_crewmate_label, p["member"]),
             "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+            # A crewmate on its own file: the edit reaches its worker only, never
+            # the conductor its chat runs on (``mate_worker``).
+            "worker_kit": result.get("mode") == "mate",
         }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1345,20 +1359,32 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
     overwrite; only the slash command it asks for must still be free. An update is pinned to the revision read here: Apply sends it as
     ``expected_revision``, and any save in between is a change since the preview.
     """
+    from kiro_crew.workflows.library import command_ref
+
     svc = _workflow_service(state)
     if kind == catalog.KIND_WORKFLOW_SAVE:
         # The command the card shows, asked for or derived from the name, and
         # whether it is free, read again before Apply, so a save that takes it in
         # between is a change since the preview.
         slug = catalog.workflow_save_slug(params)
-        taken = await asyncio.to_thread(svc.get_definition, slug)
-        return {"slug": slug, "slug_taken": taken is not None}
+        # The allocator's own check: a slug a removed workflow holds is taken
+        # though no ref reaches it.
+        taken = await asyncio.to_thread(svc.slug_taken, slug)
+        return {"slug": slug, "slug_taken": bool(taken)}
     definition = await asyncio.to_thread(svc.get_definition, params["workflow"])
     if not isinstance(definition, dict):
         return {"exists": False}
     return {
         "exists": True,
         "id": str(definition.get("id") or ""),
+        # The ref later reads and the Apply PATCH address: the id, unless the
+        # read lists it as shadowed (a copy restored beside its tombstone), then
+        # the free slug that still reaches it, pinned by ``id``.
+        "ref": (
+            str(definition.get("id") or "")
+            if definition.get("id") not in (definition.get("shadowed_refs") or [])
+            else command_ref(definition)
+        ),
         "slug": str(definition.get("slug") or ""),
         "name": str(definition.get("name") or ""),
         "description": str(definition.get("description") or ""),
@@ -1485,18 +1511,22 @@ async def _workflow_context(
     from kiro_crew.workflows.validate import validate
 
     result = await asyncio.to_thread(validate, params["source"])
-    if not result.ok:
-        errors = "; ".join(str(e) for e in result.errors)
+    if result.save_errors:  # a compile-stage error still saves, with a warning
+        errors = "; ".join(str(e) for e in result.save_errors)
         raise catalog.CardCatalogError(
             "invalid_workflow", f"the script is not valid: {errors[:400]}"
         )
     if kind != catalog.KIND_WORKFLOW_UPDATE or not before.get("exists"):
         return {}
     definition = await asyncio.to_thread(
-        _workflow_service(state).get_definition, str(before.get("id") or "")
+        _workflow_service(state).get_definition, str(before.get("ref") or before.get("id") or "")
     )
     revision = before.get("revision")
-    if not isinstance(definition, dict) or definition.get("revision") != revision:
+    if (
+        not isinstance(definition, dict)
+        or definition.get("id") != before.get("id")
+        or definition.get("revision") != revision
+    ):
         # The diff must be against the revision Apply pins as ``expected_revision``;
         # a save landing between the two reads would otherwise show a diff against
         # a script the card does not replace.

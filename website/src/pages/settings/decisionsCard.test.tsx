@@ -259,6 +259,97 @@ describe('Decisions (Jev) preview card', () => {
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
 
+  it('names a refused hosted default and holds the switch while no consent is recorded', async () => {
+    // The gateway reports `active: "none"` for the hosted default a ceiling refuses,
+    // while `configured_endpoint` still names the hosted address. The card must not
+    // present that address as where messages go, and an enabling write would be a 403.
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'https://api.example/v1/systemone', hosted_permitted: false,
+    } as never)
+    const enable = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue({ enabled: true } as never)
+    renderSection()
+    // The refusal text is behind the lazy DecisionsProviderPicker boundary.
+    await waitFor(() => {
+      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/No decision model is chosen/)).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('https://api.example/v1/systemone')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(decisionsSwitch())
+    expect(enable).not.toHaveBeenCalled()
+  })
+
+  it('reads a SageMaker address the ceiling refuses as no model and names no destination', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
+      hosted_permitted: true, sagemaker_permitted: false, configured_refused: true,
+      sagemaker_available: true,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('reads a SageMaker address as no model when its own region is refused though another region is permitted', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
+      hosted_permitted: true, sagemaker_permitted: true, configured_refused: true,
+      sagemaker_available: true,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('shows a recorded consent as on under a refused default and lets it be withdrawn', async () => {
+    // A surface-bound profile can refuse the hosted host on the dashboard while another
+    // surface still sends under the recorded consent: the switch reports the record,
+    // not the dashboard's refusal, and stays revocable.
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'https://api.example/v1/systemone', hosted_permitted: false,
+    } as never)
+    const revoke = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue({ enabled: false } as never)
+    renderSection()
+    // The refusal text is behind the lazy DecisionsProviderPicker boundary.
+    await waitFor(() => {
+      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
+    expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    fireEvent.click(decisionsSwitch())
+    await waitFor(() => {
+      expect(revoke.mock.calls[0][0]).toBe(false)
+    })
+  })
+
   it('keeps a standing consent revocable after switching to no model', async () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)

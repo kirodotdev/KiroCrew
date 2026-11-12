@@ -37,6 +37,13 @@ class TestReader:
             ("", ["echo", "';'", "'>'", '"a|b"', "x\\;y"], []),
         ]
 
+    @pytest.mark.parametrize("separator", ["&&", "||", ";", "|"])
+    def test_a_continuation_after_a_separator_is_not_the_next_program(self, separator):
+        # bash joins ``cd repo && \``-newline ``cat x`` into ``cd repo && cat x``
+        for text in (f"cd repo {separator} \\\n  cat x", f"cd repo {separator}\\\n\\\ncat x"):
+            commands = read_commands(text, heredocs=True)
+            assert [word.raw for word in commands[-1].argv] == ["cat", "x"], repr(text)
+
     def test_a_quoted_semicolon_redirect_target_is_the_target_not_a_cut(self):
         assert _shape("bash -c 2> ';' 'wipe'") == [
             ("", ["bash", "-c", "'wipe'"], [("2>", "';'")]),

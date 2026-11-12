@@ -55,6 +55,7 @@ from kiro_crew.mcp_gateway.mate_overlays import (
     mate_dir_refused,
     mate_overlay_dir,
     rewrite_mate_overlays,
+    with_conductor_source,
 )
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
 from kiro_crew.mcp_gateway.rewriter_env import (
@@ -110,7 +111,11 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # 12: a reserved ``crewmate:`` agent gets no overlay; a keep that skips this
 # check is refused by name after the loop.
 # 13: a server a config scope mutes is not wrapped (``scope_muted``).
-_FINGERPRINT_SCHEMA = 13
+# 14: a settings server is injected only into an agent whose ``tools`` names it
+# (one with a ``secret://`` reference gets a refusing stub in any other agent),
+# and ``useLegacyMcpJson: false`` (kiro-cli's alias) also gets none.
+# 15: an agent's own server is wrapped only when its ``tools`` names it.
+_FINGERPRINT_SCHEMA = 15
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -142,13 +147,16 @@ def _rewrite_inputs_fingerprint(
     read_buffer_limit: int,
     mate_sources: dict[str, Any] | None = None,
     scope_muted: frozenset[str] = frozenset(),
+    mate_source_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of every input that can change
     :func:`rewrite_agents`'s output.
 
     Enumerated against the code, not guessed:
 
-    * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest).
+    * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest),
+      the crewmate conductor's from *mate_source_dir* included
+      (:func:`~kiro_crew.mcp_gateway.mate_overlays.with_conductor_source`).
     * ``scope_muted`` — the servers a config scope mutes, which are never
       wrapped. The crew store is not otherwise signed, so without this a mute
       saved there kept serving the stub an earlier pass wrote.
@@ -183,7 +191,8 @@ def _rewrite_inputs_fingerprint(
       accepted files' signatures, and whether that set was fully established.
     """
     sources: dict[str, list[Any] | None] = {
-        p.name: _source_sig(p) for p in iter_agent_spec_files(source_dir)
+        p.name: _source_sig(p)
+        for p in with_conductor_source(iter_agent_spec_files(source_dir), mate_source_dir)
     }
     extra: dict[str, Any] = {} if mate_sources is None else {"mate_sources": mate_sources}
     return {
@@ -580,7 +589,9 @@ def rewrite_agents(
     identity ``crewmate:<id>`` (see :mod:`kiro_crew.mcp_gateway.mate_overlays`),
     handled like agent overlays but with no settings injection. An exception in
     that crewmate half drops its outputs and leaves the pass uncached with
-    ``live_incomplete`` set; the agent half still runs.
+    ``live_incomplete`` set; the agent half still runs. The agents half also
+    rewrites that folder's conductor spec under its own name
+    (:func:`~kiro_crew.mcp_gateway.mate_overlays.with_conductor_source`).
 
     Never modifies ``source_dir``. Idempotent. When no input changed since the
     last completed run (see :func:`_rewrite_inputs_fingerprint`) the cached
@@ -716,6 +727,7 @@ def rewrite_agents(
         read_buffer_limit=read_buffer_limit,
         mate_sources=mate_fingerprint,
         scope_muted=scope_muted,
+        mate_source_dir=mate_source_dir,
     )
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
@@ -778,8 +790,11 @@ def rewrite_agents(
     # every agent's own overlay, wrapped with THAT agent's name, and the stub is
     # injected at ACP ``session/new``, where it takes precedence over the raw
     # same-named global entry kiro-cli merges (see ``session_servers.py``).
-    # An agent whose spec sets ``includeMcpJson: false`` is skipped, since
-    # kiro-cli merges nothing into it (see ``_rewrite_single_spec``).
+    # An agent whose spec sets ``includeMcpJson: false``, or its deprecated
+    # alias ``useLegacyMcpJson: false``, is skipped, since kiro-cli merges
+    # nothing into it, and any other agent gets a stub only for the servers its
+    # ``tools`` names, plus a refusing one for each other server whose env holds
+    # a ``secret://`` reference (see ``_rewrite_single_spec``).
     # Empty-``mcpServers`` agents get pooled coverage with the right identity,
     # and the duplicate / empty-``--agent`` collision never arises. The real
     # settings file is never modified, and no settings overlay is written:
@@ -897,7 +912,7 @@ def rewrite_agents(
     # skipped for bad content claims nothing, so it cannot cost its valid twin
     # the overlay (and the pruning of the twin's stale one) below.
     overlay_keys_claimed: dict[str, str] = {}
-    for path in iter_agent_spec_files(source_dir):
+    for path in with_conductor_source(iter_agent_spec_files(source_dir), mate_source_dir):
         # The overlay is JSON whatever the source: ``session_servers`` resolves
         # ``<agent>.json``. The fingerprint's ``sources`` stays keyed by the
         # SOURCE name, so a markdown edit invalidates its overlay.
@@ -976,7 +991,9 @@ def rewrite_agents(
         # backend-bucket sharing / isolation loss). Fall back to the file stem,
         # mirroring ``agent_parts/spec_upgrades.py`` (``data.get("name") or spec_path.stem``); any
         # stable non-empty identifier prevents the collapse.
-        if not spec.get("name"):
+        if not spec.get("name") or path.parent == mate_source_dir:
+            # The crewmate conductor's folder is outside the sandbox's read-only
+            # seal, so its file's own ``name`` is not trusted for the identity.
             spec["name"] = path.stem
         if str(spec["name"]).startswith(MATE_IDENTITY_PREFIX):
             # ``crewmate:`` is the crewmate stubs' identity, and app-callback
@@ -1401,12 +1418,15 @@ __all__ = sorted(
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     # The names the unsplit module imported from the rest of kiro_crew and that only
     # an owner reads now, from their home modules.
+    from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs  # noqa: F401
     from kiro_crew.config.paths import config_dir  # noqa: F401
     from kiro_crew.env import saved_command_casing, spec_path_key  # noqa: F401
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         KIROCREW_BIN_MCP_SERVERS,
+        include_mcp_json,
         mcp_entry_is_muted,
         mcp_entry_is_registry_governed,
+        mcp_entry_is_remote,
     )
     from kiro_crew.mcp_gateway import STUB_MODULE  # noqa: F401
     from kiro_crew.mcp_gateway.hashing import (  # noqa: F401
@@ -1418,14 +1438,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_secret_env_key,
     )
     from kiro_crew.mcp_gateway.launch_approval import (  # noqa: F401
+        _MAX_SERVER_LAUNCHES,
+        REFUSED_TOO_MANY,
         env_fingerprint,
         launch_fingerprint,
+        target_stem,
     )
     from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401
     from kiro_crew.mcp_gateway.rewriter_env import (  # noqa: F401
         _ENV_VAR_PLACEHOLDER,
         _collision_warn_lock,
         _collision_warned_keys,
+        _configured_agent_env,
         _expand_env_map,
         _expand_env_placeholders,
         _must_stay_wrapped,
@@ -1470,6 +1494,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _admit_launch,
         _build_stub_entry,
         _hashable_args,
+        _named_in_tools,
+        _refusing_stub_entry,
         is_unpoolable,
     )
     from kiro_crew.mcp_gateway.secret_uri import (  # noqa: F401

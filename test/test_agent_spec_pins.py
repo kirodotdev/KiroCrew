@@ -342,24 +342,24 @@ def test_a_pin_without_a_usable_overlay_pools_nothing(tmp_path, pins, pinned_ove
 
 
 def test_the_parent_spawn_allowlist_is_the_pinned_parents(tmp_path, pins):
-    from kiro_crew.subagent_parts.agent_policy import _scan_parent_spawn_allowlists
+    from kiro_crew.subagent_parts.spawn_allowlists import _scan_parent_spawn_allowlists
 
     agents = tmp_path / "agents"
     _write(agents, "PkgA-lead.json", name="lead", toolsSettings=_spawn(["alpha"]))
     _write(agents, "PkgB-lead.json", name="lead", toolsSettings=_spawn(["beta"]))
-    both, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents")
+    both, _, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents")
     assert both is not None and len(both) == 2
     pins["lead"] = "PkgB-lead.json"
-    pinned, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents")
+    pinned, _, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents")
     assert pinned is not None and len(pinned) == 1 and "beta" in json.dumps(pinned)
     # A pin chooses among user-level files only: the project scan keeps every
     # claimant's allowlist even when a project file shares the pinned name.
-    project, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents_project")
+    project, _, _ = _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents_project")
     assert project is not None and len(project) == 2
 
 
 def test_a_broken_pin_leaves_the_parent_spawn_allowlist_unknown(tmp_path, pins):
-    from kiro_crew.subagent_parts.agent_policy import _scan_parent_spawn_allowlists
+    from kiro_crew.subagent_parts.spawn_allowlists import _scan_parent_spawn_allowlists
 
     agents = tmp_path / "agents"
     _write(agents, "PkgA-lead.json", name="lead", toolsSettings=_spawn(["alpha"]))
@@ -369,6 +369,7 @@ def test_a_broken_pin_leaves_the_parent_spawn_allowlist_unknown(tmp_path, pins):
     assert _scan_parent_spawn_allowlists(agents, "lead", "spawn_available_agents") == (
         None,
         False,
+        (),
     )
 
 

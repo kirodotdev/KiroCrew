@@ -83,21 +83,18 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
 # block ends its own text with a newline before the next one is appended. The
 # same bracketed phrases also appear MID-LINE as prose — the agent prompt
 # (``config/prompt.md``) explains ``[RESOURCES]``, ``[Hook context:]``,
-# ``[INCOGNITO SESSION]`` and nine more to the model, in backticks — and an
-# unanchored scan took each mention for a real block start. Measured on one
-# real session: the 38,236-char agent prompt was reported as 438, and its
-# remaining 37.8K was booked to ``resource_advisory`` (12,348), ``hook_context``
-# (10,374), ``surface``, ``working_folder`` and two session modes that were
-# not even on. Anchoring to line start is what makes "the assembly emitted
+# ``[INCOGNITO SESSION]`` and more to the model, in backticks. An unanchored
+# scan would take each mention for a block start and book most of the agent
+# prompt to those blocks. Anchoring to line start makes "the assembly emitted
 # this marker" and "the marker matched" the same statement.
 #
 # ``request_header`` is the one exception: the interactive-guidance paragraphs
 # before it end with ``)`` and no newline, so the header legitimately follows
 # them on the same line. The hyphenated form the assembly emits is scrubbed out
 # of every untrusted source before assembly; a bare ``[CURRENT USER REQUEST]``
-# is not, and can still count as a header hit here. That is a pre-existing
-# breakdown-only concern (the span the panel trusts comes from the assembly,
-# not from this scan), not a boundary-forgery one.
+# is not, and can still count as a header hit here. That affects only the
+# breakdown (the span the panel trusts comes from the assembly, not from this
+# scan), so it cannot forge a boundary.
 #
 # The one seam whose text the assembly does not shape itself -- the caller's
 # ``request_prefix_context`` (a ``$skill`` body arrives ``.strip()``ed) -- is
@@ -113,24 +110,22 @@ _COMPILED: Final = tuple(
 # closer; the characters between that closer and the next opening marker belong
 # to no block anybody named and are reported as ``unclassified``.
 #
-# Without this, a block's span ran all the way to the next marker it could find,
-# which silently turned "unattributed" into "MIS-attributed" — and the panel has
-# no way to tell a genuinely large block from a small one that swallowed its
-# neighbours. It is not a rare edge either: whichever blocks are conditional
-# (workspace identity and the docs pointer are skipped for a custom agent, the
-# memory family for a session sealed from the user's memory) are exactly the
-# ones whose absence lets an earlier block absorb everything downstream of it.
-# Measured on one real session: a ~470-char profile block was reported as 8,116.
+# A span running to the next marker would turn "unattributed" into
+# "MIS-attributed", and the panel could not tell a large block from a small one
+# that swallowed its neighbours. Conditional blocks (workspace identity and the
+# docs pointer skipped for a custom agent, the memory family for a session
+# sealed from the user's memory) are exactly the ones whose absence lets an
+# earlier block absorb everything downstream of it.
 #
 # Only closers that the assembly actually emits are listed, so adding one is a
 # data change here rather than an edit to the scanner. A single-line block
-# (``[CURRENT DATE]``, ``[RUNTIME]``, …) has no closer and keeps the old
-# next-marker behaviour, which is correct for it: there is nothing in between.
+# (``[CURRENT DATE]``, ``[RUNTIME]``, …) has no closer and ends at the next
+# marker, which is correct for it: there is nothing in between.
 #
 # Nesting needs no special case. ``[SESSION CONTEXT`` wraps the memory family and
 # closes long after it, but the search below is bounded by the next opening
-# marker, so a wrapper whose nested blocks start first simply never finds its own
-# closer in range and ends where it always did.
+# marker, so a wrapper whose nested blocks start first never finds its own
+# closer in range and ends at the next marker.
 _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
     label: re.compile(pat)
     for label, pat in (
@@ -341,8 +336,8 @@ def split_blocks(
     for index, (start, label) in enumerate(hits):
         next_start = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
         # A block owns up to its own closer when it has one IN RANGE, otherwise up
-        # to the next block. Bounding the search by ``next_start`` is what keeps a
-        # wrapper (whose nested blocks open before it closes) behaving as before.
+        # to the next block. Bounding the search by ``next_start`` keeps a wrapper
+        # (whose nested blocks open before it closes) ending at the next block.
         end = next_start
         closer = _CLOSERS.get(label)
         if closer is not None:

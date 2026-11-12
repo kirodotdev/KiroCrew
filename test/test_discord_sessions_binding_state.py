@@ -510,7 +510,7 @@ class TestBindingLostUnderTheConversation:
         release_third = asyncio.Event()
         governance_calls = 0
 
-        async def _governance(_channel: str) -> bool:
+        async def _governance(_channel: str, **_kw: object) -> bool:
             nonlocal governance_calls
             governance_calls += 1
             if governance_calls == 3:
@@ -522,7 +522,7 @@ class TestBindingLostUnderTheConversation:
 
         monkeypatch.setitem(
             dispatcher.handle_message.__globals__,
-            "channel_inbound_permitted",
+            "inbound_permitted",
             _governance,
         )
         siblings: list[asyncio.Task[None]] = []
@@ -576,11 +576,11 @@ class TestBindingLostUnderTheConversation:
     @pytest.mark.asyncio
     async def test_a_second_channel_is_not_blocked_by_the_first(self, monkeypatch) -> None:
         dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
-        monkeypatch.setitem(
-            dispatcher.handle_message.__globals__,
-            "channel_inbound_permitted",
-            client.is_thread_channel,
-        )
+
+        async def _governance(channel: str, **_kw: object) -> bool:
+            return await client.is_thread_channel(channel)
+
+        monkeypatch.setitem(dispatcher.handle_message.__globals__, "inbound_permitted", _governance)
         store = dispatcher._session_resume._expectations
         for channel in ("c1", "c2"):
             await store.record(channel, "dashboard:chat-1", "Launch plan")

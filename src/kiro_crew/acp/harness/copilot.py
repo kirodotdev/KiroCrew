@@ -46,7 +46,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import TOOL_CALL_CACHE_MAX_KEY_CHARS
 from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
@@ -522,7 +522,8 @@ class CopilotLaunch(ProcessAdapter):
             # The launch config is handed back to THIS child alone; every other
             # sandbox masks the directory it lives in.
             extra_expose_files=(
-                (session._copilot_mcp_config_path,) if session._copilot_mcp_config_path else ()
+                *acp_tool_gate.adapter_expose_files(self.backend, hidden),
+                *((session._copilot_mcp_config_path,) if session._copilot_mcp_config_path else ()),
             ),
         )
 

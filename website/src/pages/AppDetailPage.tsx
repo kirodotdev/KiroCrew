@@ -64,6 +64,7 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
+import { UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
 // its local-art second chance), `appDetailPageTypes.ts` (the page's view
@@ -132,7 +133,8 @@ export default function AppDetailPage() {
   const declaredSelectionActions = (app?.manifest as { contributes?: { selectionActions?: unknown } } | undefined)?.contributes?.selectionActions
   // An update that added `permissions.workerAutoApprove` waits the same way.
   const stagedWorkerAutoApprove = app?.workerAutoApproveGrant?.staged === true
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  const stagedUserSessionReach = app?.userSessionReachGrant?.staged || []
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -255,14 +257,17 @@ export default function AppDetailPage() {
    * server again, because the rows carry server-stamped install state that the
    * action just changed.
    */
-  const load = useCallback(async ({ shareListing = false }: { shareListing?: boolean } = {}) => {
+  const load = useCallback(async ({ shareListing = false, keepView = false }: { shareListing?: boolean; keepView?: boolean } = {}) => {
     if (!name) return
-    setLoading(true)
-    // Drop the previous record before resolving the new name: a genuine miss
-    // sets nothing below, and without this an in-session navigation from a
-    // loaded app to a non-existent one would keep rendering the old app under
-    // the new URL instead of the not-found page.
-    setApp(null)
+    // `keepView` refreshes in place: the loader would unmount the pressed button.
+    if (!keepView) {
+      setLoading(true)
+      // Drop the previous record before resolving the new name: a genuine miss
+      // sets nothing below, and without this an in-session navigation from a
+      // loaded app to a non-existent one would keep rendering the old app under
+      // the new URL instead of the not-found page.
+      setApp(null)
+    }
     clearError()
     try {
       const [installedRead, registryRead, systemRead] = await Promise.allSettled([
@@ -352,6 +357,7 @@ export default function AppDetailPage() {
             composerActionGrant: installed.composerActionGrant,
             selectionActionGrant: installed.selectionActionGrant,
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
+            userSessionReachGrant: installed.userSessionReachGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -487,6 +493,7 @@ export default function AppDetailPage() {
             composerActionGrant: installed.composerActionGrant,
             selectionActionGrant: installed.selectionActionGrant,
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
+            userSessionReachGrant: installed.userSessionReachGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -512,9 +519,11 @@ export default function AppDetailPage() {
         // Neither installed nor in the catalog — but the catalog read FAILED, so
         // this is a load failure, not a missing app.
         throw sideFailure
+      } else {
+        // A real not-found (null app, no error) shows the "doesn't exist" page;
+        // a `keepView` refresh still holds the old record, so drop it here.
+        setApp(null)
       }
-      // Otherwise a real not-found: `app` stays null with no error, and the
-      // render below shows the "doesn't exist" page for exactly that pair.
       if (sideFailure) setError(sideFailure instanceof Error ? sideFailure.message : String(sideFailure))
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_load_app'))
@@ -625,7 +634,8 @@ export default function AppDetailPage() {
       if (result.ok) {
         recordEvent('app_install', { app: app.name, source: 'registry', version: app.version })
         setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
-        await load()
+        // Refresh in place: the loader would unmount the install log being read.
+        await load({ keepView: true })
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
         const message = result.error || i18nT('pages.appDetailPage.install_failed')
@@ -679,7 +689,7 @@ export default function AppDetailPage() {
     const result = await api.enableApp(name, consent, undefined, consent && shownMemberThreads)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
     setBackendRefusedMsg(backendRefusedNotice(app ? appDisplayName(app) : name, result))
-    await load()
+    await load({ keepView: true })
     window.dispatchEvent(new Event('mc:apps-changed'))
   }, [app, load])
 
@@ -722,6 +732,7 @@ export default function AppDetailPage() {
         sessionApproval: app.manifest?.permissions?.sessionApproval === true,
         memberThreads: app.manifest?.permissions?.memberThreads === true,
         workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
+        reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -763,7 +774,7 @@ export default function AppDetailPage() {
       openTrust: trust.open,
       settle: async () => {
         clearError(); setLocalSwitch(null); setShowInstallLog(false)
-        await load()
+        await load({ keepView: true })
         window.dispatchEvent(new Event('mc:apps-changed'))
       },
       setBackendRefusedMsg,
@@ -815,7 +826,6 @@ export default function AppDetailPage() {
           if (!ok) return
         }
         await runEnable(app.name, memberThreads)
-        await load()
         return
       }
       if (action === 'disable') await api.disableApp(app.name)
@@ -823,7 +833,8 @@ export default function AppDetailPage() {
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
-      await load()
+      // Reload in place: Sync keeps its focus, and the page never drops to the loader.
+      await load({ keepView: true })
       // `load()` clears the error but does not speak to success, and a same-version
       // re-copy changes nothing visible, so say it explicitly. The Sync button that
       // reaches here is not gated on source, and `handle_update_app` re-clones a
@@ -859,6 +870,7 @@ export default function AppDetailPage() {
           sessionApproval: app.manifest?.permissions?.sessionApproval === true,
           memberThreads: app.manifest?.permissions?.memberThreads === true,
           workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
+          reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
         })
       } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
         // The grant changed under the dialog (an update added a scope it did not
@@ -1227,6 +1239,7 @@ export default function AppDetailPage() {
               {stagedWorkerAutoApprove && (
                 <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_worker_auto_approve')}</div>
               )}
+              <UserSessionReachStaged staged={stagedUserSessionReach} />
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1239,7 +1252,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : [])].join(', ')
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1253,10 +1266,11 @@ export default function AppDetailPage() {
                     composerActions: stagedComposerActions.map(actionGrant),
                     selectionActions: stagedSelection,
                     workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
+                    reachableByUserSessions: stagedUserSessionReach,
                   })
                   setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
-                  await load()
+                  await load({ keepView: true })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
@@ -1534,7 +1548,7 @@ export default function AppDetailPage() {
                     </>
                   )}
                   {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionBusy} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => { if (!actionBusy) void handleAction('update') }} aria-disabled={isActionRunning('update') || undefined} disabled={actionBusy && !isActionRunning('update')} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-30" title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
                   {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionBusy}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
@@ -1796,18 +1810,8 @@ export default function AppDetailPage() {
                     </div>
                   </div>
                 )}
-                {app.manifest.permissions.workerAutoApprove && (
-                  <div className="rounded-md border border-warn/30 bg-warn-subtle px-2.5 py-2">
-                    <div className="flex items-start gap-2 text-text">
-                      <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
-                      <span>{i18nT('pages.appDetailPage.worker_auto_approve_desc')}</span>
-                    </div>
-                    <div className="mt-1.5 text-[11px] text-muted">
-                      {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>workerAutoApprove</code>
-                      {stagedWorkerAutoApprove && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
-                    </div>
-                  </div>
-                )}
+                {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
+                <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
                   {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}

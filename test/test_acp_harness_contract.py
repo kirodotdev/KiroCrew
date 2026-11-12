@@ -511,6 +511,30 @@ async def test_kas_does_not_keep_legacy_mcp_json_for_a_spec_that_states_the_key(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "opted_in"),
+    [
+        ({"includeMcpJson": True}, True),
+        ({"useLegacyMcpJson": True}, True),
+        ({"includeMcpJson": False}, False),
+    ],
+)
+async def test_kas_stamps_the_specs_own_mcp_json_opt_in(
+    kas_projection_stubbed, monkeypatch, tmp_path, key, opted_in
+):
+    """The wire entry never carries ``true``, so the exclusion reads it from the stamp."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    spec = {"name": "a", "prompt": "p", "tools": [], **key}
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    (entry,) = extras.custom_agents
+    assert entry[CREW_SETTINGS_MCP_KEY]["optedIn"] is opted_in
+
+
+@pytest.mark.asyncio
 async def test_kas_does_not_keep_legacy_mcp_json_for_a_checkout_spec(
     kas_projection_stubbed, monkeypatch, tmp_path
 ):
@@ -1331,6 +1355,20 @@ def test_an_enforced_host_may_not_spawn_without_a_mask():
             f"{backend} is not AGENT_SPEC-routed, so its harness must resolve an "
             f"OS credential mask and put it on the plan"
         )
+
+
+def test_every_enforced_host_module_calls_the_re_exposure_seam():
+    """An enforced host that never calls ``adapter_expose_files`` leaves ``known_hosts`` hidden."""
+    from kiro_crew import acp_tool_gate
+    from kiro_crew.acp.harness import _HARNESSES, _PROCESS_ADAPTERS
+    from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
+
+    hosts = {**_HARNESSES, **_PROCESS_ADAPTERS}
+    enforced = {b for b in ACP_BACKEND_ROUTING if acp_tool_gate.is_enforced(b)}
+    assert enforced <= set(hosts), "every enforced backend has a launch class to read"
+    for backend in sorted(enforced):
+        source = inspect.getsource(inspect.getmodule(hosts[backend]))
+        assert "adapter_expose_files(" in source, backend
 
 
 # ── Seam 1c: the spawn sees the sandbox tier ──

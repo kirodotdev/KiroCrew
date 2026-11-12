@@ -307,6 +307,11 @@ class ApprovalMint:
             and getattr(event, "tool_name", None) == _TOOL_NAME
         )
 
+    @property
+    def for_connection(self) -> bool:
+        """Whether this approval is for a Crew-owned Connection's tool."""
+        return self._is_connection()
+
     def _is_connection(self) -> bool:
         """A tool of a Crew-owned Connection this session reaches through its bridge.
 
@@ -317,9 +322,11 @@ class ApprovalMint:
             return False
         from kiro_crew.connections import crew_oauth_proxy
 
-        return crew_oauth_proxy.is_connection_server(
-            self._session_key, getattr(event, "mcp_server_name", None) or ""
-        )
+        # The stated server, else pi's envelope owner: a match only ever adds the
+        # allow-once downgrade and a mint attempt, which ``note_approval`` gates.
+        server = getattr(event, "mcp_server_name", None) or ""
+        server = server or crew_oauth_proxy.connection_identity(event)[0]
+        return crew_oauth_proxy.is_connection_server(self._session_key, server)
 
     def mint(self) -> None:
         if not self.applies or _cancel_generation_of(self._session_key) != self._generation:

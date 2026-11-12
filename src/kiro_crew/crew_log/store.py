@@ -152,6 +152,7 @@ from kiro_crew.crew_log.store_retention import (  # noqa: F401
     _scan_whole_for_types,
     _spawned_child_slot,
     _still_expired,
+    _type_needle,
     find_last_tree_edge,
     find_spawned_entries,
     read_last_tree_edge,

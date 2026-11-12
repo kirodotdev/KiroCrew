@@ -422,7 +422,8 @@ export default function PrBulkBar() {
             onClick={() => start('approve')}
             // Disabled, not hidden, when a selected row has no head commit: the button
             // moving would make the whole row jump, and the tooltip can say why.
-            disabled={bulk.busy || !canBulkApprove}
+            disabled={!canBulkApprove}
+            busy={bulk.busy}
             title={canBulkApprove
               ? i18nT('apps.issueRadar.components.prBulkBar.approve_hint', { subject: terms.changeRequestPlural })
               : i18nT('apps.issueRadar.components.prBulkBar.approve_needs_commit')}
@@ -432,7 +433,7 @@ export default function PrBulkBar() {
           </Btn>
           <Btn
             onClick={() => start('comment')}
-            disabled={bulk.busy}
+            busy={bulk.busy}
             title={i18nT('apps.issueRadar.components.prBulkBar.comment_hint', { subject: terms.changeRequestPlural })}
           >
             <MessageSquarePlus className="lucide-inline" />
@@ -451,7 +452,7 @@ export default function PrBulkBar() {
           {mergeTargets.length > 0 && (
             <Btn
               onClick={() => start(MERGE_READY_ACTION)}
-              disabled={bulk.busy || seq.busy}
+              busy={bulk.busy || seq.busy}
               title={i18nT('apps.issueRadar.components.prBulkBar.merge_ready_hint')}
             >
               {seq.busy
@@ -469,7 +470,8 @@ export default function PrBulkBar() {
             // mergeable (the provider refuses: "in clean status"), already merged, or of
             // unknown readiness. This is the defect that motivated the change: the
             // button used to fire regardless and collect one refusal per row.
-            disabled={bulk.busy || seq.busy || armableRows.length === 0}
+            disabled={armableRows.length === 0}
+            busy={bulk.busy || seq.busy}
             // Says what it does, because the difference from "merge now" is the
             // entire point: the provider still decides.
             title={armableRows.length > 0
@@ -485,7 +487,7 @@ export default function PrBulkBar() {
           </Btn>
           <Btn
             onClick={() => start(PR_ACTION.cancelAutoMerge)}
-            disabled={bulk.busy}
+            busy={bulk.busy}
             title={i18nT('apps.issueRadar.components.prBulkBar.cancel_auto_merge_hint')}
           >
             <CircleSlash className="lucide-inline" />
@@ -494,7 +496,7 @@ export default function PrBulkBar() {
           </>)}
           <Btn
             onClick={() => start('reopen')}
-            disabled={bulk.busy}
+            busy={bulk.busy}
             title={i18nT('apps.issueRadar.components.prBulkBar.reopen_hint', { subject: terms.changeRequestPlural })}
           >
             <CircleDot className="lucide-inline" />
@@ -503,7 +505,7 @@ export default function PrBulkBar() {
           <Btn
             danger
             onClick={() => start('close')}
-            disabled={bulk.busy}
+            busy={bulk.busy}
             title={i18nT('apps.issueRadar.components.prBulkBar.close_hint', { subject: terms.changeRequestPlural })}
           >
             <CircleSlash className="lucide-inline" />
@@ -609,7 +611,8 @@ export default function PrBulkBar() {
             <Btn
               primary
               onClick={() => (isMergePending ? runSequentialMerge() : apply(pending))}
-              disabled={!canSubmit || bulk.busy || seq.busy}
+              disabled={!canSubmit}
+              busy={bulk.busy || seq.busy}
             >
               {bulk.busy || seq.busy
                 ? <Loader2 className="lucide-inline animate-spin" />

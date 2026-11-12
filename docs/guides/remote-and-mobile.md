@@ -286,11 +286,14 @@ Works on macOS, Linux, and Windows (OpenSSH ships with Windows 10+; the config
 file is at `%USERPROFILE%\.ssh\config`).
 
 A hand-rolled tunnel dies whenever the laptop sleeps. The desktop app can hold
-it for you instead: tick **Keep an SSH tunnel to this crew open** in the
-**Add/Edit Remote Crew** form the "no gateway is answering" dialog opens, or in
-**Set Remote Host…** on the app's own launch tab (where you can also turn it off
-later), and the app keeps the forward up and rebuilds it after sleep
-(macOS and Linux; see `website/electron/README.md`).
+it for you instead: **Keep an SSH tunnel to this crew open** starts ticked when
+you add a crew in the **Add/Edit Remote Crew** form the "no gateway is answering"
+dialog opens, or in **Set Remote Host…** on the app's own launch tab (where you
+can also turn it off later), and the app keeps the forward up and rebuilds it
+after sleep (macOS and Linux; see `website/electron/README.md`). With the local
+gateway off, the app also opens it for a crew saved unticked when nothing else
+answers or listens on that port at launch, until you quit or save the crew
+unticked again.
 
 If your browser reaches the dashboard on a *different* local port than the
 remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin
@@ -308,7 +311,9 @@ The pane's error then says it cannot reach the port and names it. It also gives
 one `ssh -L` line that forwards every crew's pane port, each with the same
 number on both sides. Run it beside your dashboard forward, with your gateway
 host in place of `<gateway-host>`, or open the dashboard on the gateway host
-itself.
+itself. The desktop app does this for you when it holds the tunnel (**Keep an SSH
+tunnel to this crew open**, above): it forwards each pane's port as the pane
+opens, and again after Retry moves it.
 
 ### Named HTTPS tunnel (phone)
 
@@ -774,6 +779,17 @@ while the browser's own HTTP cache still holds the hashed `/assets/` bundles, wh
 the worker never caches. After a build that changes those hashes, the cached shell
 references bundle URLs nothing has downloaded yet. Sessions, history, and
 notifications are never served from disk.
+
+**The worker's retry covers only a page it already controls.** It registers once
+the page has started loading, so a first visit, a fresh browser profile and the
+load after **Clear cache and reload** reach the network without it. For those the
+shell in `index.html` recovers on its own: when a boot module fails to load on a
+top-level page (a dropped connection, or Chromium's `ERR_NETWORK_CHANGED` while a
+network interface comes or goes), it reloads the page after a short, jittered
+delay, up to three times, counting each reload in `sessionStorage` so it can never
+loop. If the page still does not start, it shows **Kiro Crew did not load** with a
+**Clear cache and reload** button. A dashboard embedded in another page does not
+reload itself; it reports the failure to the page around it.
 
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:

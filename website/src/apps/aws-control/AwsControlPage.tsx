@@ -517,6 +517,9 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
   })
 
   const data = availableQ.data
+  // AWS CLI v1 has no `configure list-profiles`, so a retry can never clear it.
+  const cliV1 =
+    availableQ.error instanceof AwsControlError && availableQ.error.message === 'unsupported_aws_cli_v1'
   const unregistered = useMemo(
     () => (data?.profiles ?? []).filter((p) => !p.registered),
     [data],
@@ -597,8 +600,12 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
           <AwsErrorNotice
             askAgent={!hasDraft}
             error={availableQ.error}
-            message={availableQ.isError ? i18nT('apps.awsControl.page.add_accounts_load_error') : null}
-            onRetry={() => availableQ.refetch()}
+            message={
+              availableQ.isError
+                ? i18nT(cliV1 ? 'apps.awsControl.page.add_accounts_cli_v1' : 'apps.awsControl.page.add_accounts_load_error')
+                : null
+            }
+            onRetry={cliV1 ? undefined : () => availableQ.refetch()}
             className="mb-2"
             testId="add-accounts-load-error"
           />

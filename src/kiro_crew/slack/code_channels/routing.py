@@ -107,8 +107,21 @@ def _self_bot_id() -> str:
     return validated_self_bot_id()
 
 
+#: The Slack client the message being dispatched was read with (:func:`dispatch`).
+#: A reconnect clears ``orch.slack`` for its window; the dispatch keeps posting,
+#: binding and routing through the client it started with instead of losing the
+#: message to a cleared one.
+_SLACK: contextvars.ContextVar[Any] = contextvars.ContextVar("code_channel_slack", default=None)
+
+
+def _slack(orch: Any) -> Any:
+    """The dispatch's pinned Slack client, else the live ``orch.slack``."""
+    pinned = _SLACK.get()
+    return pinned if pinned is not None else getattr(orch, "slack", None)
+
+
 def _client(orch: Any) -> CodeChannelsClient | None:
-    return CodeChannelsClient.from_slack(getattr(orch, "slack", None))
+    return CodeChannelsClient.from_slack(_slack(orch))
 
 
 def _dashboard_state() -> Any | None:
@@ -186,8 +199,40 @@ async def inbound_gate(
     authorized: bool,
     from_trusted_bot: bool,
     address_text: str | None = None,
+    slack: Any = None,
 ) -> InboundResult:
     """Decide what a code channel does with *event* (see the module docstring).
+
+    *slack* is the client the caller read the message with; the channel lookup
+    and any reply use it (:func:`_slack`), as :func:`dispatch` does. None reads
+    ``orch.slack``.
+    """
+    token = _SLACK.set(slack)
+    try:
+        return await _inbound_gate_once(
+            orch,
+            event,
+            text=text,
+            sender_id=sender_id,
+            authorized=authorized,
+            from_trusted_bot=from_trusted_bot,
+            address_text=address_text,
+        )
+    finally:
+        _SLACK.reset(token)
+
+
+async def _inbound_gate_once(
+    orch: Any,
+    event: dict[str, Any],
+    *,
+    text: str,
+    sender_id: str,
+    authorized: bool,
+    from_trusted_bot: bool,
+    address_text: str | None = None,
+) -> InboundResult:
+    """:func:`inbound_gate`, decided once per message.
 
     Slack delivers a mention twice (``message`` and ``app_mention``), and this
     runs before the gateway's own dedup, so a verdict is remembered per message:
@@ -372,7 +417,7 @@ async def _inbound_gate(
     if not authorized:
         _audit(sender_id, "slack.code_channel.message", "denied", resources, "unauthorized sender")
         try:
-            await orch.slack.post_ephemeral(channel, sender_id, NOT_AUTHORIZED_TEXT)
+            await _slack(orch).post_ephemeral(channel, sender_id, NOT_AUTHORIZED_TEXT)
         except Exception:
             logger.debug("code channel: ephemeral rejection failed", exc_info=True)
         return DROP
@@ -406,6 +451,7 @@ async def dispatch(
     sender_id: str,
     was_mention: bool,
     attachment_paths: Sequence[str] = (),
+    slack: Any = None,
 ) -> bool:
     """Start the turn for a code-channel message; True when handled here.
 
@@ -417,13 +463,20 @@ async def dispatch(
     returns True it owns them: the bound session's turn that reads them
     deletes them when it ends (:func:`_adopt_temps`), and any the message did
     not hand to a session are deleted here. On False they stay the caller's.
+
+    *slack* is the client the caller read the message with. Every post, bind and
+    route of this dispatch goes through it (:func:`_slack`), so a reconnect that
+    clears ``orch.slack`` meanwhile cannot drop the message. None reads
+    ``orch.slack`` as before.
     """
     token = _INBOUND_TEMPS.set(list(attachment_paths))
+    slack_token = _SLACK.set(slack)
     handled = False
     try:
         handled = await _dispatch(orch, result, event, clean_text, sender_id, was_mention)
         return handled
     finally:
+        _SLACK.reset(slack_token)
         leftover = _INBOUND_TEMPS.get()
         _INBOUND_TEMPS.reset(token)
         if handled and leftover:
@@ -606,11 +659,40 @@ def install_temp_cleanup() -> None:
 
 async def _post(orch: Any, channel: str, text: str, thread_ts: str | None) -> str:
     try:
-        ts = await orch.slack.post_message(channel, text, thread_ts)
+        ts = await _slack(orch).post_message(channel, text, thread_ts)
     except Exception:
         logger.debug("code channel post failed", exc_info=True)
         return ""
     return str(ts or "")
+
+
+async def _post_kickoff(
+    orch: Any, channel: str, text: str, agent: str, project_dir: str, approval_mode: str
+) -> str:
+    """Post the kickoff with the channel's agent picker and Approval mode select;
+    returns its ts.
+
+    *agent* is the resolved default the picker starts on; *approval_mode* the
+    mode the session starts in (``normal``, ``trust_reads`` or ``trust``). When
+    Slack refuses the Block Kit post, the kickoff goes out as plain text: the
+    channel works, only the pickers are missing (``/kirocrew agent`` and
+    ``/kirocrew approval`` still change them).
+    """
+    from kiro_crew.slack.code_channels import agent_picker
+
+    agents = await agent_picker.agent_menu(project_dir or None)
+    try:
+        ts = await orch.slack.post_blocks(
+            channel,
+            agent_picker.kickoff_blocks(text, agents, agent, approval_mode=approval_mode),
+            text,
+        )
+    except Exception:
+        logger.info("code channel kickoff pickers not posted; posting text", exc_info=True)
+    else:
+        if ts:
+            return str(ts)
+    return await _post(orch, channel, text, None)
 
 
 def _folder_name(state: Any, folder_id: str) -> str:
@@ -667,6 +749,25 @@ async def _hydrate_origin_thread(orch: Any, origin_thread_ts: str) -> None:
         logger.info("origin thread overrides not hydrated", exc_info=True)
 
 
+class ChannelRefused(BindingUnavailable):
+    """The channel policy refuses the channel mid-bind: no session is bound.
+
+    Raised before the worktree is cut, or after the kickoff post and before the
+    session (then the cut tree and the kickoff stay, as on a failed kickoff).
+    """
+
+
+def _refuse_bind_if_policy_refuses(channel: str) -> None:
+    """The per-channel ceiling at a bind's commit points (audited by the policy
+    seam, fail-closed): no worktree is cut and no session bound once it refuses."""
+    from kiro_crew.slack.code_channels import surface
+
+    if surface.channel_policy_refusal(
+        channel, operation="slack.code_channel.bind", caller="slack_code_channel"
+    ):
+        raise ChannelRefused("channel refused by policy")
+
+
 async def _bind_channel(
     orch: Any,
     *,
@@ -701,10 +802,19 @@ async def _bind_channel(
     # worktree. The spec comes back unchanged off git or with the feature off.
     from kiro_crew.slack.code_channels.workspace.core import plan_session
 
+    _refuse_bind_if_policy_refuses(channel)  # after the awaits above, before the cut
     spec = await plan_session(
         state, spec, channel_id=channel, team_id=team_id, title=title, channel_name=channel_name
     )
-    anchor = await _post(orch, channel, _kickoff_text(title, state, spec.folder_id), None)
+    first_mode = spec.approval_mode if spec.approval_mode in ("trust_reads", "trust") else "normal"
+    anchor = await _post_kickoff(
+        orch,
+        channel,
+        _kickoff_text(title, state, spec.folder_id),
+        spec.agent,
+        spec.project_dir,
+        first_mode,
+    )
     if not anchor:
         raise BindingUnavailable("kickoff post failed")
     # Held from here, with no await since the post returned, until the binding
@@ -743,7 +853,8 @@ async def _bind_channel(
             )
             stored.append(await asyncio.to_thread(write, binding))
 
-        await create_bound_session(
+        _refuse_bind_if_policy_refuses(channel)  # after the kickoff, before the session
+        slot = await create_bound_session(
             state,
             spec,
             title=title or "Slack code channel",
@@ -751,9 +862,19 @@ async def _bind_channel(
             anchor_ts=anchor,
             before_publish=record_binding,
         )
-        # No worktree attempt here: each turn's admission prepares the workspace
-        # (one bind attempt per turn), before it captures the session's project.
-        return stored[0]
+    from kiro_crew.slack.code_channels.approval_picker import current_mode
+
+    if str(getattr(slot, "agent", "") or spec.agent) != spec.agent or (
+        slot is not None and current_mode(slot) != first_mode
+    ):
+        # No resolved default (the session took the default template), or the
+        # mode did not take: show what the session really runs on the pickers.
+        from kiro_crew.slack.code_channels.agent_picker import refresh_kickoff
+
+        await refresh_kickoff(stored[0])
+    # No worktree attempt here: each turn's admission prepares the workspace
+    # (one bind attempt per turn), before it captures the session's project.
+    return stored[0]
 
 
 def action_user_meta(channel: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -832,7 +953,7 @@ async def answer_unroutable(orch: Any, channel: str, user_id: str = "") -> bool:
     if live is not None:
         return False
     # Told only to the person who clicked: the channel learns nothing new.
-    slack = getattr(orch, "slack", None)
+    slack = _slack(orch)
     try:
         if slack is not None and user_id:
             await slack.post_ephemeral(channel, user_id, ANSWER_UNROUTED_TEXT)
@@ -915,7 +1036,7 @@ async def _route_to_slot(
         binding.session_key,
         sender_id,
         binding.channel_id,
-        orch.slack,
+        _slack(orch),
         binding.anchor_ts,
         user_meta=meta or None,
     )
@@ -938,6 +1059,10 @@ PRIVACY_REFUSED_TEXT = (
 FIRST_TURN_REFUSED_TEXT = (
     "<#%s> did not start on this: its session refused the request (the channel "
     "says why). Send it again once that is fixed."
+)
+ARCHIVED_TEXT = (
+    "This code channel was archived, so nothing runs here any more. Start a new one "
+    "from a thread."
 )
 UNSUPPORTED_COMMAND_TEXT = (
     "That command does not run in a code channel. Use it in the channel's dashboard session."
@@ -976,7 +1101,15 @@ async def _wait_for_creation(
 async def _dispatch_directed(
     orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
 ) -> bool:
-    """Run a DIRECTED message in the channel's session; always handled here.
+    """Run a DIRECTED message in the channel's session; always handled here."""
+    await deliver_directed(orch, result, event, clean_text, sender_id)
+    return True
+
+
+async def deliver_directed(
+    orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
+) -> bool:
+    """Deliver a DIRECTED message to the channel's session; True when it reached it.
 
     A message the gate admitted is never handed back to the normal path, which
     would answer it in a thread session the channel does not belong to; when it
@@ -994,17 +1127,34 @@ async def _dispatch_directed(
             "privacy modifier in a code channel",
         )
         await _post(orch, channel, PRIVACY_REFUSED_TEXT, None)
-        return True
+        return False  # refused, so it never reached the session
     if _dashboard_state() is None:
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
     # Bound or not, a channel this process is still opening waits for its
     # opening request to be delivered first.
     await _wait_for_creation(event, result.info, store().get_binding(channel))
+    from kiro_crew.slack.code_channels import surface
+
+    # The per-channel ceiling at each commit point after the waits above (a slash
+    # command and a message both arrive here; audited by the policy seam): no
+    # session is bound, no worktree cut and no turn run once it refuses.
+    operation = "slack.code_channel.message"
+    archived = refused = False
     try:
         async with _bind_lock(channel):
             binding = store().get_binding(channel)
-            if binding is None:
+            # Archived when stamped, or fenced by this process (Slack archived it
+            # but the stamp is not written yet).
+            archived = surface.fenced_here(channel) or (
+                binding is not None and bool(binding.archived_at)
+            )
+            refused = bool(
+                surface.channel_policy_refusal(channel, operation=operation, caller=sender_id)
+            )
+            if archived or refused:
+                pass  # nothing is adopted, rebound or prepared for these
+            elif binding is None:
                 # A code channel Slack's UI opened with us as its agent: adopt it.
                 info = result.info
                 binding = await _bind_channel(
@@ -1033,24 +1183,47 @@ async def _dispatch_directed(
                     created_by_us=binding.created_by_us,
                     replace=True,
                 )
+    except ChannelRefused:
+        return False  # refused mid-bind: nothing bound, and nothing to post into it
     except BindingUnavailable as exc:
         logger.info("code channel %s: no session to route to (%s)", channel, exc)
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
     except Exception:
         logger.exception("code channel %s: binding a session failed", channel)
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
+    if refused:
+        return False
+    if archived:
+        # An archived channel takes no more work. No turn, no new
+        # session, and above all no worktree cut again for a tree its Archive
+        # removed (it would be orphaned for good: no cleanup runs once archived).
+        _audit(sender_id, "slack.code_channel.message", "denied", f"channel={channel}", "archived")
+        await _post(orch, channel, ARCHIVED_TEXT, None)
+        return False
+    if binding is None:
+        await _post(orch, channel, UNROUTED_TEXT, None)
+        return False
     # The channel's worktree is prepared by the turn's admission, once per turn
     # and before it captures the session's project: a second attempt here would
     # spend the bind budget twice on one message.
     from kiro_crew.slack.handler import LinkedRoute
 
+    if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
+        return False  # again after the bind's awaits, right before the turn (and its worktree)
+    current = store().get_binding(channel)
+    if surface.fenced_here(channel) or (current is not None and current.archived_at):
+        # Archived during the bind's awaits (fenced, or already stamped and
+        # unfenced): no turn reaches it.
+        _audit(sender_id, "slack.code_channel.message", "denied", f"channel={channel}", "archived")
+        await _post(orch, channel, ARCHIVED_TEXT, None)
+        return False
     routed = await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event))
     if routed is LinkedRoute.UNROUTED:
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)
-    # REFUSED: the refusal itself was the reply.
-    return True
+    # REFUSED: the refusal itself was the reply. Only ROUTED reached the session.
+    return routed is LinkedRoute.ROUTED
 
 
 def _asks_for_privacy(text: str) -> bool:
@@ -1077,7 +1250,7 @@ async def _thread_context(
     """
     if not thread_ts:
         return []
-    fetch = getattr(orch.slack, "fetch_thread_replies", None)
+    fetch = getattr(_slack(orch), "fetch_thread_replies", None)
     if fetch is None:
         return []
     try:
@@ -1122,7 +1295,7 @@ async def _seed_context(
 
     parts: list[str] = []
     try:
-        parent = await fetch_thread_parent(orch.slack, channel, thread_ts, with_author=False)
+        parent = await fetch_thread_parent(_slack(orch), channel, thread_ts, with_author=False)
     except Exception:
         logger.debug("code channel seed: thread parent unavailable", exc_info=True)
         parent = None
@@ -1139,7 +1312,7 @@ async def _seed_context(
         else:
             parts.append(f"First message of the thread:\n{parent_text}")
     replies = await replies_since_last_turn(
-        orch.slack, channel, thread_ts, msg_ts, session_key=session_key, first_turn=True
+        _slack(orch), channel, thread_ts, msg_ts, session_key=session_key, first_turn=True
     )
     if replies.text:
         parts.append(f"Replies before this request, oldest first:\n{replies.text}")
@@ -1232,7 +1405,7 @@ async def _acknowledge(orch: Any, cfg: Any, channel: str, msg_ts: str) -> str | 
     """
     if getattr(getattr(cfg, "slack", None), "reactions_enabled", True) is False:
         return None
-    slack = getattr(orch, "slack", None)
+    slack = _slack(orch)
     if slack is None or not hasattr(slack, "add_reaction"):
         return None
     from kiro_crew.slack.handler import phase_emojis
@@ -1251,7 +1424,7 @@ async def _acknowledge(orch: Any, cfg: Any, channel: str, msg_ts: str) -> str | 
 async def _unacknowledge(orch: Any, channel: str, msg_ts: str, emoji: str | None) -> None:
     """Take the decision's ack down: a turn wears at most one reaction, and the
     in-place answer (or the "Opened" note) is what follows. Never raises."""
-    slack = getattr(orch, "slack", None)
+    slack = _slack(orch)
     if not emoji or slack is None or not hasattr(slack, "remove_reaction"):
         return
     try:
@@ -1433,6 +1606,18 @@ async def maybe_open_code_channel(
                     created_by_us=True,
                     channel_name=request.name,
                 )
+        except ChannelRefused:
+            # The policy refused the new channel while it was being bound: a
+            # retry there would be refused too, so do not suggest one.
+            logger.info("code channel %s: refused by the channel policy at bind", new_channel)
+            await _post(
+                orch,
+                channel,
+                f"I opened <#{new_channel}> but the channel policy doesn't admit it, "
+                "so no session was started there.",
+                thread_ts or msg_ts,
+            )
+            return True
         except Exception:
             logger.exception(
                 "code channel %s opened but its session could not be bound", new_channel
@@ -1630,6 +1815,14 @@ async def _stop_bound(
     source: str,
     say_idle: bool = True,
 ) -> str:
+    from kiro_crew.slack.code_channels import surface
+
+    # First, before any await: work admitted before this press (an in-flight
+    # tool call, a wrap-up) writes nothing more to Slack.
+    surface.mark_stopped(channel)
+    from kiro_crew.slack.code_channels.status import hold_after_turn
+
+    hold_after_turn(channel, None)  # a Stop clears the agent's "suspended" hold
     state = _dashboard_state()
     slot = bound_slot(state, binding) if binding is not None else None
     if state is None or slot is None or not getattr(slot, "running", False):
@@ -1674,14 +1867,24 @@ async def handle_session_stopped(orch: Any, event: dict[str, Any], user: str) ->
     audited the presser; this adds the code channel's own rule (the ORIGIN
     conversation must still admit the bot) before stopping the bound session.
     """
+    if event.get("thread_ts"):
+        return None  # a thread session, not a code channel
+    return await stop_from_channel(orch, event, user)
+
+
+async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str | None:
+    """Stop *event*'s bound code-channel session for *user*, with no Slack client.
+
+    The checks :func:`handle_session_stopped` applies, for a typed ``!stop``
+    too (a thread included: the whole channel is one session). The gateway
+    calls it when a reconnect left no client to run :func:`inbound_gate` with.
+    """
     from kiro_crew.slack.agent_sessions.session_events import (
         CHANNEL_STOP_DENIED,
         CHANNEL_STOP_STOPPED,
     )
 
     channel = str(event.get("channel") or "")
-    if event.get("thread_ts"):
-        return None  # a thread session, not a code channel
     # Off means off, except for a bound session still running: switching the
     # feature off does not cancel its turn, so its Stop must still stop it.
     if not code_channels_on(live_config(orch)) and not channel_session_running(channel):

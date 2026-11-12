@@ -13,6 +13,7 @@ would prove nothing about the binding.
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 
@@ -20,8 +21,16 @@ import pytest
 
 from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp import skill_projection  # bound before a fixture patches its paths
-from kiro_crew.acp.runtime import AcpRuntime
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp.harness import harness_for
+from kiro_crew.acp.harness.kas_cloud import CLOUD_SANDBOX_TARGET, KasCloudSandboxHarness
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID
+from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    METHOD_SESSION_LOAD,
+    METHOD_SESSION_NEW,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,8 +55,10 @@ import json, os, sys
 # reserved set does not know about (the measured ones go out under a wire alias).
 BUILTIN = ["vibe", "spec", "plan", "review"]
 # Accepted in a batch and then left out of availableModes (measured on 2.23.0).
-DROPPED = ["default"]
-state = {"modes": list(BUILTIN), "injected": [], "set_mode": None}
+# ``dropped-agent`` stands in for an entry the engine drops whole, as the 0.66.33
+# bundle drops one with no prompt. A test can name one more through the environment.
+DROPPED = ["default", "dropped-agent"] + [d for d in os.environ.get("KAS_STUB_DROP", "").split(",") if d]
+state = {"modes": list(BUILTIN), "injected": [], "set_mode": None, "start_mode": {}}
 
 def mode_entry(mode_id):
     # The v3 engine stamps who supplied each definition; a client entry that
@@ -78,16 +89,25 @@ for line in sys.stdin:
             "agentCapabilities": {"loadSession": True},
         }})
     elif method in ("session/new", "session/load"):
-        agents = ((params.get("_meta") or {}).get("kiro") or {}).get("customAgents") or []
+        kiro = (params.get("_meta") or {}).get("kiro") or {}
+        agents = kiro.get("customAgents") or []
         state["injected"] = agents
+        state["start_mode"][method] = kiro.get("modeId")
         state["modes"] = list(BUILTIN) + [
             a.get("id") for a in agents
             if a.get("id") and a.get("id") not in BUILTIN and a.get("id") not in DROPPED]
         record()
+        if os.environ.get("KAS_STUB_STATUS_BEFORE_ANSWER"):
+            # A report the engine sends while session/new is still in flight.
+            send({"jsonrpc": "2.0", "method": "_kiro/mcp/status",
+                  "params": {"sessionId": "kas-mode-session", "servers": []}})
+        # The session starts in the mode its modeId names when that mode exists,
+        # else in vibe (both measured on the 0.66.33 bundle).
+        current = kiro.get("modeId") if kiro.get("modeId") in state["modes"] else "vibe"
         send({"jsonrpc": "2.0", "id": mid, "result": {
             "sessionId": "kas-mode-session",
             "modes": {
-                "currentModeId": "vibe",
+                "currentModeId": current,
                 "availableModes": [mode_entry(m) for m in state["modes"]],
             },
         }})
@@ -348,6 +368,113 @@ class TestModeBinding:
         assert seen["set_mode"] == "kirocrew"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", ["kirocrew", None], ids=["explicit-agent", "runtime-default"])
+    async def test_session_new_starts_in_the_injected_agent(
+        self, mode_stub, crew_agent, tmp_path, agent
+    ):
+        """session/new names the one injected agent as the mode to start in.
+
+        Without ``_meta.kiro.modeId`` KAS starts the session in its own ``vibe``
+        mode and starts every ``~/.kiro/settings/mcp.json`` server for it until
+        set_mode switches away. The id is read from the batch, so a session on the
+        runtime default (no caller agent) names it too, and set_mode still follows.
+        """
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsm",
+            agent="kirocrew",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "wsm", agent=agent)
+            assert handle.active_agent == "kirocrew"
+        finally:
+            await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["start_mode"] == {"session/new": "kirocrew"}
+        assert seen["set_mode"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_reports_sent_during_session_new_count_as_the_agents_own(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """A session that starts in its agent has no pre-switch roster to discount.
+
+        A report the engine sends while session/new is in flight describes the
+        agent's own servers once the session starts in that agent, so the readiness
+        drain is told that no queued frame is stale.
+        """
+        monkeypatch.setenv("KAS_STUB_STATUS_BEFORE_ANSWER", "1")
+        stale: list[int] = []
+        real = AcpRuntime._wait_managed_mcp
+
+        async def spy(self, handle, params, agent, timeout, stale_report_frames):
+            stale.append(stale_report_frames)
+            await real(self, handle, params, agent, timeout, stale_report_frames)
+
+        monkeypatch.setattr(AcpRuntime, "_wait_managed_mcp", spy)
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsr",
+            agent="kirocrew",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            await runtime.create_session(cwd=tmp_path / "wsr", agent="kirocrew")
+        finally:
+            await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["set_mode"] == "kirocrew"
+        assert stale == [0]
+
+    @pytest.mark.asyncio
+    async def test_an_entry_the_engine_drops_is_refused_and_its_session_ended(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """Guard (A): the engine drops the named entry and starts in vibe.
+
+        session/new names the agent, but an id the engine cannot resolve falls
+        back to vibe rather than failing the request, so the agent is not
+        advertised. The session the engine already started is ended, and no
+        set_mode is sent.
+        """
+        (crew_agent / "dropped-agent.json").write_text(
+            json.dumps({"name": "dropped-agent", "tools": ["fs_read"], "prompt": "Dropped."}),
+            encoding="utf-8",
+        )
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws7",
+            agent="dropped-agent",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        terminated: list[str] = []
+        try:
+            await runtime.spawn()
+            real = runtime.terminate_session
+
+            async def spy(session_id, **kwargs):
+                terminated.append(session_id)
+                await real(session_id, **kwargs)
+
+            monkeypatch.setattr(runtime, "terminate_session", spy)
+            with pytest.raises(
+                AcpRuntimeError, match="Agent mode 'dropped-agent' is not available"
+            ):
+                await runtime.create_session(cwd=tmp_path / "ws7", agent="dropped-agent")
+        finally:
+            await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["start_mode"] == {"session/new": "dropped-agent"}
+        assert seen["set_mode"] is None
+        assert terminated == ["kas-mode-session"]
+
+    @pytest.mark.asyncio
     async def test_prompt_is_inlined_not_sent_as_a_file_uri(self, mode_stub, crew_agent, tmp_path):
         """KAS rejects ``file://`` here; the client owns the read."""
         prompt_file = tmp_path / "prompt.md"
@@ -468,6 +595,7 @@ class TestModeBinding:
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
         assert [a["id"] for a in seen["injected"]] == ["default-crewmate"]
         assert seen["injected"][0]["prompt"] == "You are Default."
+        assert seen["start_mode"] == {"session/new": "default-crewmate"}
         assert seen["set_mode"] == "default-crewmate"
 
     @pytest.mark.asyncio
@@ -501,18 +629,22 @@ class TestModeBinding:
             await runtime.kill()
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
         assert [a["id"] for a in seen["injected"]] == ["plan-crewmate"]
+        # A resumed session already has its mode, so the load names none.
+        assert seen["start_mode"] == {"session/load": None}
         assert seen["set_mode"] == "plan-crewmate"
 
     @pytest.mark.asyncio
     async def test_an_id_the_host_keeps_for_itself_is_refused_not_activated(
-        self, mode_stub, crew_agent, tmp_path
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
     ):
         """Guard (C): the id IS advertised, but stamped as the host's own agent.
 
         A set_mode would succeed and run the engine's built-in under the
         crewmate's name -- the silent-substitution shape the reserved set's
         wire alias cannot cover for a built-in id it has not measured. The wire stamp
-        (``origin: bundled`` instead of ``client``) is what catches it.
+        (``origin: bundled`` instead of ``client``) is what catches it. session/new
+        named the id, so the session may already run that built-in: the refusal
+        ends it before any prompt.
         """
         (crew_agent / "review.json").write_text(
             json.dumps({"name": "review", "tools": ["fs_read"], "prompt": "You review."}),
@@ -524,8 +656,16 @@ class TestModeBinding:
             sandbox_mode="off",
             acp_backend=ACP_BACKEND_KAS,
         )
+        terminated: list[str] = []
         try:
             await runtime.spawn()
+            real = runtime.terminate_session
+
+            async def spy(session_id, **kwargs):
+                terminated.append(session_id)
+                await real(session_id, **kwargs)
+
+            monkeypatch.setattr(runtime, "terminate_session", spy)
             with pytest.raises(Exception) as exc:
                 await runtime.create_session(cwd=tmp_path / "ws5", agent="review")
             assert str(exc.value).startswith("Rename this Bot's template: “review” is reserved")
@@ -535,8 +675,10 @@ class TestModeBinding:
             await runtime.kill()
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
         assert [a["id"] for a in seen["injected"]] == ["review"]
+        assert seen["start_mode"] == {"session/new": "review"}
         # Never activated: that is the whole point.
         assert seen["set_mode"] is None
+        assert terminated == ["kas-mode-session"]
 
 
 #: A member's private copy, named the way a Capabilities save names it.
@@ -584,9 +726,37 @@ class TestSavedMemberSpecOnKas:
         finally:
             await runtime.kill()
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
-        assert [a["id"] for a in seen["injected"]] == [_SAVED_TEMPLATE]
+        # The spec declares a server, so the session starts in the start agent
+        # registered after it and set_mode switches to the member's own.
+        assert [a["id"] for a in seen["injected"]] == [_SAVED_TEMPLATE, START_AGENT_ID]
+        assert seen["start_mode"][METHOD_SESSION_NEW] == START_AGENT_ID
         assert seen["injected"][0]["prompt"] == "You are the member."
         assert "extra" in seen["injected"][0]["mcpServers"]
+        assert seen["set_mode"] == _SAVED_TEMPLATE
+
+    @pytest.mark.asyncio
+    async def test_an_engine_that_drops_the_start_agent_still_runs_the_members_own(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """The session then starts in the engine's ``vibe`` mode, as it did before a
+        start mode was named, and ``set_mode`` still activates the member's agent."""
+        monkeypatch.setenv("KAS_STUB_DROP", START_AGENT_ID)
+        _write_saved_spec(crew_agent, {"command": "extra-server"})
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws",
+            agent=_SAVED_TEMPLATE,
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "ws")
+            assert handle.active_agent == _SAVED_TEMPLATE
+        finally:
+            await runtime.kill()
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["start_mode"][METHOD_SESSION_NEW] == START_AGENT_ID
+        assert START_AGENT_ID not in seen["modes"]
         assert seen["set_mode"] == _SAVED_TEMPLATE
 
 
@@ -606,3 +776,92 @@ class TestKiroPathUntouched:
             sandbox_mode="off",
         )
         assert (await runtime._kas_custom_agents("kirocrew")).custom_agents is None
+
+
+def _batch_request(*entries: object) -> dict:
+    return {"cwd": "/w", "mcpServers": [], "_meta": {"kiro": {"customAgents": list(entries)}}}
+
+
+class TestSessionNewModeId:
+    """The KAS request seam names the batch's first agent on session/new, and only there."""
+
+    @pytest.mark.parametrize("agent", ["default", None], ids=["explicit-agent", "runtime-default"])
+    def test_the_single_entry_names_the_mode_by_its_wire_id(self, agent):
+        """The id comes from the batch, already renamed for the wire, never from the
+        caller's override; the caller's agent and dicts come back untouched."""
+        params = _batch_request({"id": "default-crewmate", "prompt": ""})
+        before = copy.deepcopy(params)
+        out, activated = harness_for(ACP_BACKEND_KAS).session_request(
+            METHOD_SESSION_NEW, params, agent, agent_capabilities={}
+        )
+        assert out["_meta"]["kiro"] == {**before["_meta"]["kiro"], "modeId": "default-crewmate"}
+        assert {k: v for k, v in out.items() if k != "_meta"} == {
+            k: v for k, v in before.items() if k != "_meta"
+        }
+        assert activated == agent
+        assert params == before
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"cwd": "/w", "mcpServers": []},
+            {"cwd": "/w", "mcpServers": [], "_meta": {"claudeCode": {"options": {}}}},
+            _batch_request(),
+            _batch_request({"name": "kirocrew"}),
+            _batch_request({"name": "kirocrew"}, {"id": "slack-agent"}),
+            _batch_request({"id": ""}),
+            _batch_request("kirocrew"),
+        ],
+        ids=["no-meta", "other-meta", "empty", "no-id", "no-id-first", "blank-id", "not-a-dict"],
+    )
+    def test_a_batch_whose_first_entry_has_no_id_is_sent_as_built(self, params):
+        out, activated = harness_for(ACP_BACKEND_KAS).session_request(
+            METHOD_SESSION_NEW, params, "kirocrew", agent_capabilities={}
+        )
+        assert out is params
+        assert activated == "kirocrew"
+
+    def test_a_registered_sub_agent_does_not_take_the_sessions_mode(self):
+        """Sub-agent targets follow the session's own entry, which names the mode.
+
+        A delegating agent registers each agent its sub-agent tool may name beside
+        its own entry (kas_subagent_targets), so its batch has more than one entry;
+        the session still starts in its own agent, not in vibe or in a target.
+        """
+        params = _batch_request({"id": "delegator"}, {"id": "slack-agent"})
+        before = copy.deepcopy(params)
+        out, activated = harness_for(ACP_BACKEND_KAS).session_request(
+            METHOD_SESSION_NEW, params, None, agent_capabilities={}
+        )
+        assert out["_meta"]["kiro"] == {**before["_meta"]["kiro"], "modeId": "delegator"}
+        assert activated is None
+        assert params == before
+
+    def test_a_load_names_no_mode(self):
+        """A resumed session already has its mode."""
+        params = {**_batch_request({"id": "kirocrew"}), "sessionId": "s1"}
+        out, activated = harness_for(ACP_BACKEND_KAS).session_request(
+            METHOD_SESSION_LOAD, params, "kirocrew", agent_capabilities={}
+        )
+        assert out is params
+        assert activated == "kirocrew"
+
+    def test_the_kiro_host_sends_the_request_as_built(self):
+        params = _batch_request({"id": "kirocrew"})
+        out, activated = harness_for(ACP_BACKEND_KIRO).session_request(
+            METHOD_SESSION_NEW, params, "kirocrew", agent_capabilities={}
+        )
+        assert out is params
+        assert activated == "kirocrew"
+
+    def test_a_cloud_sandbox_names_no_mode(self):
+        """The cloud harness activates nothing, so it names no mode either."""
+        caps = {"_meta": {"kiro": {"executionTargets": [CLOUD_SANDBOX_TARGET]}}}
+        out, activated = KasCloudSandboxHarness().session_request(
+            METHOD_SESSION_NEW,
+            _batch_request({"id": "kirocrew"}),
+            "kirocrew",
+            agent_capabilities=caps,
+        )
+        assert "modeId" not in out["_meta"]["kiro"]
+        assert activated is None

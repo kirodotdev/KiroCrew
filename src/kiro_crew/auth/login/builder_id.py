@@ -52,8 +52,13 @@ class StartUrlRejectedError(BuilderIdAuthError):
 
     The message says what to change, because AWS's own text ("Invalid start url
     provided", "Invalid request") names neither the expected URL shape nor the
-    region the portal was looked up in.
+    region the portal was looked up in. ``names_start_url`` is False for the bare
+    "Invalid request", which leaves the start URL and the region both in doubt.
     """
+
+    def __init__(self, message: str, *, names_start_url: bool = True) -> None:
+        super().__init__(message)
+        self.names_start_url = names_start_url
 
 
 def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlRejectedError | None:
@@ -65,20 +70,23 @@ def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlR
     if not isinstance(data, dict) or data.get("error") != "invalid_request":
         return None
     detail = str(data.get("error_description") or "")[:200]
-    if "start url" in detail.lower():
+    names_start_url = "start url" in detail.lower()
+    if names_start_url:
         advice = (
             f"AWS did not accept the start URL {start_url!r}. Use your company's AWS "
             "access portal URL, which looks like https://your-company.awsapps.com/start."
         )
     else:
-        # A well-formed portal looked up in the wrong region gets this bare
-        # answer, the most likely cause a user can fix; AWS does not say so.
+        # A portal that does not exist and one looked up in the wrong region get
+        # this same bare answer, so the likelier slip, the start URL, comes first.
         advice = (
-            f"AWS refused to start a sign-in for {start_url!r} in region {region}. "
-            "This usually means the region is wrong: set Region to the region your "
-            "company's Identity Center is in, and check the start URL."
+            f"AWS found no Identity Center for {start_url!r} in region {region}. "
+            "Check the start URL for a typo; if it is right, set Region to the "
+            "region your company's Identity Center is in."
         )
-    return StartUrlRejectedError(f"{advice} (AWS: {detail or 'invalid_request'})")
+    return StartUrlRejectedError(
+        f"{advice} (AWS: {detail or 'invalid_request'})", names_start_url=names_start_url
+    )
 
 
 async def _parse_json(resp: aiohttp.ClientResponse, step: str) -> dict:

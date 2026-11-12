@@ -90,6 +90,11 @@ _AMBIENT_READ_ALLOWLIST = frozenset(
         # and test_a_spec_without_placeholders_still_caches), so a resolved value
         # is re-resolved on every boot and can never be served stale.
         ("_placeholder_source_env", "os.environ:<dynamic>"),
+        # The configured ``agent.env`` map that view lays over ``os.environ``:
+        # read only through placeholder expansion, so it is uncacheable the same
+        # way and never fingerprinted.
+        ("_configured_agent_env", "config-import:kiro_crew.config"),
+        ("_configured_agent_env", "config-import:kiro_crew.config.sections"),
         # Output-NEUTRAL: distinguishes a credential-filtered refusal from a
         # plain typo purely to pick the log message; the substitution result is
         # the literal ``${VAR}`` either way.
@@ -540,7 +545,9 @@ def test_a_kept_overlay_from_before_the_vendor_denylist_drops_the_vendor_stub(
     (tmp_path / "settings").mkdir()
     (tmp_path / "settings" / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
     (src / "agent-0.json").write_text(
-        json.dumps({"name": "agent-0", "mcpServers": {"creds-agent": {"command": _CMD}}})
+        json.dumps(
+            {"name": "agent-0", "tools": ["*"], "mcpServers": {"creds-agent": {"command": _CMD}}}
+        )
     )
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
 

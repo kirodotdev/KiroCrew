@@ -25,6 +25,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs, skill_trust
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.platform_compat import pinned_directory
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -33,6 +34,7 @@ from kiro_crew.skills_auto_model import (
     _PENDING_DOCUMENT_MAX_BYTES,
     AUTO_SKILL_NAMESPACE,
     _emit_pending_consumed,
+    frontmatter_pinned,
 )
 from kiro_crew.skills_body_reads import PROJECT_SKILL_BODY_CAP, _decode_skill_text
 from kiro_crew.skills_candidate_tree import _PENDING_SCRIPT_MAX_DEPTH, _PENDING_SCRIPT_MAX_ENTRIES
@@ -564,7 +566,7 @@ def _pending_scripts_verdict_at(self, root_fd: int) -> tuple[bool, dict] | None:
                             "invalid layout: entry changed during scan"
                         )
                         continue
-                    raw = os.read(rfd, MAX_SCRIPT_BYTES + 1)
+                    raw = bounded_read_fd(rfd, MAX_SCRIPT_BYTES + 1)
                 except OSError:
                     extra.setdefault(rel, []).append("unreadable script: read failed")
                     continue
@@ -935,7 +937,7 @@ def preview_pending_update(
         target_name=target_name,
         created_at=_live_fm.get("created_at", ""),
         version=current_version + 1,
-        pinned=str(_live_fm.get("pinned", "")).strip().lower() in ("true", "1", "yes"),
+        pinned=frontmatter_pinned(_live_fm),
         pointer_only=str(_live_fm.get("inject_on_trigger", "")).strip().lower() == "false",
     )
     # Redact both sides: this feeds the dashboard API, and the candidate is
@@ -1113,7 +1115,7 @@ def approve_pending_update_checked(self, slug: str, *, src: Path | None = None) 
     # Carry the live skill's pin forward: a pinned skill is exempt from the
     # lifecycle's inactivity / max-N archival, and silently dropping the flag
     # here would expose a user-pinned skill to being archived.
-    live_pinned = str(live_fm.get("pinned", "")).strip().lower() in ("true", "1", "yes")
+    live_pinned = frontmatter_pinned(live_fm)
     # Same for the injection opt-out: the candidate never carries it, so
     # writing it over live without this would silently turn full-body
     # injection back on for a skill the user had made pointer-only.

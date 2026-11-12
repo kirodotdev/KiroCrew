@@ -32,7 +32,7 @@
  * just ran disagree about what an item is. Only prose is localized.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, Inbox } from 'lucide-react'
@@ -43,7 +43,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
-import { fmtRelative } from '../i18n/format'
+import { fmtNumber, fmtRelative } from '../i18n/format'
 import { isNotFoundError } from '../api/apiError'
 import {
   CREW_BOARD_POLL_MS,
@@ -159,12 +159,27 @@ function RowActions({
   item,
   conductor,
   takeOverAvailable,
+  returnFocusTo,
 }: {
   item: WorkBoardItem
   conductor: string
   takeOverAvailable: boolean
+  /** Takes focus if these controls unmount while holding it. */
+  returnFocusTo: RefObject<HTMLElement>
 }) {
   const queryClient = useQueryClient()
+  // Any re-read that finds the item no longer orphaned (the poll, or the one after
+  // a Stop or a 409) unmounts these controls, and a focused Stop would drop focus
+  // to <body>. A layout-effect cleanup runs before React removes the button, so it
+  // can still see the focus and hand it to the row's title.
+  const rootRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const title = returnFocusTo.current
+    return () => {
+      if (root?.contains(document.activeElement)) title?.focus()
+    }
+  }, [returnFocusTo])
   // Two parts, because `ErrorNotice` treats them differently: `message` is the
   // error journal's lookup key that recovers the route, endpoint, HTTP status and
   // backend code for the agent hand-off, so the backend's own sentence belongs
@@ -240,7 +255,7 @@ function RowActions({
   const hint = stopReason || i18nT('pages.crewBoard.stop_consequence')
 
   return (
-    <div className="ml-[15px] mt-1 flex flex-col gap-1">
+    <div ref={rootRef} className="ml-[15px] mt-1 flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <Btn
           danger
@@ -300,6 +315,7 @@ function ItemRow({
   const [open, setOpen] = useState(false)
   const kindKey = rowKindLabelKey(item)
   const artifacts = artifactEntries(item)
+  const titleRef = useRef<HTMLSpanElement>(null)
 
   return (
     <div className="border-b py-2" style={{ borderColor: C.border }}>
@@ -312,7 +328,8 @@ function ItemRow({
 
           <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span className="text-[12px] font-medium" style={{ color: C.text }}>
+            {/* `tabIndex={-1}`: a focus target for RowActions only, not a tab stop. */}
+            <span ref={titleRef} tabIndex={-1} className="text-[12px] font-medium" style={{ color: C.text }}>
               {item.title || item.item_id}
             </span>
 
@@ -401,7 +418,7 @@ function ItemRow({
       {/* Only an orphaned item gets them, which is also the only state the action
           route accepts — so the page cannot offer a click the server will refuse. */}
       {item.orphaned ? (
-        <RowActions item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+        <RowActions item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} returnFocusTo={titleRef} />
       ) : null}
 
       <div className="ml-[15px] mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -421,7 +438,7 @@ function ItemRow({
         ))}
         {item.fails > 0 ? (
           <span className="text-[11px] tabular-nums" style={{ color: C.warn }}>
-            {i18nT('pages.crewBoard.fails')} {item.fails}
+            {i18nT('pages.crewBoard.fails', { count: item.fails, n: fmtNumber(item.fails) })}
           </span>
         ) : null}
 

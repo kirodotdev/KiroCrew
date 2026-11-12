@@ -16,7 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1254,6 +1255,36 @@ async def test_start_task_plan_definition_delegates_to_taskrunner_without_python
             ),
         }
     ]
+
+
+async def test_disabled_task_runner_app_refuses_a_saved_task_plan(tmp_path) -> None:
+    # Task Runner plans and runs a saved task plan, so its Library switch applies.
+    library = WorkflowDefinitionLibrary(tmp_path)
+    saved = library.create(
+        source="agents:\n  test:\n    prompt: run tests\n",
+        name="Test project",
+        source_format="task-plan",
+    )
+    task_runner = SimpleNamespace(start_workflow_definition=AsyncMock())
+    svc = WorkflowService(
+        sessions=FakeSessions([]),
+        persist=False,
+        definition_library=library,
+        task_runner=task_runner,
+    )
+
+    with patch(
+        "kiro_crew.apps.manager._read_installed",
+        return_value=SimpleNamespace(enabled=False),
+    ) as read:
+        started = await svc.start_definition(saved["slug"], input_text="from slash")
+
+    assert started == {
+        "error": "Task Runner is disabled. Enable it in Library to start tasks.",
+        "app_disabled": True,
+    }
+    read.assert_called_once_with("projects")
+    task_runner.start_workflow_definition.assert_not_awaited()
 
 
 async def test_start_definition_loads_saved_source_off_the_event_loop(

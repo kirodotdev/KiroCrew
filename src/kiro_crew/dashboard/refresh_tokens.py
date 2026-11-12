@@ -33,7 +33,12 @@ import time
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry
+from kiro_crew.atomic_write import (
+    atomic_write,
+    fsync_dir,
+    replace_with_retry,
+    retry_read_sharing_window,
+)
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
@@ -94,6 +99,11 @@ COOKIE_JAR_PRUNE_THRESHOLD_BYTES = 6 * 1024
 # treated as theft and the chain is revoked.
 REFRESH_GRACE_SECS = 60
 
+# Longest a duplicate refresh waits for the rotation write that is still in flight for its
+# own jti. Past it the duplicate is answered as retryable instead of being judged on a state
+# that has not settled.
+REFRESH_PENDING_WAIT_SECS = 15.0
+
 # Grace acceptance is CHAIN-HEAD-ONLY. We retain exactly ONE recently-consumed
 # jti per chain — the single most-recently-rotated one (the chain head) — as
 # the authenticator for a same-IP, in-window replay. A bounded history of the
@@ -150,8 +160,8 @@ def _record_list(data: object, key: str) -> list[dict] | None:
     per-field guards already skip it, and one junk entry beside good ones is not
     evidence the good ones are untrustworthy.
 
-    Note what this does NOT change: an unparseable or unreadable FILE keeps
-    starting empty (see :meth:`_load`). ``atomic_write`` makes a torn write
+    Note what this does NOT change: an unparseable FILE keeps starting empty
+    (see :meth:`_load`; one that fails to read degrades). ``atomic_write`` makes a torn write
     impossible, so a file that will not parse at all is better read as "not our
     state" than as "our records, lost" -- and that behaviour is pinned by
     ``test_tr_i_17_corrupted_state_file_starts_empty``.
@@ -199,6 +209,8 @@ class RefreshStateManager:
     """
 
     def __init__(self, state_path: Path | None = None) -> None:
+        # Guards the in-memory records and the degraded mark, and is never held across file
+        # I/O: the event loop takes it for every refresh check (see ``_persist``).
         self._lock = threading.Lock()
         # Serializes one whole mutate -> evict -> persist -> rollback sequence. ``_lock`` alone
         # is not enough: it guards each step, so two concurrent rotations can interleave
@@ -237,6 +249,12 @@ class RefreshStateManager:
         # head token, so re-serving it can never roll a shared cookie jar back
         # to an already-consumed jti.
         self._grace_replacements: dict[str, tuple[str, float, str, str]] = {}
+        # The rotation whose write is in flight, per chain: ``(jti, ip, done)``. Set in the
+        # same critical section that marks the jti consumed and removed in the one that
+        # installs the grace entry or rolls the mark back, so a duplicate refresh that finds a
+        # consumed jti with no grace entry can tell "the write has not landed yet" from "this
+        # jti was spent long ago". ``done`` is set only after that removal.
+        self._pending_rotations: dict[str, tuple[str, str, threading.Event]] = {}
         # Record keys whose persisted value was present but unreadable. Non-empty
         # means the security controls this store enforces cannot be trusted, so
         # ``validate_refresh_token`` refuses every rotation until the file is
@@ -248,6 +266,10 @@ class RefreshStateManager:
         # it as "nothing revoked". So it degrades the store rather than logging and moving
         # on, and validation fails closed until a later write succeeds.
         self._persist_failure: str = ""
+        # Why the state file is there but could not be read (e.g. another process holds it
+        # without read sharing on Windows), or "". Degrades the store like a corrupt key, but
+        # ``degraded_reason`` re-tries the read so it clears by itself once the holder lets go.
+        self._unreadable: str = ""
         self._state_path = state_path
         self._load()
 
@@ -291,55 +313,105 @@ class RefreshStateManager:
         # already holds this call's mutation -- and then a rollback here retires a jti that is
         # on disk, which the next start reads as a reuse.
         with self._write_sequence_lock:
-            with self._lock:
-                # Captured BEFORE the mutation so a write that never reaches disk can be undone
-                # exactly. Restoring the prior value rather than deleting matters for a chain
-                # that already had a peer binding or a grace entry: dropping those would retire
-                # a record this rotation was not asked to touch.
-                jti_was_consumed = jti in self._consumed_jtis
-                prior_peer = self._chain_peers.get(chain_id)
-                prior_grace = self._grace_replacements.get(chain_id)
-                self._consumed_jtis[jti] = exp
-                if peer_key:
-                    self._chain_peers[chain_id] = (peer_key, exp)
-                # Chain-head-only: record ONLY this (the newest) consumed jti as
-                # the grace authenticator, overwriting any prior entry for the
-                # chain. Only that newest jti authenticates a same-IP replay; an
-                # older rotated one trips reuse-detection instead.
-                self._grace_replacements[chain_id] = (jti, time.time(), ip, replacement)
-            self.evict_expired()
-            # THIS call's own result, not the store-wide degraded mark. Rotations run
-            # concurrently under asyncio.to_thread, so the shared field can already carry
-            # another thread's failure -- and rolling back on that would retire a jti whose
-            # own write reached disk, leaving the next start to read it as a reuse and revoke
-            # the chain. Degrading the store is also not enough on its own: the mark gates
-            # validation in THIS process, while the record meant to retire this jti is only in
-            # memory, so a restart loads a file that never saw it, clears the mark with it, and
-            # the spent token authenticates again. The caller has to be able to decline to
-            # publish, which it cannot do if this reports success either way.
-            failure = self._persist()
-            if failure:
-                # Undo the three writes as well. The caller declines to publish and tells the
-                # client its token was NOT rotated, so leaving the jti marked spent and this
-                # rotation's payload installed as the chain's grace authenticator would
-                # contradict that in memory: the presented token is the one the client still
-                # holds, and the replacement it names was never delivered. Eviction's own
-                # removals are left alone -- an expired entry is gone on its own merits, not
-                # because of this write.
+            done = threading.Event()
+            try:
+                return self._mark_consumed_locked(
+                    jti, chain_id, exp, ip, replacement, peer_key, done
+                )
+            finally:
+                # Normally a no-op: both outcomes below removed the record already. It keeps
+                # an exception out of ``_persist`` from leaving a waiter's record behind.
                 with self._lock:
-                    if not jti_was_consumed:
-                        self._consumed_jtis.pop(jti, None)
-                    if peer_key:
-                        if prior_peer is None:
-                            self._chain_peers.pop(chain_id, None)
-                        else:
-                            self._chain_peers[chain_id] = prior_peer
-                    if prior_grace is None:
-                        self._grace_replacements.pop(chain_id, None)
+                    entry = self._pending_rotations.get(chain_id)
+                    if entry is not None and entry[2] is done:
+                        del self._pending_rotations[chain_id]
+                done.set()
+
+    def _mark_consumed_locked(
+        self,
+        jti: str,
+        chain_id: str,
+        exp: float,
+        ip: str,
+        replacement: str,
+        peer_key: str,
+        done: threading.Event,
+    ) -> bool:
+        """Body of :meth:`mark_consumed`; the caller holds ``_write_sequence_lock``."""
+        with self._lock:
+            # Captured BEFORE the mutation so a write that never reaches disk can be undone
+            # exactly. Restoring the prior value rather than deleting matters for a chain
+            # that already had a peer binding or a grace entry: dropping those would retire
+            # a record this rotation was not asked to touch.
+            jti_was_consumed = jti in self._consumed_jtis
+            prior_peer = self._chain_peers.get(chain_id)
+            self._consumed_jtis[jti] = exp
+            self._pending_rotations[chain_id] = (jti, ip, done)
+            if peer_key:
+                self._chain_peers[chain_id] = (peer_key, exp)
+        self.evict_expired()
+        # THIS call's own result, not the store-wide degraded mark. Rotations run
+        # concurrently under asyncio.to_thread, so the shared field can already carry
+        # another thread's failure -- and rolling back on that would retire a jti whose
+        # own write reached disk, leaving the next start to read it as a reuse and revoke
+        # the chain. Degrading the store is also not enough on its own: the mark gates
+        # validation in THIS process, while the record meant to retire this jti is only in
+        # memory, so a restart loads a file that never saw it, clears the mark with it, and
+        # the spent token authenticates again. The caller has to be able to decline to
+        # publish, which it cannot do if this reports success either way.
+        failure = self._persist()
+        if failure:
+            # Undo the jti and peer writes as well. The caller declines to publish and tells
+            # the client its token was NOT rotated, so leaving the jti marked spent would
+            # contradict that in memory: the presented token is the one the client still
+            # holds. The grace payload was never installed, so there is nothing to undo
+            # for it. Eviction's own removals are left alone -- an expired entry is gone on
+            # its own merits, not because of this write.
+            with self._lock:
+                if not jti_was_consumed:
+                    self._consumed_jtis.pop(jti, None)
+                if peer_key:
+                    if prior_peer is None:
+                        self._chain_peers.pop(chain_id, None)
                     else:
-                        self._grace_replacements[chain_id] = prior_grace
-                return False
-            return True
+                        self._chain_peers[chain_id] = prior_peer
+                self._pending_rotations.pop(chain_id, None)
+            return False
+        # Installed only once the write landed, so a replay can never be handed a
+        # replacement whose rotation the caller then declines to publish. Until here the
+        # jti reads as consumed and the peer as bound (reuse detection fails closed), and
+        # a same-IP replay finds no grace entry but does find the pending record. Chain-head-
+        # only: record ONLY this (the newest) consumed jti as the grace authenticator,
+        # overwriting any prior entry for the chain. Only that newest jti authenticates a
+        # same-IP replay; an older rotated one trips reuse-detection instead.
+        with self._lock:
+            self._grace_replacements[chain_id] = (jti, time.time(), ip, replacement)
+            self._pending_rotations.pop(chain_id, None)
+        return True
+
+    def await_pending_rotation(
+        self,
+        chain_id: str,
+        jti: str,
+        ip: str,
+        timeout: float = REFRESH_PENDING_WAIT_SECS,
+    ) -> bool:
+        """Wait for the in-flight rotation of ``jti`` on ``chain_id`` from ``ip``, if any.
+
+        Returns whether such a rotation was pending when called. It blocks for at most
+        ``timeout`` seconds, so it belongs on a worker thread, never the event loop. A
+        pending rotation for a different jti or a different address does not match: that
+        duplicate is not the benign same-client race and is judged as reuse.
+
+        The caller re-reads :meth:`grace_replacement` afterwards. It holds the replacement
+        only if the write landed; a failed or timed-out write leaves it absent.
+        """
+        with self._lock:
+            entry = self._pending_rotations.get(chain_id)
+        if entry is None or entry[0] != jti or entry[1] != ip:
+            return False
+        entry[2].wait(timeout)
+        return True
 
     def is_consumed(self, jti: str) -> bool:
         with self._lock:
@@ -388,8 +460,19 @@ class RefreshStateManager:
         Callers fail closed on it, mirroring how ``validate_refresh_token`` already treats an
         unreadable revocation counter.
         """
+        # Same lock as every writer, so no write runs against the half-loaded store, and the
+        # mark is cleared only after the records are in memory. Not waited for: the logout
+        # route calls this on the event loop, and a busy lock just means "re-try next call".
+        if self._unreadable and self._write_sequence_lock.acquire(blocking=False):
+            try:
+                if self._unreadable and self._load():
+                    self._unreadable = ""
+            finally:
+                self._write_sequence_lock.release()
         with self._lock:
             reasons = []
+            if self._unreadable:
+                reasons.append(self._unreadable)
             if self._corrupt_keys:
                 reasons.append("unreadable persisted state: " + ", ".join(self._corrupt_keys))
             if self._persist_failure:
@@ -525,13 +608,33 @@ class RefreshStateManager:
 
     # -- persistence --
 
-    def _load(self) -> None:
+    def _load(self) -> bool:
+        """Load the state file; ``False`` when it is there but could not be read."""
         if self._state_path is None or not self._state_path.exists():
-            return
+            return True
         try:
-            raw = self._state_path.read_text()
+            raw = retry_read_sharing_window(self._state_path.read_text, self._state_path)
+        except FileNotFoundError:
+            return True
+        except OSError as e:
+            # The records are still on disk, so "empty" would drop every revocation and the
+            # next write would publish that. Degrade instead; ``degraded_reason`` re-tries.
+            # Logs the state-file path and the error, never a record value.
+            logger.error(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: could not read %s (%s); refusing to rotate refresh "
+                "tokens until it can be read",
+                self._state_path,
+                e,
+            )
+            self._unreadable = f"state file could not be read ({type(e).__name__})"
+            return False
+        self._load_records(raw)
+        return True
+
+    def _load_records(self, raw: str) -> None:
+        try:
             data = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as e:
+        except json.JSONDecodeError as e:
             logger.warning(
                 "refresh_tokens: failed to load state from %s (%s); starting empty",
                 self._state_path,
@@ -611,6 +714,16 @@ class RefreshStateManager:
                 except (TypeError, ValueError):
                     logger.warning("refresh_tokens: dropping chain_peer with bad exp: %r", entry)
 
+    def _set_persist_failure(self, failure: str) -> str:
+        """Set the store-wide degraded mark (``""`` clears it) and return ``failure``.
+
+        Takes ``_lock`` for the assignment only: :meth:`degraded_reason` reads the mark under
+        it on the event loop, while :meth:`_persist` runs its I/O on a worker without it.
+        """
+        with self._lock:
+            self._persist_failure = failure
+        return failure
+
     def _persist(self) -> str:
         """Write the state file, returning THIS call's failure reason or ``""`` on success.
 
@@ -619,10 +732,23 @@ class RefreshStateManager:
         about ITS OWN write must read the return value: callers run concurrently under
         ``asyncio.to_thread``, so the shared field can already carry another thread's failure,
         and a caller that rolled back on it would undo a record of its own that reached disk.
+
+        The caller must hold ``_write_sequence_lock``; ``_lock`` is held only while the state
+        is snapshotted and while the degraded mark is set, never across the I/O.
         """
         if self._state_path is None:
             # Nothing to persist to, so there is no write for this call to have lost.
             return ""
+        if self._unreadable:
+            # Same reason as the corrupt-key guard below: the records we could not read are
+            # still in the file, and our in-memory copy does not have them.
+            # Logs the state-file path only, never a record value; the rule fires on the
+            # "refresh_tokens:" prefix.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: not persisting over %s, which could not be read",
+                self._state_path,
+            )
+            return self._unreadable
         if self._corrupt_keys:
             # Writing here would replace the operator's unreadable file with our
             # (empty) in-memory state: the records would be gone for good, and the
@@ -642,15 +768,25 @@ class RefreshStateManager:
             # keys and ``validate_refresh_token`` fails closed on it before a rotation is
             # attempted -- so this is about not lying to a caller rather than a live path.
             return "unreadable persisted state: " + ", ".join(self._corrupt_keys)
-        # Hold the lock across the FULL serialize+write+rename so concurrent
-        # writers cannot clobber each other's atomic-rename. Without this, thread
-        # A can snapshot state S1, thread B can mutate + persist S2, and A's later
-        # os.replace
-        # overwrites S2 with stale S1 -- losing B's consumed-jti record. After
-        # a restart, reuse detection would silently fail to fire for that jti.
-        # Holding the lock during file I/O is acceptable: callers run inside
-        # asyncio.to_thread(), so we're already off the event loop, and the
-        # write is ~100 bytes.
+        # Snapshot under ``_lock``, then release it before any I/O. The event loop takes
+        # ``_lock`` for every refresh check: ``validate_refresh_token`` calls
+        # ``degraded_reason`` and ``is_chain_revoked`` for each GET /api/auth/me and
+        # POST /api/auth/refresh, and the refresh handler then calls ``chain_peer``,
+        # ``is_consumed`` and ``grace_replacement``. The write below creates, syncs and renames
+        # a new file, which on-access antivirus scanning can hold for seconds, so a lock held
+        # across it would park the loop until the loop watchdog kills the gateway.
+        #
+        # A check during the write answers from memory: ``mark_consumed`` has already marked its
+        # jti consumed and its peer bound, which fails closed whether or not the write lands,
+        # but it installs the grace replacement only after the write succeeds, so a replay
+        # never receives a pair whose rotation can still be declined.
+        #
+        # Concurrent writers still cannot clobber each other's rename (thread A snapshots S1,
+        # thread B mutates and persists S2, then A's rename puts stale S1 back and B's
+        # consumed-jti record is lost, so reuse detection would not fire for it after a
+        # restart). Every caller holds ``_write_sequence_lock`` from its mutation through this
+        # write, so one snapshot at a time is written and the last rename carries the newest
+        # state.
         with self._lock:
             data = {
                 "consumed_jtis": [
@@ -664,124 +800,121 @@ class RefreshStateManager:
                     for cid, (key, exp) in self._chain_peers.items()
                 ],
             }
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create-empty → tighten-DACL → write, NOT write-then-restrict:
+            # on Windows restrict_to_owner REPLACES the file's DACL rather
+            # than setting it at create time, so if the payload were written
+            # first the temp would carry the parent-inherited DACL during that
+            # window and a local co-tenant able to enumerate ~/.kiro/crew
+            # could read the consumed-JTI + revoked-chain state (breaking
+            # RFC-6819 §5.2.2.3 reuse-detection secrecy) or, worse,
+            # truncate the temp before the rename and substitute state that
+            # un-revokes a stolen chain. atomic_write applies the lockdown
+            # before any payload byte, and names the temp via mkstemp
+            # (random + O_EXCL) rather than a predictable sibling, so the
+            # substitution above has no name to pre-plant.
+            #
+            # restrict_on_error="warn" preserves this call site's original
+            # policy: publish anyway and log. Escalating to a raise would
+            # hit the outer OSError handler below and drop the
+            # reuse-detection record entirely, which is worse than a state
+            # file another local user can read.
+            #
+            # Staged in _AUTH_STORE_STAGING_LEAF rather than beside the state
+            # file, then renamed onto it. mkstemp already denies the attacker
+            # a NAME to pre-plant, but a temp beside the state file sits in
+            # the data-home root, which is sandbox-visible and same-uid
+            # writable: an agent listing that directory during the write can
+            # link(2) the temp and keep reading the consumed-JTI and
+            # revoked-chain state after the rename, and a crash between write
+            # and rename leaves the same unmasked file behind. The staging
+            # directory is masked in every agent namespace and fenced from the
+            # file tools as a whole directory, so no name inside it is
+            # reachable either way. Both steps are atomic renames, so the
+            # destination is never partial.
+            payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
             try:
-                self._state_path.parent.mkdir(parents=True, exist_ok=True)
-                # Create-empty → tighten-DACL → write, NOT write-then-restrict:
-                # on Windows restrict_to_owner REPLACES the file's DACL rather
-                # than setting it at create time, so if the payload were written
-                # first the temp would carry the parent-inherited DACL during that
-                # window and a local co-tenant able to enumerate ~/.kiro/crew
-                # could read the consumed-JTI + revoked-chain state (breaking
-                # RFC-6819 §5.2.2.3 reuse-detection secrecy) or, worse,
-                # truncate the temp before the rename and substitute state that
-                # un-revokes a stolen chain. atomic_write applies the lockdown
-                # before any payload byte, and names the temp via mkstemp
-                # (random + O_EXCL) rather than a predictable sibling, so the
-                # substitution above has no name to pre-plant.
-                #
-                # restrict_on_error="warn" preserves this call site's original
-                # policy: publish anyway and log. Escalating to a raise would
-                # hit the outer OSError handler below and drop the
-                # reuse-detection record entirely, which is worse than a state
-                # file another local user can read.
-                #
-                # Staged in _AUTH_STORE_STAGING_LEAF rather than beside the state
-                # file, then renamed onto it. mkstemp already denies the attacker
-                # a NAME to pre-plant, but a temp beside the state file sits in
-                # the data-home root, which is sandbox-visible and same-uid
-                # writable: an agent listing that directory during the write can
-                # link(2) the temp and keep reading the consumed-JTI and
-                # revoked-chain state after the rename, and a crash between write
-                # and rename leaves the same unmasked file behind. The staging
-                # directory is masked in every agent namespace and fenced from the
-                # file tools as a whole directory, so no name inside it is
-                # reachable either way. Both steps are atomic renames, so the
-                # destination is never partial.
-                payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
-                try:
-                    staging = auth_store_staging_dir(self._state_path.parent)
-                except OSError as exc:
-                    # Publishing through the state file's own directory instead would put a
-                    # full copy of the chain state at a sandbox-visible, same-uid writable
-                    # name for the length of the write -- the exposure the staging directory
-                    # exists to close -- so this does not fall back there. Dropping the write
-                    # silently is not the alternative either: the caller has already reported
-                    # a successful rotation or logout. Degrading the store is both, and the
-                    # existing reader fails closed on it, so a spent or revoked token is
-                    # REFUSED rather than accepted after the next start.
-                    self._persist_failure = (
-                        "auth-store staging directory unusable, so the last record was not "
-                        f"persisted ({exc})"
-                    )
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure -- the rule fires on the "refresh_tokens:" prefix; the arguments are the state-file path and an OSError, never a record value.  # noqa: E501  # fmt: skip
-                        "refresh_tokens: auth-store staging directory unusable for %s (%s); "
-                        "the record was NOT persisted and this store is now degraded, so "
-                        "every refresh validation fails closed. Repair the staging "
-                        "directory and restart the gateway.",
-                        self._state_path,
-                        exc,
-                    )
-                    return self._persist_failure
-                staged = staging / (
-                    f"{self._state_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+                staging = auth_store_staging_dir(self._state_path.parent)
+            except OSError as exc:
+                # Publishing through the state file's own directory instead would put a
+                # full copy of the chain state at a sandbox-visible, same-uid writable
+                # name for the length of the write -- the exposure the staging directory
+                # exists to close -- so this does not fall back there. Dropping the write
+                # silently is not the alternative either: the caller has already reported
+                # a successful rotation or logout. Degrading the store is both, and the
+                # existing reader fails closed on it, so a spent or revoked token is
+                # REFUSED rather than accepted after the next start.
+                failure = self._set_persist_failure(
+                    "auth-store staging directory unusable, so the last record was not "
+                    f"persisted ({exc})"
                 )
-                # ``fsync=True`` because the caller publishes a rotated cookie pair on
-                # the strength of this return: without it the consumed JTI is only in
-                # the page cache, and a power-off leaves a store where the refresh
-                # token this request burned validates AGAIN on the next start.
-                atomic_write(
-                    staged,
-                    payload,
-                    fsync=True,
-                    restrict_to_owner=True,
-                    restrict_on_error="warn",
-                )
-                try:
-                    replace_with_retry(staged, self._state_path)
-                except OSError:
-                    # Nothing was published; drop our candidate so it cannot
-                    # linger holding a full copy of the chain state.
-                    staged.unlink(missing_ok=True)
-                    raise
-                # Syncing the file forced its DATA; the NAME that reaches it lives in the
-                # parent directory, so until that is synced the rename can be lost while
-                # this call has already reported success. A failure here is therefore this
-                # call's failure: the record may not survive a crash, and the reader must
-                # fail closed rather than accept a token a lost record was meant to burn.
-                try:
-                    fsync_dir(self._state_path.parent)
-                except OSError as exc:
-                    self._persist_failure = (
-                        "the record was written but its name was not made durable " f"({exc})"
-                    )
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure -- the rule fires on the "refresh_tokens:" prefix; the arguments are the state-file path and an OSError, never a record value.  # noqa: E501  # fmt: skip
-                        "refresh_tokens: persisted state to %s but could not sync its "
-                        "directory (%s); the record may not survive a crash, so this "
-                        "store is now degraded and every refresh validation fails "
-                        "closed. Repair the storage fault and restart the gateway.",
-                        self._state_path,
-                        exc,
-                    )
-                    return self._persist_failure
-                # The record is on disk AND its name is durable, so this store is
-                # trustworthy again whatever an earlier write did.
-                self._persist_failure = ""
-                return ""
-            except OSError as e:
-                # An ordinary write fault -- a full disk, a read-only home -- reaches here.
-                # The caller has already reported a successful rotation or logout, so the
-                # record cannot simply be dropped: the next start would load a store missing
-                # it and read that as nothing revoked. Degrade instead, so the existing
-                # fail-closed reader refuses rather than accepting a spent token.
-                self._persist_failure = f"the last record was not persisted ({e})"
                 logger.warning(  # nosemgrep: python-logger-credential-disclosure -- the rule fires on the "refresh_tokens:" prefix; the arguments are the state-file path and an OSError, never a record value.  # noqa: E501  # fmt: skip
-                    "refresh_tokens: failed to persist state to %s (%s); this store is now "
-                    "degraded, so every refresh validation fails closed. Repair the storage "
-                    "fault and restart the gateway.",
+                    "refresh_tokens: auth-store staging directory unusable for %s (%s); "
+                    "the record was NOT persisted and this store is now degraded, so "
+                    "every refresh validation fails closed. Repair the staging "
+                    "directory and restart the gateway.",
                     self._state_path,
-                    e,
+                    exc,
                 )
-                return self._persist_failure
+                return failure
+            staged = staging / (f"{self._state_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
+            # ``fsync=True`` because the caller publishes a rotated cookie pair on
+            # the strength of this return: without it the consumed JTI is only in
+            # the page cache, and a power-off leaves a store where the refresh
+            # token this request burned validates AGAIN on the next start.
+            atomic_write(
+                staged,
+                payload,
+                fsync=True,
+                restrict_to_owner=True,
+                restrict_on_error="warn",
+            )
+            try:
+                replace_with_retry(staged, self._state_path)
+            except OSError:
+                # Nothing was published; drop our candidate so it cannot
+                # linger holding a full copy of the chain state.
+                staged.unlink(missing_ok=True)
+                raise
+            # Syncing the file forced its DATA; the NAME that reaches it lives in the
+            # parent directory, so until that is synced the rename can be lost while
+            # this call has already reported success. A failure here is therefore this
+            # call's failure: the record may not survive a crash, and the reader must
+            # fail closed rather than accept a token a lost record was meant to burn.
+            try:
+                fsync_dir(self._state_path.parent)
+            except OSError as exc:
+                failure = self._set_persist_failure(
+                    "the record was written but its name was not made durable " f"({exc})"
+                )
+                logger.warning(  # nosemgrep: python-logger-credential-disclosure -- the rule fires on the "refresh_tokens:" prefix; the arguments are the state-file path and an OSError, never a record value.  # noqa: E501  # fmt: skip
+                    "refresh_tokens: persisted state to %s but could not sync its "
+                    "directory (%s); the record may not survive a crash, so this "
+                    "store is now degraded and every refresh validation fails "
+                    "closed. Repair the storage fault and restart the gateway.",
+                    self._state_path,
+                    exc,
+                )
+                return failure
+            # The record is on disk AND its name is durable, so this store is
+            # trustworthy again whatever an earlier write did.
+            return self._set_persist_failure("")
+        except OSError as e:
+            # An ordinary write fault -- a full disk, a read-only home -- reaches here.
+            # The caller has already reported a successful rotation or logout, so the
+            # record cannot simply be dropped: the next start would load a store missing
+            # it and read that as nothing revoked. Degrade instead, so the existing
+            # fail-closed reader refuses rather than accepting a spent token.
+            failure = self._set_persist_failure(f"the last record was not persisted ({e})")
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure -- the rule fires on the "refresh_tokens:" prefix; the arguments are the state-file path and an OSError, never a record value.  # noqa: E501  # fmt: skip
+                "refresh_tokens: failed to persist state to %s (%s); this store is now "
+                "degraded, so every refresh validation fails closed. Repair the storage "
+                "fault and restart the gateway.",
+                self._state_path,
+                e,
+            )
+            return failure
 
 
 # --- Module-level singleton --------------------------------------------------
@@ -839,6 +972,7 @@ def generate_refresh_token(
     require_peer: bool = False,
     peer_key: str = "",
     owner_mint: bool = False,
+    embed_parent_port: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -898,6 +1032,12 @@ def generate_refresh_token(
         # Carried across rotation like ``boot`` so the access token a refresh
         # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
         payload_dict["owner_mint"] = "1"
+    if embed_parent_port:
+        # The embedding parent dashboard's port (``token_embed_parent_port``).
+        # Carried across rotation so the access token a refresh mints keeps the
+        # CSP ``frame-ancestors`` parent; without it the framed pane goes blank
+        # on its next load after the first refresh.
+        payload_dict["embed_parent_port"] = embed_parent_port
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -1016,6 +1156,25 @@ def refresh_token_owner_minted(token: str) -> bool:
     except Exception:
         return False
     return isinstance(payload, dict) and str(payload.get("owner_mint", "")) == "1"
+
+
+def refresh_token_embed_parent_port(token: str) -> str:
+    """A refresh chain's ``embed_parent_port`` claim, or ``""`` when it has none.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`. Only a
+    decimal port in range is returned, the shape ``token_embed_parent_port``
+    accepts, so a rotation never carries a claim the CSP reader would refuse.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("embed_parent_port", "")
+    if isinstance(value, str) and value.isdigit() and 1 <= int(value) <= 65535:
+        return value
+    return ""
 
 
 def refresh_token_requires_peer(token: str) -> bool:

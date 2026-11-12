@@ -8,8 +8,8 @@
  * - MCP Management is not one of them: its old page key redirects to
  *   Customize → Connections → MCP Servers
  * - There is no Developer Mode toggle and no Updates section
- * - The Feature Previews page holds Developer Tools, Feature Previews and
- *   (desktop only) Gateway
+ * - The Feature Previews page holds the grouped preview cards, then Developer
+ *   Tools, Agent MCP servers and (desktop only) Gateway
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
@@ -82,19 +82,26 @@ describe('DeveloperPanel', () => {
     // pins that DeveloperPanel actually MOUNTS it on its Feature Previews page.
     beforeEach(() => { localStorage.removeItem('mc-preview-webhooks') })
 
-    it('renders the preview toggles', () => {
+    it('renders the preview toggles under their group headings', () => {
       renderPanel()
-      expect(screen.getByRole('heading', { name: 'Feature Previews' })).toBeInTheDocument()
+      expect(screen.getByText('Unfinished features. Turn one on to try it.')).toBeInTheDocument()
+      for (const name of ['Crew and bots', 'Chats and Dashboards', 'Engines and Workspaces', 'Publishing and Sign-in']) {
+        expect(screen.getByRole('heading', { name })).toBeInTheDocument()
+      }
+      // The old separate Bots section is gone: its switch is a Crew and bots row.
+      expect(screen.queryByRole('heading', { name: 'Bots' })).toBeNull()
       expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'false')
       expect(screen.queryByRole('switch', { name: 'Bots' })).toBeNull()
       expect(screen.getByRole('switch', { name: 'Chat on a crew' })).toHaveAttribute('aria-checked', 'false')
     })
 
-    it('orders the section after Developer Tools', () => {
+    it('orders the preview groups first, then Developer Tools', () => {
       // The desktop-only Gateway switch (when present) comes last.
       renderPanel()
       const headings = screen.getAllByRole('heading').map(h => h.textContent)
-      expect(headings.indexOf('Developer Tools')).toBeLessThan(headings.indexOf('Feature Previews'))
+      expect(headings.indexOf('Crew and bots')).toBeGreaterThanOrEqual(0)
+      expect(headings.indexOf('Crew and bots')).toBeLessThan(headings.indexOf('Chats and Dashboards'))
+      expect(headings.indexOf('Publishing and Sign-in')).toBeLessThan(headings.indexOf('Developer Tools'))
     })
 
     it('flipping a preview writes its own flag and offers the hidden page', () => {

@@ -11,14 +11,16 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
-from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
+from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
     merge_user_hook_files,
     observer_spec_hooks,
     overlong_spec_hook_commands,
+    post_tool_matchers_no_builtin_meets,
     project_hook_files_present,
+    provider_session_key,
     session_agent,
     spec_hook_events,
     spec_hooks_run_nowhere,
@@ -27,8 +29,10 @@ from kiro_crew.agent_sdk.spec_hooks import (
     spec_steering_resources,
     spec_tools_settings_applied_nowhere,
     spec_tools_settings_unapplied,
+    unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
+from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
 from kiro_crew.dashboard.chat_utils import (
     SPEC_HOOKS_NOTICE_KIND,
     RecoveryPayload,
@@ -36,7 +40,10 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
+    SPEC_HOOKS_RUN_NOWHERE_NOTICE,
+)
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
@@ -55,6 +62,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     pre_tool_match_names,
 )
+from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -110,11 +118,14 @@ async def _surface_agent_welcome(
     """Render *agent*'s ``welcomeMessage`` into *slot*, at most once per activation.
 
     The one consumer of the agent-config field. An agent JSON may carry a
-    ``welcomeMessage`` — a usage hint its author wants the user to read when the
-    agent takes over — and this is the only place it reaches a user. Kiro Crew's
-    own bundled agents ship one, so the field is not a niche extension point.
+    ``welcomeMessage``, a usage hint its author wants the user to read when the
+    agent takes over, and this is the only place it reaches a transcript. Before
+    a chat's first message the welcome page shows it instead, from the slot
+    summary (``dashboard.agent_welcome``), since an unstarted chat holds no row.
+    Kiro Crew's own bundled agents ship one, so the field is not a niche
+    extension point.
 
-    Three properties are the whole design, and each one rules out an
+    Four properties are the whole design, and each one rules out an
     alternative that looks simpler:
 
     * **A transcript row, not prompt context.** Role ``notice``: durable (not in
@@ -126,6 +137,10 @@ async def _surface_agent_welcome(
       ``slot._welcomed_agent``, because a switch and the session start its own
       reset produces are two events for ONE activation, and each path would
       otherwise emit for the other.
+    * **Tagged, so it is never folded away.** ``meta.kind`` is
+      ``AGENT_WELCOME_KIND``, which the dashboard's turn fold exempts: the row
+      lands inside the turn that activated the agent, and under the default
+      collapse-all setting an untagged notice there folds with the working steps.
     * **Untrusted text.** The field is read from a user-writable, tool-shared
       directory. ``NoticeCard`` renders a ``notice`` row as plain text (no
       markdown, no HTML), the reader caps its length, and it is passed through
@@ -158,7 +173,14 @@ async def _surface_agent_welcome(
         return
     if not text:
         return
-    append_and_surface(state, slot, "notice", _redact_display_text(text), "msg msg-info")
+    append_and_surface(
+        state,
+        slot,
+        "notice",
+        _redact_display_text(text),
+        "msg msg-info",
+        meta={"kind": AGENT_WELCOME_KIND},
+    )
 
 
 async def _prepare_spec_hooks(
@@ -175,7 +197,7 @@ async def _prepare_spec_hooks(
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
     every other session gets ``([], False, None)``. A backend where Crew fires
-    only the hooks that cannot refuse a call (claude) gets those, from
+    only the hooks that cannot refuse a call (claude, codex) gets those, from
     :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
@@ -211,6 +233,9 @@ async def _prepare_spec_hooks(
         # session this turn holds, set at admission.
         held = getattr(slot, "_active_turn_session_key", "")
         by_session = {"session_key": held} if isinstance(held, str) and held else {}
+        # The app the provider runs under, as its KAS projection was handed it; a
+        # provider that carries none leaves the app unknown.
+        app = getattr(client, "owning_app", None)
         hooks, lost, unconfirmable = await asyncio.to_thread(
             functools.partial(
                 crew_fired_spec_hooks,
@@ -218,9 +243,15 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=on_kas,
-                # Only KAS drops a remote MCP server's `oauth` block, and only an
-                # engine that does not announce `mcpServerOAuth`.
-                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
+                # Only a KAS engine Crew knows is older than 0.66.104 drops a
+                # remote MCP server's `oauth` block; the relay's version is unknown.
+                discards_mcp_oauth=on_kas and discards_mcp_oauth(client),
+                # Every KAS engine is sent no block that names a `clientSecret`
+                # or keeps nothing Crew can send (`oauth_withheld`).
+                withholds_oauth_secret=on_kas,
+                # The session and app the KAS projection judged `trustedAgents` for.
+                governance_session_key=provider_session_key(client),
+                governance_app=app if isinstance(app, str) else None,
                 **by_session,
             )
         )
@@ -254,6 +285,9 @@ async def _prepare_spec_hooks(
             "notice",
             _redact_display_text(_spec_keys_notice(agent, lost)),
             "msg msg-info",
+            meta=(
+                {"kind": MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND} if oauth_servers_in(lost) else None
+            ),
         )
     if is_new and unconfirmable:
         append_and_surface(
@@ -282,8 +316,23 @@ async def _prepare_spec_hooks(
     return hooks, False, work_dir
 
 
-def _pre_tool_hooks_run_nowhere_notice(agent: str) -> str:
-    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend."""
+def _post_tool_matchers_unmet_notice(agent: str, matchers: list[str]) -> str:
+    """The session-start notice for the ``postToolUse`` matchers no built-in tool meets."""
+    return f"ℹ {unmet_post_tool_matchers_sentence(agent, matchers)}"
+
+
+def _pre_tool_hooks_run_nowhere_notice(agent: str, *, others_run: bool = True) -> str:
+    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend.
+
+    *others_run* is False when some of the spec's ``postToolUse`` matchers meet no
+    built-in tool (:func:`_post_tool_matchers_unmet_notice` names them), so the
+    notice does not say that the other hooks run.
+    """
+    if not others_run:
+        return (
+            f"ℹ Agent {agent} has hooks on preToolUse. This backend does not "
+            "run an agent's preToolUse hooks, so they have no effect in this session."
+        )
     return (
         f"ℹ️ Agent {agent} has hooks on preToolUse. This backend does not run an "
         "agent's preToolUse hooks, so they have no effect in this session. Its "
@@ -308,7 +357,7 @@ async def _prepare_observer_spec_hooks(
     is_new: bool,
 ) -> tuple[list, bool, str | None]:
     """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
-    the events that cannot refuse a tool call (claude).
+    the events that cannot refuse a tool call (claude, codex).
 
     The spec's ``preToolUse`` hooks are left out: the harness approves some calls
     without a permission request, so such a hook could not gate them, and a new
@@ -347,12 +396,24 @@ async def _prepare_observer_spec_hooks(
         return [], False, work_dir
     observed = observer_spec_hooks(hooks)
     if is_new:
+        unmet = post_tool_matchers_no_builtin_meets(client, observed)
         if len(observed) < len(hooks):
             append_and_surface(
                 state,
                 slot,
                 "notice",
-                _redact_display_text(_pre_tool_hooks_run_nowhere_notice(agent)),
+                _redact_display_text(
+                    _pre_tool_hooks_run_nowhere_notice(agent, others_run=not unmet)
+                ),
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+        if unmet:
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_post_tool_matchers_unmet_notice(agent, unmet)),
                 "msg msg-info",
                 meta={"kind": SPEC_HOOKS_NOTICE_KIND},
             )
@@ -562,10 +623,11 @@ async def _notice_unread_steering(
 ) -> None:
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
-    Only a custom agent: the default agent's steering trees reach a mirrored
-    harness by other routes (folder steering, member essentials), so a row there
-    could claim a loss that did not happen. Best-effort: a spec that cannot be
-    read renders no row rather than failing the turn.
+    Only a custom agent: Crew's steering load serves the default agent alone. On
+    Claude Code and Codex it sends the default agent's entries and steering trees
+    itself, and elsewhere folder steering or member essentials can carry them, so
+    a row there could claim a loss that did not happen. Best-effort: a spec that
+    cannot be read renders no row rather than failing the turn.
     """
     agent = session_agent(client, agent)
     if not agent or is_kirocrew_default_agent(agent):
@@ -592,7 +654,8 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it."""
+    off, since Crew cannot confirm the engine applied it. One more on a claude session
+    that runs in Default instead of the Auto it asked for, naming the ways back."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -600,6 +663,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "withheld_credentials_notice",
         "telemetry_unconfirmed_notice",
         "kiro_cli_model_notice",
+        "mode_pinned_notice",
     ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
@@ -683,6 +747,11 @@ async def _surface_withheld_project_hooks(
             "msg msg-info",
             meta={"kind": SPEC_HOOKS_NOTICE_KIND},
         )
+
+
+def _on_kas(client) -> bool:
+    """Whether *client* runs on KAS."""
+    return capabilities_of(client).backend == ACP_BACKEND_KAS
 
 
 async def _fire(

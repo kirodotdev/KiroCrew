@@ -164,7 +164,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINUX_X86_64_REQUIRED_CPU_FLAGS,
         _VENDOR_DIR,
         _WINDOWS_MSVC_RUNTIME_DLLS,
-        _harden_llama_null_streams,
         _install_diskcache_stub,
         _linux_aarch64_cpu_features,
         _linux_aarch64_has_dotprod,
@@ -174,8 +173,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _log_dropped_inherited_lib_path,
         _macos_x86_64_missing_cpu_flags,
         _missing_windows_msvc_runtime,
+        _native_quiet_enter,
+        _native_quiet_exit,
+        _NativeQuiet,
         _platform_libs_dirname,
         _publish_lib_path_for_import,
+        _quiet_native_log_without_redirect,
         verify_vendored_libs,
     )
     from kiro_crew.embeddings_ollama import (  # noqa: F401

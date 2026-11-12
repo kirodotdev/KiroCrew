@@ -28,6 +28,7 @@ reads it. Which owner takes new work is recorded in
 from __future__ import annotations
 
 import asyncio
+import bisect
 import importlib as _importlib
 import json
 import logging
@@ -211,6 +212,12 @@ _TG_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
 #: renderer, but stay generous so a cut never lands inside "&amp;"/"&#1234;").
 _MAX_ENTITY_LEN = 12
 
+#: How long ``close()`` lets in-flight handlers finish on the open session.
+#: Kept under the 2 s the channel registry gives a whole ``close()``
+#: (``registry.shutdown_tasks``), so the cancel below runs inside that bound.
+#: shortcut: a fixed grace; make it a setting only if a deployment needs another.
+_CLOSE_DRAIN_GRACE_S = 1.0
+
 
 def normalize_reaction_emoji(emoji: str) -> str:
     """Strip U+FE0F so a keyboard's ❤️ and the docs' ❤ are one value.
@@ -281,26 +288,40 @@ def truncate_html_safe(text: str, limit: int = TELEGRAM_MAX_TEXT) -> str:
     "Can't find end tag" 400 this exists to prevent -- so the degenerate answer
     is the empty string, which is always valid.
 
-    Note: ``limit`` counts Python code points while Telegram counts UTF-16 code
-    units, so an astral char (emoji, CJK ext) costs 1 here and 2 there. An
-    emoji-dense message near the cap can still be rejected. That mismatch
-    predates this helper (the plain slice shared it) and is tracked separately.
+    ``limit`` counts UTF-16 code units, the unit of Telegram's cap: an astral
+    character (most emoji) costs 2. Cut points are still code-point indices, so a
+    cut never splits a surrogate pair. Closing tags are ASCII, one unit a char.
     """
-    if len(text) <= limit:
+    units = _utf16_prefix_units(text)
+    if units[-1] <= limit:
         return text
     if limit <= 0:
         return ""
     for lo, hi, closers_len in reversed(_cut_points(text)):
         room = limit - closers_len
-        if room < lo:
+        # Largest code-point index whose prefix fits ``room`` units.
+        fit = bisect.bisect_right(units, room) - 1
+        if fit < lo:
             continue  # even an empty prefix in this run cannot fit its closers
-        cut = _entity_safe_cut(text, min(hi, room), lo)
+        cut = _entity_safe_cut(text, min(hi, fit), lo)
         if cut < lo:
             continue
         closers = _open_tag_closers(text[:cut])
-        if cut + len(closers) <= limit:
+        if units[cut] + len(closers) <= limit:
             return text[:cut] + closers
     return ""
+
+
+def _utf16_prefix_units(text: str) -> list[int]:
+    """``units[i]`` is the UTF-16 length of ``text[:i]``, for ``i`` in ``0..len(text)``.
+
+    Built once per call so each cut probe is a lookup, not a rescan: rescanning per
+    probe is what made an earlier cut search quadratic (see :func:`_cut_points`).
+    """
+    units = [0]
+    for ch in text:
+        units.append(units[-1] + (2 if ord(ch) > 0xFFFF else 1))
+    return units
 
 
 def _open_tag_closers(html_text: str) -> str:
@@ -330,18 +351,24 @@ def _cap_text(text: str, parse_mode: str | None) -> str:
     an oversize rendered message into a hard 400. Reaching the HTML branch means
     the renderer's own budget under-estimated the rendered length, so warn: the
     split, not this backstop, is where the fix belongs.
+
+    Measured in UTF-16 code units, as Telegram counts its cap: a code-point
+    count let emoji-dense text over the real cap through untouched, and Telegram
+    refused it.
     """
-    if len(text) <= TELEGRAM_MAX_TEXT:
+    units = _utf16_prefix_units(text)
+    if units[-1] <= TELEGRAM_MAX_TEXT:
         return text
     if parse_mode and parse_mode.upper() == "HTML":
         logger.warning(
-            "Telegram HTML text is %d chars (> %d); truncating tag-safely. "
+            "Telegram HTML text is %d UTF-16 units (> %d); truncating tag-safely. "
             "The renderer should have split this before sending.",
-            len(text),
+            units[-1],
             TELEGRAM_MAX_TEXT,
         )
         return truncate_html_safe(text, TELEGRAM_MAX_TEXT)
-    return text[:TELEGRAM_MAX_TEXT]
+    # A code-point index, so the slice cannot split a surrogate pair.
+    return text[: bisect.bisect_right(units, TELEGRAM_MAX_TEXT) - 1]
 
 
 class TelegramAuthError(RuntimeError):
@@ -446,6 +473,13 @@ def _reply_sender_id(msg: "dict[str, Any]") -> int:
     if isinstance(raw, bool) or not isinstance(raw, int):
         return 0
     return raw
+
+
+def _reply_message_id(msg: "dict[str, Any]") -> int:
+    """``message_id`` of the message *msg* replies to, or 0, read as defensively."""
+    reply = msg.get("reply_to_message")
+    raw = reply.get("message_id") if isinstance(reply, dict) else None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
 
 
 def frame_reply_context(
@@ -586,6 +620,9 @@ class TelegramInbound:
     #: typing its @handle, so the activation gate needs it; the comparison against
     #: the bot's own id happens in the dispatcher, which is where ``getMe`` lands.
     reply_to_user_id: int = 0
+    #: ``message_id`` of the message this one REPLIES to, or 0. Read with the chat
+    #: id, it names a bridged note an ``approve`` / ``deny`` reply answers (B4d).
+    reply_to_message_id: int = 0
     #: The replied-to message's quoted content (selected quote, else parent text
     #: or caption, else a captionless-media label), as plain text, or "". Held
     #: SEPARATE from ``text`` on purpose: ``text`` feeds the mention-activation
@@ -805,9 +842,22 @@ class TelegramClient:
                 finally:
                     self._task = None
         finally:
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+            # Give in-flight handlers (turns, the album flush above, the cursor
+            # write) a short grace on the open session so they can land. They are
+            # NOT cancelled: a cancelled turn can be cut off inside its own
+            # teardown and leave its session permit held. A turn still running
+            # after the close finds the client closed instead -- ``_ensure_session``
+            # refuses to open a new session -- so its sends fail like a transport
+            # error and its teardown runs normally. The session close is nested in
+            # its own ``finally`` so a cancellation during the wait cannot skip it.
+            try:
+                handlers = [task for task in self._handler_tasks if not task.done()]
+                if handlers:
+                    await asyncio.wait(handlers, timeout=_CLOSE_DRAIN_GRACE_S)
+            finally:
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
 
     def set_message_handler(self, on_message: Callable[[TelegramInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.
@@ -1356,13 +1406,20 @@ class TelegramClient:
         aiohttp/OSError so callers can distinguish "bad token" from "offline".
         """
         data = await self._call_raw("getMe", {})
-        if isinstance(data, dict) and data.get("ok") and data.get("result"):
+        if not isinstance(data, dict) or "ok" not in data:
+            # Not a Bot API reply (empty body, or a proxy's own JSON error): the
+            # proxy failed, Telegram never judged the token.
+            raise ConnectionError("getMe got no Bot API reply")
+        if data.get("ok") and data.get("result"):
             return data["result"]
-        desc = ""
-        if isinstance(data, dict):
-            # Telegram error descriptions are short fixed strings
-            # ("Unauthorized") — token-free and safe to surface in settings.
-            desc = str(data.get("description") or "")
+        code = data.get("error_code")
+        if code == 429 or (isinstance(code, int) and code >= 500):
+            # Rate-limited, or Telegram's own server error: it never judged the
+            # token, so this is "unreachable for now", not a rejected token.
+            raise ConnectionError(f"Telegram getMe was not answered (HTTP {code})")
+        # Telegram error descriptions are short fixed strings
+        # ("Unauthorized") — token-free and safe to surface in settings.
+        desc = str(data.get("description") or "")
         raise TelegramAuthError(f"Telegram rejected getMe ({desc or 'invalid bot token'})")
 
     @staticmethod
@@ -1495,6 +1552,7 @@ class TelegramClient:
             chat_type=chat.get("type", ""),
             message_thread_id=msg.get("message_thread_id"),
             reply_to_user_id=_reply_sender_id(msg),
+            reply_to_message_id=_reply_message_id(msg),
             # The replied-to message's quoted content, held OUT of ``text`` so it
             # never reaches the mention-activation gate; framed onto the
             # agent-facing text at turn assembly (see ``frame_reply_context``).
@@ -1580,14 +1638,14 @@ class TelegramClient:
 
         elif "callback_query" in update:
             cq = update["callback_query"]
-            user = cq.get("from", {})
-            msg = cq.get("message", {})
-            chat = msg.get("chat", {})
+            user = cq.get("from") or {}
+            msg = cq.get("message") or {}
+            chat = msg.get("chat") or {}
             data = cq.get("data", "")
             # Recover the pressed button's display text from the message's
             # inline keyboard (callback_data carries only the index).
             label = ""
-            for kb_row in msg.get("reply_markup", {}).get("inline_keyboard", []):
+            for kb_row in (msg.get("reply_markup") or {}).get("inline_keyboard") or []:
                 for btn in kb_row:
                     if btn.get("callback_data") == data:
                         label = btn.get("text", "")

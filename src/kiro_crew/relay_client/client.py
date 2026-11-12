@@ -156,8 +156,9 @@ class RelayClient:
     def relay_connected(self) -> bool:
         """Whether a host connection is up: past ``ready`` and not yet closing.
 
-        A lease renewal reports this as ``relay.connected``, which the contract
-        (section 4.2) makes true only from ``ready`` until that connection ends.
+        A lease renewal reports this as ``relay.connectionStatus``, which the
+        contract (section 4.2) makes ``CONNECTED`` only from ``ready`` until that
+        connection ends.
         During a move the old and the new connection overlap, and either counts.
         """
         return any(conn.serving for conn in self._live)

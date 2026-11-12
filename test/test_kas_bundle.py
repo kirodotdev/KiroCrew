@@ -10,12 +10,17 @@ installed; and the data-home leaf the bundle lives in is sealed read-only.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
+import logging
 import os
+import socket
 import stat
 import tarfile
+import time
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,8 +242,31 @@ class TestManifest:
     def test_fetch_from_a_malformed_url_is_a_refusal_not_a_traceback(self):
         """urllib raises ValueError for a url it cannot parse; the operator typed it, so
         the answer is the installer's one error type, which the CLI prints and exits."""
-        with pytest.raises(kas_bundle.KasBundleError, match="could not fetch"):
+        with pytest.raises(kas_bundle.KasBundleError, match="could not download the KAS engine"):
             kas_bundle.fetch_manifest("https://[mirror", version="0.66.33")
+
+    @pytest.mark.parametrize(
+        "reason, cause",
+        [
+            (
+                ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+                "connection refused",
+            ),
+            (socket.gaierror("Name or service not known"), "the host name could not be resolved"),
+            (TimeoutError("timed out"), "timed out"),
+        ],
+    )
+    def test_an_unreachable_host_is_named_with_the_cause_in_plain_words(self, reason, cause):
+        """urllib's ``<urlopen error [Errno 111] Connection refused>`` is Python
+        internals; the installer prints this message as the whole failure."""
+
+        class _Opener:
+            def open(self, url, timeout):
+                raise urllib.error.URLError(reason)
+
+        with pytest.raises(kas_bundle.KasBundleError) as info:
+            kas_bundle.fetch_manifest("https://h.test", version="0.66.33", opener=_Opener())
+        assert str(info.value) == f"could not download the KAS engine from https://h.test: {cause}"
 
     def test_fetch_pinned_version_must_match_the_document(self, source_dir):
         class _Resp(io.BytesIO):
@@ -381,6 +409,44 @@ class TestInstall:
         assert marker.read_text() == "held"
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
         assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
+
+    def test_the_next_install_removes_only_a_stale_install_staging_tree(
+        self, source_dir, tmp_path, caplog
+    ):
+        """An install ended by ``os._exit`` or an outside kill leaves its staging
+        tree; the next install removes it once nothing in it is an hour old, and
+        keeps one still being written, a retired engine, lipo's work tree and a link."""
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        old = time.time() - 2 * 3600
+
+        def staging_tree(path: Path, *, stale_archive: bool) -> None:
+            archive = path / "downloads" / "engine.tgz"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"x")
+            for entry in ([archive] if stale_archive else []) + [archive.parent, path]:
+                os.utime(entry, (old, old))
+
+        staging_tree(root / ".staging-1.2.3-orphan1", stale_archive=True)
+        staging_tree(root / ".staging-1.2.3-writing", stale_archive=False)
+        staging_tree(root / ".staging-retired-abc", stale_archive=True)
+        staging_tree(root / ".staging-lipo-abc", stale_archive=True)
+        staging_tree(outside, stale_archive=True)
+        link = root / ".staging-9-link"
+        link.symlink_to(outside, target_is_directory=True)
+        os.utime(link, (old, old), follow_symlinks=False)
+
+        _install(source_dir, root)
+
+        assert sorted(p.name for p in root.iterdir() if p.name.startswith(".staging-")) == [
+            ".staging-1.2.3-writing",
+            ".staging-9-link",
+            ".staging-lipo-abc",
+            ".staging-retired-abc",
+        ]
+        assert (outside / "downloads" / "engine.tgz").is_file()
+        # The link is skipped, not walked through and refused by rmtree.
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_a_zstd_engine_archive_installs_like_the_published_one(
         self, source_dir, tmp_path, monkeypatch
@@ -800,7 +866,8 @@ class TestThePin:
             raise kas_bundle.KasBundleError("stop here")
 
         monkeypatch.setattr(kas_bundle, "fetch_manifest", fake_fetch)
-        with pytest.raises(kas_bundle.KasBundleError, match="stop here"):
+        # The host check that runs first never reads the runner's own libc.
+        with _patch_glibc(None), pytest.raises(kas_bundle.KasBundleError, match="stop here"):
             kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
         assert seen == {
             "version": kas_bundle.KAS_PIN_VERSION,
@@ -875,6 +942,23 @@ class TestOldGlibcRefusal:
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is None
         assert kas_bundle.installed_versions(root=root) == []
         assert not any(root.glob("**/downloads")) if root.exists() else True
+
+    def test_install_pinned_refuses_an_old_glibc_host_before_the_manifest(
+        self, tmp_path, monkeypatch
+    ):
+        """The gateway's install path checks the host before any fetch: a host that
+        can never run the engine is refused with that cause even offline, and a
+        spawn, cron or subagent that asks again costs no network round trip."""
+        monkeypatch.setattr(kas_bundle.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(kas_bundle.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(
+            kas_bundle,
+            "fetch_manifest",
+            lambda *a, **k: pytest.fail("fetched the manifest on a host that cannot run it"),
+        )
+        with _patch_glibc((2, 26)):
+            with pytest.raises(kas_bundle.KasHostUnsupported, match=r"glibc \(2\.26\)"):
+                kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
 
     def test_modern_glibc_installs_as_before(self, source_dir, tmp_path):
         root = tmp_path / "root"

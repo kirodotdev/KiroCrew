@@ -3,7 +3,7 @@
 The stdio reader skips blank lines, notifications and non-object JSON, and gives up after a
 capped run of non-JSON banner lines; it reads a line up to the gateway's read ceiling; a
 malformed response or a timeout becomes an error rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
-on its error; and the teardown closes stdin, kills on timeout and reaps the probe's
+on its error, after a tail of the non-JSON stdout lines the reader skipped; and the teardown closes stdin, kills on timeout and reaps the probe's
 process group, on Windows off the event loop and without a traceback for an already-exited
 process.
 """
@@ -11,6 +11,7 @@ process.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ from stray_line_helpers import too_deep_line
 from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import McpServerInfo, _read_stdio_jsonrpc_response, probe_server
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 
 class TestProbeServerProcessCleanup:
@@ -732,6 +733,32 @@ class TestReadStdioJsonrpcResponse:
         with pytest.raises(asyncio.TimeoutError):
             await _read_stdio_jsonrpc_response(reader, timeout=0.05)
 
+    @pytest.mark.asyncio
+    async def test_skipped_keeps_every_non_json_line(self) -> None:
+        """``skipped`` collects every banner line, never a blank line or a
+        notification; the probe redacts them all before it takes the tail."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINES
+
+        count = _STDOUT_TAIL_LINES + 3
+        banners = [f"launcher step {n}\n".encode() for n in range(count)]
+        notif = b'{"jsonrpc":"2.0","method":"notifications/message","params":{}}\n'
+        stream = _make_stream([*banners, b"\n", notif])
+        skipped: list[str] = []
+        resp = await _read_stdio_jsonrpc_response(
+            stream, timeout=FALLBACK_TIMEOUT_SECS, skipped=skipped
+        )
+        assert resp is None
+        assert skipped == [f"launcher step {n}" for n in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_skipped_holds_a_bounded_slice_of_each_line(self) -> None:
+        from kiro_crew.mcp_discovery import _STDOUT_LINE_HELD_CHARS
+
+        stream = _make_stream([b"x" * (_STDOUT_LINE_HELD_CHARS + 10) + b"\n"])
+        skipped: list[str] = []
+        await _read_stdio_jsonrpc_response(stream, timeout=FALLBACK_TIMEOUT_SECS, skipped=skipped)
+        assert skipped == ["x" * _STDOUT_LINE_HELD_CHARS]
+
 
 class TestProbeServerBannerTolerance:
     """probe_server tolerates a banner that precedes the handshake."""
@@ -766,6 +793,164 @@ class TestProbeServerBannerTolerance:
         assert result.status == "ok"
         assert result.tools == ["read"]
         assert "Expecting value" not in result.error
+        assert "stdout:" not in result.error
+
+
+_INIT_OK = b'{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}\n'
+_LAUNCHER_FAILURE = b"launcher: uvx not found on PATH\n"
+
+
+class TestProbeServerLauncherStdout:
+    """A failed probe's error carries the non-JSON stdout lines the reader skipped.
+
+    A launcher that cannot start the server it fronts prints why on stdout and
+    exits, so without those lines the error says only "no response" and the
+    failure streak quarantines the server with no cause anywhere a person sees.
+    """
+
+    async def _probe(self, stdout: list[bytes | BaseException]) -> McpServerInfo:
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdin.close = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.stdout = AsyncMock()
+        proc.stdout.readline = AsyncMock(side_effect=stdout)
+        proc.stderr = MagicMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        server = McpServerInfo(name="launched", command="launcher")
+        with (
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/launcher"),
+        ):
+            return await probe_server(server)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stdout,head",
+        [
+            pytest.param([_LAUNCHER_FAILURE, b""], "no response", id="eof-before-initialize"),
+            pytest.param(
+                [_INIT_OK, _LAUNCHER_FAILURE, b""],
+                "tools/list: no response after a successful initialize",
+                id="eof-before-tools-list",
+            ),
+            pytest.param(
+                [_LAUNCHER_FAILURE, asyncio.TimeoutError()], "timeout", id="timeout-after-a-line"
+            ),
+        ],
+    )
+    async def test_launcher_stdout_reaches_the_error(self, stdout, head) -> None:
+        result = await self._probe(stdout)
+
+        assert result.status == "error"
+        first, _, rest = result.error.partition("\n")
+        assert first == head
+        assert rest == "stdout: launcher: uvx not found on PATH"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(b"", id="no-answer"),
+            pytest.param(b'{"jsonrpc":"2.0","id":2,"error":{"message":"boom"}}\n', id="error"),
+            pytest.param(b'{"jsonrpc":"2.0","id":2,"result":{}}\n', id="malformed"),
+        ],
+    )
+    async def test_a_tools_list_failure_caches_the_stdout_tail(self, answer) -> None:
+        """``GET /api/mcp`` renders the cached row, so a tools/list failure caches the
+        error only after the stdout tail is on it."""
+        from kiro_crew.mcp_discovery import _probe_cache
+
+        _probe_cache.pop("launched", None)
+        try:
+            result = await self._probe([_INIT_OK, _LAUNCHER_FAILURE, answer, b""])
+
+            assert result.error.endswith("\nstdout: launcher: uvx not found on PATH")
+            assert _probe_cache["launched"].error == result.error
+        finally:
+            _probe_cache.pop("launched", None)
+
+    @pytest.mark.asyncio
+    async def test_a_banner_flood_keeps_only_its_last_lines(self) -> None:
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES, _STDOUT_TAIL_LINES
+
+        lines = [f"launcher line {n}\n".encode() for n in range(_MAX_BANNER_LINES + 1)]
+        result = await self._probe(lines)
+
+        assert result.status == "error"
+        kept = range(_MAX_BANNER_LINES + 1 - _STDOUT_TAIL_LINES, _MAX_BANNER_LINES + 1)
+        assert result.error == "no response\nstdout: " + "\n".join(
+            f"launcher line {n}" for n in kept
+        )
+
+    @pytest.mark.asyncio
+    async def test_launcher_stdout_is_redacted_before_it_is_cut(self) -> None:
+        """stdout is untrusted output: both redactors run on whole lines, and a line
+        is cut to its shown width only afterwards, so a credential straddling that
+        width cannot leave its head behind."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINE_CHARS
+
+        # Synthetic credentials, each split so no scanner reads it as one literal.
+        key_line = ("launcher: key " + "AKIAIOSFODNN7" "EXAMPLE" + " rejected\n").encode()
+        url = "https://collector.example.net/c?d=" + base64.b64encode(b"x" * 80).decode()
+        url_line = f"launcher: GET {url} failed\n".encode()
+        token = "gh" + "p_" + "Q7x9Kd2mLp4Rt8Vw1Zb6Nc3Hf5Jg0Ys2Ae4X"
+        prefix = "launcher: auth "
+        # The token starts five characters before the shown width ends.
+        pad = "." * (_STDOUT_TAIL_LINE_CHARS - len(prefix) - 5)
+        straddle_line = (prefix + pad + token + "\n").encode()
+
+        result = await self._probe([key_line, url_line, straddle_line, b""])
+
+        assert result.status == "error"
+        assert "AKIAIOSFODNN7" "EXAMPLE" not in result.error
+        assert "launcher: key [REDACTED: credential] rejected" in result.error
+        assert "collector.example.net/c?d=" not in result.error
+        assert "[REDACTED: suspicious URL to collector.example.net]" in result.error
+        assert token[:5] not in result.error
+        shown = (prefix + pad + "[REDACTED: credential]")[:_STDOUT_TAIL_LINE_CHARS]
+        assert result.error.splitlines()[-1] == shown
+
+    @pytest.mark.asyncio
+    async def test_a_key_longer_than_the_tail_is_redacted_whole(self) -> None:
+        """A PEM block longer than the kept tail is redacted while its BEGIN line is
+        still held, so no body line, even one too short for the base64 scan, is shown."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINES
+
+        # Synthetic key material, deterministic; the short last line is the one only
+        # the PEM matcher catches.
+        body = [base64.b64encode(bytes([n]) * 48).decode() for n in range(_STDOUT_TAIL_LINES)]
+        short = "Qk9HVVNfVEFJTF9GUkFHTUVO"
+        pem = ["-----BEGIN " + "PRIVATE KEY-----", *body, short, "-----END " + "PRIVATE KEY-----"]
+        lines = [(line + "\n").encode() for line in [*pem, "launcher: failed"]]
+
+        result = await self._probe([*lines, b""])
+
+        assert result.status == "error"
+        assert short not in result.error
+        assert result.error.endswith("launcher: failed")
+
+    @pytest.mark.asyncio
+    async def test_a_line_cut_for_holding_withholds_the_whole_tail(self) -> None:
+        """A line longer than the held width may have lost a key's BEGIN line, so
+        nothing of the stdout tail is shown rather than a body line it left bare."""
+        from kiro_crew.mcp_discovery import _STDOUT_LINE_HELD_CHARS
+
+        short = "Qk9HVVNfVEFJTF9GUkFHTUVO"
+        begin = "-----BEGIN " + "PRIVATE KEY-----"
+        long_line = "d" * (_STDOUT_LINE_HELD_CHARS - 6) + " " + begin
+        body = base64.b64encode(b"k" * 48).decode()
+        end = "-----END " + "PRIVATE KEY-----"
+        lines = [(line + "\n").encode() for line in [long_line, body, short, end]]
+
+        result = await self._probe([*lines, b""])
+
+        assert result.status == "error"
+        assert short not in result.error
+        assert result.error == "no response\nstdout: [withheld: a line was too long to redact]"
 
 
 # ── Probe process-group reap tests ───────────

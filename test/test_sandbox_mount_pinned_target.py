@@ -1492,3 +1492,36 @@ def test_write_carveout_still_resolves_its_own_name_twice(tmp_path: Path) -> Non
     assert [(m.source, m.target) for m in libc.calls] == [(name, name), (name, name)]
     assert libc.calls[0].flags == _MS_BIND
     assert libc.calls[1].flags & _MS_REMOUNT and libc.calls[1].flags & _MS_BIND
+
+
+def test_a_stand_in_whose_identity_cannot_be_read_refuses_with_the_blocked_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed ``fstat`` on the pinned stand-in refuses like a failed open does.
+
+    Both leave the mask unverifiable, so both must exit with the launcher's BLOCKED
+    line naming the stand-in, never a bare ``OSError`` traceback that names no reason.
+    """
+    stand_in = tmp_path / "stand-in"
+    stand_in.mkdir()
+    real_fstat = os.fstat
+    opened: list[int] = []
+    real_open = os.open
+
+    def tracking_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, flags, *args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def failing_fstat(fd: int) -> os.stat_result:
+        if fd in opened:
+            raise OSError(errno.EIO, "I/O error")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+    message = refusal(program._stand_in_identity, str(stand_in).encode())
+
+    assert message is not None
+    assert message.startswith("sandbox: BLOCKED -- cannot pin the stand-in"), message
+    assert str(stand_in) in message and "I/O error" in message

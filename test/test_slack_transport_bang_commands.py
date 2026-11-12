@@ -144,14 +144,14 @@ def test_a_plain_message_still_runs_the_turn(audit):
     assert sessions.agents == ["kirocrew"]
 
 
-def test_voice_on_is_refused_because_this_path_never_speaks(audit, monkeypatch):
-    """No transport reply is ever spoken, so ``!voice on`` must not report Voice ON
-    nor opt the thread in."""
+def test_voice_on_opts_the_thread_in_as_on_the_native_path(audit, monkeypatch):
+    """A finished transport turn is spoken, so ``!voice on`` opts the thread in here
+    exactly as it does natively: it reports Voice ON and runs no turn."""
     monkeypatch.setattr(_handler._vc, "sessions", set())
     slack, sessions = _run("!voice on")
 
     assert sessions.agents == []
-    assert _KEY not in _handler._vc.sessions
+    assert _KEY in _handler._vc.sessions
     posts = _posts(slack)
-    assert any(p.startswith("🔇 Voice replies are not available here") for p in posts), posts
-    assert not any("Voice ON" in p for p in posts), posts
+    assert any(p.startswith("\U0001f50a Voice ON") for p in posts), posts
+    assert not any("not available here" in p for p in posts), posts

@@ -39,8 +39,8 @@ function AppMuteRow({
 }) {
   const path = ['apps', app.name, 'mute_sessions'].join('.')
   const name = appDisplayName(app)
-  const mut = useMutation(
-    overlay.mutationOpts<boolean>({
+  const mut = useMutation({
+    ...overlay.mutationOpts<boolean>({
       queryKey: ['kirocrewConfig'],
       mutationFn: (value: boolean) => api.patchConfig(path, value),
       path: () => path,
@@ -49,7 +49,10 @@ function AppMuteRow({
       onFailure: () => onFailure(path, i18nT('pages.settings.appSessionMutes.failed_to_save', { app: name })),
       onSupersede,
     }),
-  )
+    // One save per path at a time, so two quick clicks reach the server in
+    // click order and the later one is stored.
+    scope: { id: path },
+  })
   return (
     <SettingsToggle
       label={i18nT('pages.settings.appSessionMutes.row_label', { app: name })}

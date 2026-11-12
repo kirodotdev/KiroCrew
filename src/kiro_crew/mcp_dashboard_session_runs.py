@@ -353,6 +353,11 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     if args.get("work_item") and "crew" not in args:
         from kiro_crew.remote_dispatch import remote_dispatch_enabled
 
@@ -704,6 +709,36 @@ def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
     if resp.get("color_index") is None:
         return redact(f"Cleared the color of `{target}`.")
     return redact(f"Set the color of `{target}` to palette swatch {resp['color_index']}.")
+
+
+def _run_session_set_note(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-note",
+            {"target": args["target"], "note": args["note"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not leave that note: {refused.error}"
+    target = args["target"]
+    if resp.get("visibleDeferred"):
+        reply = (
+            f"`{target}` is running a turn, so the note is held and written into its "
+            "transcript when that turn ends."
+        )
+    else:
+        reply = f"Left the note in `{target}`'s transcript."
+    if resp.get("contextSkipped"):
+        reply += (
+            " Its next turn will not read it: the session already holds as many notes as "
+            "it takes, or the note looks like a credential."
+        )
+    else:
+        reply += " Its next turn reads it once"
+        if resp.get("deliveryConditional"):
+            reply += ", unless the session is first bound to another conversation"
+        reply += "."
+    return redact(reply)
 
 
 def _run_session_close(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -1273,6 +1308,12 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
     Each step is the route the four-call path uses, called as the caller. The seed
     goes only to the key step 2 returned, and only after ``bind`` succeeded.
     """
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    # Before step 1, so no item is created only to be closed again.
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     not_sent = "seed: not sent"
     look = (
         "seed: not sent. Read your board (work_ledger_read) and sidebar (session_status) "

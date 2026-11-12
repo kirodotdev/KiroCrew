@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
+from named_cases_helpers import named_cases
 
 import kiro_crew.config.paths as paths_mod
 import kiro_crew.hooks as hooks_mod
@@ -23,6 +24,7 @@ from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL, kas_tool_ma
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -59,15 +61,16 @@ def _fresh_cache():
 def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     # A backend that Crew fires spec hooks for needs its own vocabulary: KAS's is
     # this module's table, every other member's is in harness_tool_names. claude
-    # is the one table outside that set: Crew fires no spec hooks there, and its
-    # table names a call for Hooks-page matchers only.
+    # and codex are the tables outside that set: Crew fires no preToolUse spec
+    # hooks there, and their tables name a call for hook matching only.
     from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES
 
     assert ACP_BACKEND_KAS in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     assert frozenset(HARNESS_TOOL_TABLES) == (
         ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
-    ) | {ACP_BACKEND_CLAUDE}
+    ) | {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():
@@ -164,7 +167,22 @@ def _pre_tool_hooks(matcher: str) -> list[ScriptHook]:
     )
 
 
-@pytest.mark.parametrize("matcher", ["execute_bash", "shell", "run_command", "fs_*", "*"])
+@pytest.mark.parametrize(
+    "matcher",
+    [
+        *named_cases(
+            "test_a_matcher_naming_a_tool_kas_runs_is_kept",
+            "matcher",
+            ["execute_bash", "shell", "run_command", "fs_*", "*"],
+        ),
+        # The matcher kinds kiro-cli reads.
+        *named_cases(
+            "test_kiro_cli_matcher_kinds_are_kept_for_spec_hooks",
+            "matcher",
+            ["@builtin", "@builtin/fs_*", "@github", "@github/get_*", "@mcp", "fs_rea?"],
+        ),
+    ],
+)
 def test_a_matcher_naming_a_tool_kas_runs_is_kept(matcher):
     assert [h.matcher for h in _pre_tool_hooks(matcher)] == [matcher]
 

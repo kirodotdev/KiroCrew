@@ -1,6 +1,6 @@
 "use strict";
 
-const { test } = require("node:test");
+const { test, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createRelayCrewOpener } = require("../relay-crew-open");
@@ -19,9 +19,13 @@ function fakeWindowModule() {
   const opened = [];
   const openWindow = (opts) => {
     const w = {
-      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [] },
+      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [] },
       endpointId: opts.endpointId,
+      notices: [],
       reload() {},
+      showNotice(text) { w.notices.push(text); },
+      onUnreachable: (cb) => w.cbs.unreachable.push(cb),
+      onNoticeAction: (cb) => w.cbs.action.push(cb),
       focus() { w.focused += 1; },
       close() { if (!w.closed) { w.closed = true; w.cbs.closed.forEach((cb) => cb()); } },
       isClosed: () => w.closed,
@@ -30,10 +34,15 @@ function fakeWindowModule() {
       onVisibilityChange: (cb) => w.cbs.visibility.push(cb),
     };
     opened.push(w);
+    liveWindows.push(w);
     return w;
   };
   return { opened, openWindow };
 }
+
+// Every fake window a test opened, closed after it so no renewal timer outlives it.
+const liveWindows = [];
+afterEach(() => { for (const w of liveWindows.splice(0)) w.close(); });
 
 function setup({ answers, createRenewal = createRelayCrewRenewal, openWindow } = {}) {
   const requests = [];
@@ -525,4 +534,162 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
   assert.equal(s.markers[3], MARK_B, "B renews with its own marker");
   assert.equal(changedLogs(s).length, 0);
   b.close();
+});
+
+// --- The window's notices: an offline host, lost access, Check again ---
+
+const UNAVAILABLE_TEXT = {
+  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close window",
+};
+const NO_ACCESS_TEXT = {
+  title: "You no longer have access to Team Crew.",
+  body: "To get access back, ask your admin.",
+  check: "",
+  close: "Close window",
+};
+
+test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window and closes nothing", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("CREW_OFFLINE")] });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // A mints again and the gateway answers CREW_OFFLINE
+  await settle();
+  assert.equal(made[0].isStopped(), true);
+  assert.deepEqual(a.notices, [UNAVAILABLE_TEXT]);
+  assert.deepEqual(b.notices, [], "only the window whose renewal stopped");
+  assert.equal(a.closed || b.closed, false);
+  assert.ok(s.logs.includes(`relay crew ${ID}: open -> notice (unavailable)`));
+  assertNoSecrets([...s.logs]);
+});
+
+test("a CREW_ACCESS_NOT_GRANTED stop shows the lost-access notice with no Check again", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_ACCESS_NOT_GRANTED")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  w.cbs.status[0](401);
+  await settle();
+  assert.equal(made[0].isStopped(), true, "retrying stops");
+  assert.deepEqual(w.notices, [NO_ACCESS_TEXT]);
+  assert.equal(w.closed, false);
+  assert.ok(s.logs.includes(`relay crew ${ID}: open -> notice (no_access)`));
+  assertNoSecrets([...s.logs]);
+});
+
+test("a Crew with no name gets a neutral one in the notice", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [{ ...okFor(TOKEN), name: "" }, refusal("CREW_OFFLINE")] });
+  await s.opener.open(ID);
+  s.win.opened[0].cbs.status[0](401);
+  await settle();
+  assert.equal(s.win.opened[0].notices[0].title, "This Crew is currently unavailable");
+});
+
+test("other stops and a failing renewal show no notice", async () => {
+  for (const code of ["REMOTE_ACCESS_DISABLED", "ACCESS_DENIED", "UNREACHABLE"]) {
+    const { createRenewal } = recordedRenewals();
+    const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal(code)] });
+    await s.opener.open(ID);
+    s.win.opened[0].cbs.status[0](401);
+    await settle();
+    assert.deepEqual(s.win.opened[0].notices, [], code);
+    s.win.opened[0].close();
+  }
+});
+
+test("the window reporting the host unreachable stops renewal and shows the unavailable notice", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  w.cbs.unreachable.forEach((cb) => cb());
+  assert.equal(made[0].isStopped(), true);
+  assert.equal(w.opts.getToken(), null);
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT]);
+  w.close();
+});
+
+test("Check again mints a new token and reloads when the host is back", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-2`)] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  let reloads = 0;
+  w.reload = () => { reloads += 1; };
+  w.cbs.unreachable.forEach((cb) => cb());
+  w.cbs.action.forEach((cb) => cb("check"));
+  await settle();
+  await settle();
+  assert.equal(s.requests.length, 2, "one fresh mint");
+  assert.equal(reloads, 1, "one reload, which removes the notice");
+  assert.equal(made[1].isStopped(), false);
+  assert.equal(w.opts.getToken(), `${TOKEN}-2`);
+  assert.equal(w.notices.length, 1, "no second notice");
+  w.close();
+});
+
+test("Check again while the host is still gone shows the notice again and does not retry on its own", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_OFFLINE")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  let reloads = 0;
+  w.reload = () => { reloads += 1; };
+  w.cbs.unreachable.forEach((cb) => cb());
+  w.cbs.action.forEach((cb) => cb("check"));
+  await settle();
+  await settle();
+  assert.equal(reloads, 0);
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT, UNAVAILABLE_TEXT]);
+  assert.equal(s.requests.length, 2, "one attempt, then nothing");
+
+  // A refusal of another kind, such as a local gateway that can't be reached,
+  // keeps the notice that is up.
+  const s2 = setup({ createRenewal: recordedRenewals().createRenewal, answers: [okFor(TOKEN), refusal("UNAVAILABLE")] });
+  await s2.opener.open(ID);
+  const w2 = s2.win.opened[0];
+  w2.cbs.unreachable.forEach((cb) => cb());
+  w2.cbs.action.forEach((cb) => cb("check"));
+  await settle();
+  await settle();
+  assert.deepEqual(w2.notices, [UNAVAILABLE_TEXT, UNAVAILABLE_TEXT]);
+});
+
+test("Check again that finds access gone switches to the lost-access notice", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_ACCESS_NOT_GRANTED")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  w.cbs.unreachable.forEach((cb) => cb());
+  w.cbs.action.forEach((cb) => cb("check"));
+  await settle();
+  await settle();
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT, NO_ACCESS_TEXT]);
+});
+
+test("Close window closes only that window and stops its renewal", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`)] });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.unreachable.forEach((cb) => cb());
+  a.cbs.action.forEach((cb) => cb("close"));
+  assert.equal(a.closed, true);
+  assert.equal(b.closed, false);
+  assert.equal(made[0].isStopped(), true);
+  assert.equal(made[1].isStopped(), false);
+  b.close();
+});
+
+test("clicking the Crew in the local dashboard while its notice is up runs the same one attempt", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_OFFLINE")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  w.cbs.unreachable.forEach((cb) => cb());
+  assert.deepEqual(await s.opener.open(ID), { ok: false, error: "CREW_OFFLINE" });
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT, UNAVAILABLE_TEXT]);
 });

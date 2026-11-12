@@ -88,7 +88,9 @@ def test_the_refusal_fires_before_the_embed_call(tmp_path: Path) -> None:
     assert len(calls) == 1, f"embedded the oversized fragment: {len(calls)} calls"
 
 
-def test_a_fragment_exactly_at_the_limit_is_accepted(tmp_path: Path) -> None:
+def test_a_fragment_exactly_at_the_limit_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Boundary: the refusal is `>`, not `>=`, so the limit itself must still work.
 
     Note what the limit applies to -- the FRAGMENT, not the raw turn text. With
@@ -97,6 +99,8 @@ def test_a_fragment_exactly_at_the_limit_is_accepted(tmp_path: Path) -> None:
     assumed, because that off-by-the-prefix is exactly the kind of thing a hardcoded
     length would get wrong.
     """
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
     from kiro_crew.eval.bench.ingest import fragment_text
 
     probe = BenchTurn(turn_id="t1", session_id="s1", speaker="A", text="x")

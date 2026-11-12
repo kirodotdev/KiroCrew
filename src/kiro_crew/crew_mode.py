@@ -590,8 +590,10 @@ MATE_SESSIONS_PREVIEW: Final[str] = "mate_sessions"
 
 def mate_sessions_hidden(cfg: Any = None) -> bool:
     """Whether the mate sessions preview is on: *cfg*, else the live config. Off when unread."""
+    from kiro_crew.edition_locks import feature_previews
+
     cfg = cfg if cfg is not None else _live_cfg()
-    previews = getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
+    previews = feature_previews(getattr(getattr(cfg, "dashboard", None), "feature_previews", None))
     return isinstance(previews, Mapping) and previews.get(MATE_SESSIONS_PREVIEW) is True
 
 

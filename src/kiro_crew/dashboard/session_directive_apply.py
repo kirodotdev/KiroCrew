@@ -45,6 +45,7 @@ from __future__ import annotations
 import importlib as _importlib
 import logging
 import sys as _sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from kiro_crew import _facade_mirror
@@ -126,6 +127,45 @@ def refuse_user_origin_directive(session_key: str, kind: str) -> str:
         f"refused even when this session has an open dashboard tab "
         f"(this turn is {session_key!r}). Nothing was changed."
     )
+
+
+def person_only_directive_refuser(
+    session_key: str, refusals: list[str]
+) -> Callable[[Any], Awaitable[None]]:
+    """Return a ``stream_and_collect`` ``on_event`` that refuses person-only directives.
+
+    For a turn no session applier reads (a cron job, a workflow agent step): each
+    ``USER_ORIGIN_DIRECTIVES`` call the turn completes is refused with
+    :func:`refuse_user_origin_directive` and its text appended to *refusals* for
+    the caller to lead its result with. The call is named from any of its frames
+    the way the dashboard's out-of-band claim names it
+    (``directive_tool_from_call``), never from the result body, which a harness
+    may reshape (KAS). Nothing is applied, so a forged title buys only a refusal
+    line. Every other directive is left unread.
+    """
+    from kiro_crew import session_directive
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT
+    from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
+
+    person_only_calls: dict[str, str] = {}
+
+    async def _on_event(event: Any) -> None:
+        call_id = event.tool_call_id
+        if not call_id:
+            return
+        if event.kind != CONTEXT_EVENT_TOOL_RESULT:
+            tool = session_directive.directive_tool_from_call(
+                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+            )
+            if tool in USER_ORIGIN_DIRECTIVES:
+                person_only_calls[call_id] = tool
+            return
+        if event.tool_final and call_id in person_only_calls:
+            refusals.append(
+                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
+            )
+
+    return _on_event
 
 
 async def apply_session_directive(
@@ -435,6 +475,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.session_directive_apply_monitor import (  # noqa: F401
         _STOP_NOT_APPLIED,
         _binding,
+        _default_cycle_cap,
         _keeps_stopped_loop,
         _no_loop_message,
         _StaleWakeStopGuard,

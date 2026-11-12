@@ -50,7 +50,12 @@
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
-> same remedy when kiro-cli's own store is what answers. A stored Kiro CLI pick
+> same remedy when kiro-cli's own store is what answers. A terminal names the card
+> second, since a host reached by ssh may have no browser: `kirocrew chat`'s error
+> reads `host_auth.KAS_TERMINAL_SIGN_IN` ("Sign in with `kirocrew kas login` (or in
+> the dashboard: ...)") in place of the card (`host_auth.for_terminal`), and
+> doctor's bundle-route remedy is built from that constant. The dashboard keeps the
+> sentence it translates. A stored Kiro CLI pick
 > (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.
 
 ## Why this exists
@@ -166,8 +171,8 @@ uncertain.
 
 A poll is the longest-lived request in a login: one every few seconds for as long as
 the user takes to approve in their browser. The dashboard treats the poll route's 502
-as terminal and offers only "start over", so a poll must report a failed login only
-when the login has actually failed.
+as terminal: it stops polling and offers Start over, so a poll must report a failed
+login only when the login has actually failed.
 
 The transport budget below is shared by both device flavors; the two rows marked
 by-flavor are not.
@@ -251,10 +256,16 @@ because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/star
 and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
 a port, shell characters) is refused with `invalid_start_url` before AWS is called.
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
-`StartUrlRejectedError`, also `invalid_start_url` (HTTP 400, not the 502 of an
-auth-service failure): its message says to use the access portal URL when AWS names
-the start URL, and to check the Region field otherwise, since a portal looked up in
-the wrong region answers a bare `Invalid request`.
+`StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
+message says to use the access portal URL when AWS names the start URL
+(`invalid_start_url`), and otherwise to check the start URL first and then the Region
+field, since a portal that does not exist and a portal looked up in the wrong region
+both answer a bare `Invalid request`; that answer names neither field, so it is
+`start_url_or_region_rejected`. The dashboard's company SSO form
+reads the code, not the text: `invalid_region`, `invalid_start_url` and
+`start_url_or_region_rejected` get a headline naming the Region, the start URL or
+both, and those inputs are marked `aria-invalid` and described by the error; every
+other begin error keeps the "Check your connection" headline.
 
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
@@ -296,7 +307,12 @@ the lock above orders them: the engine's `_kiro/auth/getAccessToken` callback
 (`dashboard/sign_in_refresher.run_sign_in_refresher`, started beside the
 stale-asset watchdog) that sleeps until the highest-priority stored identity
 enters the margin and renews it then, so the stored expiry the sign-in card and
-`kirocrew doctor` read does not freeze while no agent turn runs. The
+`kirocrew doctor` read does not freeze while no agent turn runs. A caller-specific
+executor may run `KasAuthProvider`'s initial `store.resolve`, but `ensure_fresh`,
+its lock-held store work and a temporary refresh HTTP session stay on the event
+loop's default executor. A pool whose identity-marker reads can wait on the
+store-wide sign-out lock is therefore never needed to finish the refresh that
+unblocks that sign-out. The
 tick never renews a token outside the margin, does not retry while the
 refresh-rejected marker stands (a new sign-in clears it), backs off from 30s to
 5min on a transient failure, and does not import `kiro_crew.auth` until the vault
@@ -618,6 +634,20 @@ engine instead ([aws-control.md](aws-control.md)).
   offers agents other than Kiro CLI, so a user who set up with one of those can
   switch agents later. `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.
+- An unfinished sign-in is said in plain words. The loopback wait screen opens the
+  portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
+  a slow one; after 30 s it says the sign-in has not finished and offers Start
+  over in that notice (a tab that never appeared is the "Open the sign-in page
+  again" button's case). Start over, there and on the failure screen, cancels the
+  attempt (`POST /api/kas-login/cancel`, settled before anything new starts) and
+  begins a new one for the same provider on the same transport, Company SSO's
+  start URL and region included. During an account switch the old credential is
+  still stored after the cancel, so only a changed `identity` or `expires_at`
+  between a status read taken right before the cancel and one after it counts as
+  the attempt having landed (a cached read can predate a token refresh, which
+  moves `expires_at` too). "Use a different sign-in" is the smaller link back to
+  the chooser. The code screen shows when the code stops working, from the begin
+  answer's `expires_at`.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

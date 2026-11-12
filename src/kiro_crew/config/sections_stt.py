@@ -642,6 +642,16 @@ class SttConfig:
             "fall back to the status bar.",
         ),
     )
+    dictation_note: bool = field(
+        default=False,
+        metadata=_meta(
+            "Tell the agent this was dictated",
+            "Add one line to the end of a message that holds dictated text, telling the "
+            "agent it may contain transcription errors, odd typos, misplaced words or "
+            "punctuation. Messages you only typed never get it. The line is part of the "
+            "message, so it shows in the transcript too. Off by default.",
+        ),
+    )
     timeout_secs: int = field(
         default=300,
         metadata=_meta(

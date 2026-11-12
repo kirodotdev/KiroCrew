@@ -545,6 +545,29 @@ def test_eight_distinct_symbols_stay_eight_and_a_map_keyed_by_them_is_copied():
         assert len(fields["tally"]) == 8, seed
 
 
+SHORT_LINKS = ["https://kiro.dev", "https://github.com/x", "https://x.com/abc"]
+
+
+def test_short_links_stay_different():
+    real = _read(links=SHORT_LINKS)
+
+    for seed in range(40):
+        links = _copy(real, seed=seed)["fields"]["links"]
+        assert all(link.startswith("https://example.invalid/") for link in links)
+        assert len(set(links)) == 3, links
+
+
+def test_a_map_keyed_by_short_links_is_copied():
+    real = _read(sites={link: n for n, link in enumerate(SHORT_LINKS, start=1)})
+
+    for seed in range(40):
+        try:
+            sites = _copy(real, seed=seed)["fields"]["sites"]
+        except dashboard_synth.SynthesisRefused as exc:
+            sites = {"refused": str(exc)}
+        assert len(sites) == 3, sites
+
+
 def test_a_uuid_key_is_an_id_even_when_the_page_spells_it():
     key = "123e4567-e89b-12d3-a456-426614174000"
     real = _read(doc={key: {"total": 3}, "summary": 1})

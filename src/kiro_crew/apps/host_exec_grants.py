@@ -49,11 +49,12 @@ def _grant_path(name: str):
     return config_dir() / GRANTS_LEAF / name
 
 
-def grant_host_exec(name: str) -> None:
+def grant_host_exec(name: str) -> bool:
     """Record, from the unsandboxed gateway, that *name* is owner-enabled to run
     outside the sandbox. Call ONLY from the owner-authenticated enable path -- never
-    derived from the enablement record. Best-effort: a write failure is logged, never raised, so an
-    enable is not aborted; the pod gate fails CLOSED on a missing grant.
+    derived from the enablement record. A write failure is logged, never raised, and
+    returns False so the caller can report it; every reader fails CLOSED on a
+    missing grant.
     """
     try:
         path = _grant_path(name)
@@ -61,6 +62,8 @@ def grant_host_exec(name: str) -> None:
         path.write_text("", encoding="utf-8")
     except OSError:
         logger.warning("could not record host-exec grant for %r", name, exc_info=True)
+        return False
+    return True
 
 
 def revoke_host_exec(name: str) -> None:

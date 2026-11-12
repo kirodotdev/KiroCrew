@@ -117,8 +117,8 @@ jobs:
   #
   # This is the SAME assembly packaging/build-desktop.sh's build_backend_windows
   # performs, minus the voice extras: PBS runtime, pip install, the relocatable
-  # bin/kirocrew.cmd shim, then packaging/precompile_windows.py for the measured
-  # gateway import closure. The extras are deliberately omitted -- they add a
+  # bin/kirocrew.cmd shim, the same prune, then packaging/precompile_windows.py
+  # for the measured gateway import closure. The extras are deliberately omitted -- they add a
   # pywhispercpp + numpy download for a code path the gateway boot never reaches
   # -- which is why the pyc floor below is passed explicitly rather than left at
   # the script's full-bundle default.
@@ -126,9 +126,12 @@ jobs:
   # Budget: the added steps are the PBS fetch (~32MB zstd via uv, well under a
   # minute), the wheel install (a few minutes at most, all deps --prefer-binary)
   # and the precompile pass (compiles ~1000 sources). NSIS now compresses a real
-  # payload rather than 40 bytes, which is the largest single addition. The job
-  # keeps its 20-minute cap; if the real installer cannot be built, installed and
-  # booted inside that, the artifact users receive has a problem worth failing on.
+  # payload rather than 40 bytes, which is the largest single addition. The cap
+  # is 30 minutes: about 9 minutes measured from checkout to a booted installed
+  # gateway, plus three silent re-installs the script bounds at 240 seconds each
+  # (12 minutes worst case), plus the uninstall. If the real installer cannot be
+  # built, installed, re-installed and booted inside that, the artifact users
+  # receive has a problem worth failing on.
   #
   # On a pull_request it runs only when a Windows-packaging input changed (the
   # `windows_installer` output of desktop-matrix, the same paths-filter that
@@ -154,7 +157,7 @@ jobs:
     # an npm frontend build to a Windows runner and let the two drift.
     needs: [build-wheel, desktop-matrix]
     if: needs.desktop-matrix.outputs.windows_installer == 'true'
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -234,11 +237,40 @@ jobs:
             -LiteralPath (Join-Path $out "Scripts\kirocrew.exe"), (Join-Path $out "Scripts\kirocrew-script.py")
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "Scripts\kirocrew.cmd") `
             -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+          # Every other pip console script in Scripts\ has the same frozen
+          # shebang; turn each into a relocatable <name>.cmd, as
+          # build_backend_windows does. Native uv.exe is left alone.
+          & $python -B -s packaging/relocate_windows_scripts.py --root $out
+          if ($LASTEXITCODE -ne 0) { throw "relocating the Scripts launchers failed." }
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
           & $python -s -P -m kiro_crew --version
           if ($LASTEXITCODE -ne 0) {
             throw "the bundled backend is NOT self-contained under PYTHONNOUSERSITE=1."
+          }
+          # The same prune build_backend_windows applies before precompiling
+          # (test_check_windows_path_budget.py holds the two lists together):
+          # every __pycache__ pip wrote, every tests/test tree below
+          # site-packages, and the stdlib and platform trees the app never
+          # loads. Without it the payload ships bytecode for the in-package
+          # test trees, the deepest files in it.
+          $sitePackages = Join-Path $out "Lib\site-packages"
+          $pruned = @(Get-ChildItem -LiteralPath $out -Recurse -Directory -Force -Filter "__pycache__")
+          $pruned += @(Get-ChildItem -LiteralPath $sitePackages -Recurse -Directory -Force |
+            Where-Object { $_.Name -eq "tests" -or $_.Name -eq "test" })
+          foreach ($dir in @($pruned | Sort-Object { $_.FullName.Length })) {
+            if (Test-Path -LiteralPath $dir.FullName) { Remove-Item -LiteralPath $dir.FullName -Recurse -Force }
+          }
+          foreach ($relative in @(
+              "Lib\test", "Lib\idlelib", "Lib\tkinter", "Lib\turtledemo", "Lib\ensurepip", "Lib\lib2to3",
+              "include", "libs", "tcl",
+              "Lib\site-packages\kiro_crew\_vendor\llama_cpp_libs\linux_aarch64",
+              "Lib\site-packages\kiro_crew\_vendor\llama_cpp_libs\linux_aarch64_dotprod",
+              "Lib\site-packages\kiro_crew\_vendor\llama_cpp_libs\linux_x86_64",
+              "Lib\site-packages\kiro_crew\_vendor\llama_cpp_libs\macos_arm64",
+              "Lib\site-packages\kiro_crew\_vendor\llama_cpp_libs\macos_x86_64")) {
+            $path = Join-Path $out $relative
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
           }
           # Ship checked-hash bytecode for the measured gateway import closure,
           # which is what the script's pyc floor then verifies survived into the
@@ -247,6 +279,11 @@ jobs:
           & $python -s packaging/precompile_windows.py --root $out --module kiro_crew.cli_server
           if ($LASTEXITCODE -ne 0) { throw "precompiling the gateway import closure failed." }
           Remove-Item Env:PYTHONDONTWRITEBYTECODE
+          # Fail here, before the installer is built, when a payload file is too
+          # deep for an update to move it out of the way (the script states the
+          # budget's arithmetic). -B: measuring must not write bytecode into it.
+          & $python -B -I packaging/check_windows_path_budget.py --root $out --prefix "resources\backend-dist\kirocrew-backend"
+          if ($LASTEXITCODE -ne 0) { throw "the backend payload has a path over the Windows update budget." }
 
       - name: Compile unsigned x64 NSIS installer
         working-directory: website/electron
@@ -369,8 +406,13 @@ jobs:
               # macOS app left the macos-15 leg uninstantiated on a PR. `ci.yml`'s
               # own filter has the qualified form; this copy had drifted.
               - 'packaging/build-desktop.sh'
-              # Also run by that script, so it is a packaging input too.
+              # Also run by that script, so they are packaging inputs too: the
+              # bytecode steps it sources and the closure helper the macOS
+              # lane runs.
               - 'scripts/stamp-distribution.sh'
+              - 'packaging/desktop-bytecode.sh'
+              - 'packaging/relocate_posix_scripts.py'
+              - 'packaging/precompile_windows.py'
               - 'Makefile'
               - 'pyproject.toml'
               - 'setup.cfg'

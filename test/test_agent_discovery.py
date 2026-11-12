@@ -901,6 +901,55 @@ class TestListAgentsDedup:
         assert "AaaPkg" in warnings[0].getMessage()
         assert "BbbPkg" in warnings[0].getMessage()
 
+    def test_plain_file_duplicate_warns_naming_both_files(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A copy whose name was never edited (``atlas_v2.json`` declaring
+        ``atlas`` beside ``atlas.json``) is no package's twin. Its row is
+        dropped, and its stem stays taken, so the drop is a WARNING naming
+        both files."""
+        clear_list_agents_cache()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        for filename in ("atlas.json", "atlas_v2.json"):
+            (agents_dir / filename).write_text(
+                json.dumps({"name": "atlas", "model": "auto"}), encoding="utf-8"
+            )
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            agents = list_agents(agents_dir=agents_dir)
+        assert [a.filename for a in agents if a.name == "atlas"] == ["atlas.json"]
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Duplicate agent name" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "'atlas.json'" in warnings[0] and "'atlas_v2.json'" in warnings[0]
+
+    def test_plain_file_duplicate_warning_escapes_the_declared_name(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The declared name is whatever a file in the shared agents directory
+        says, so the WARNING renders it with ``%r``: a newline in it is escaped
+        instead of starting a forged log record."""
+        clear_list_agents_cache()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        forged = "atlas\nERROR kiro_crew.sel: forged record"
+        for filename in ("atlas.json", "atlas_v2.json"):
+            (agents_dir / filename).write_text(
+                json.dumps({"name": forged, "model": "auto"}), encoding="utf-8"
+            )
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            list_agents(agents_dir=agents_dir)
+        [warning] = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Duplicate agent name" in r.getMessage()
+        ]
+        assert "\n" not in warning
+        assert repr(forged) in warning
+
 
 class TestListAgentsCache:
     """list_agents caches parsed results per directory and reuses them while the

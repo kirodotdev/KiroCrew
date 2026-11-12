@@ -935,3 +935,36 @@ async def test_the_app_path_reads_the_scan() -> None:
     log.list_sessions_indexed.side_effect = AssertionError("an app listing read the index")
     assert await _keys(_request(log, {"user_only": "1"}, app="someapp")) == []
     log.list_sessions.assert_called_once_with()
+
+
+@pytest.mark.parametrize("files", [600, 1200, 2400, 4704])
+def test_a_listing_after_an_in_process_write_reads_one_row_at_any_size(
+    tmp_path, monkeypatch, files: int
+) -> None:
+    """The callers moved to ``list_sessions_indexed`` pay for the file that changed only.
+
+    The scan's memo is keyed on this process's write epoch, so every write here makes
+    the next ``list_sessions()`` re-read a row per transcript: 4704 on the busy host the
+    switch was measured on. The index replays the write journal and re-reads one.
+    """
+    d = tmp_path / "sessions"
+    d.mkdir()
+    for i in range(files):
+        _write(d / f"dashboard_chat-{i}-{i}.jsonl", [{**_META, "title": f"t{i}"}], _stamp(i))
+    os.utime(d, ns=(_stamp(files + 1), _stamp(files + 1)))
+    env = _attach(ConversationLog(base_dir=d))
+    env.log.list_sessions_indexed()
+    env.log.list_sessions()
+    rows = _Count()
+    monkeypatch.setattr(
+        SessionCatalogProjection, "_listing_row", rows.wrap(SessionCatalogProjection._listing_row)
+    )
+
+    env.log.append("dashboard:chat-0-0", "user", "one more line")
+    assert len(env.log.list_sessions_indexed()) == files
+    indexed_rows = len(rows.calls)
+    rows.calls.clear()
+    env.log.append("dashboard:chat-0-0", "user", "and another")
+    assert len(env.log.list_sessions()) == files
+
+    assert (indexed_rows, len(rows.calls)) == (1, files)

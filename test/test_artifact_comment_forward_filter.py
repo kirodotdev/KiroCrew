@@ -105,6 +105,14 @@ class TestFilterCommentsForForward:
     def test_empty_input(self):
         assert filter_comments_for_forward([]) == []
 
+    @pytest.mark.parametrize("bad", [["root"], {"id": "root"}], ids=["list", "object"])
+    def test_a_parent_id_that_is_not_a_string_ends_the_walk(self, bad):
+        """A hand-edited parent_id names no comment; the rest still filter."""
+        root = _c("root", status="resolved", thread_id="")
+        odd = _c("odd", parent_id=bad, thread_id="")
+        reply = _c("reply", parent_id="root", thread_id="")
+        assert [c.id for c in filter_comments_for_forward([root, odd, reply])] == ["odd"]
+
 
 # ── Handler integration: query-param filtering ───────────────────────────────
 
@@ -169,3 +177,20 @@ class TestHandlerFiltering:
         resp = await h.api_artifact_comments(_req("test", {"exclude_resolved": "true"}))
         ids = [c["id"] for c in _j(resp)["comments"]]
         assert ids == ["old", "cur"]
+
+    @pytest.mark.asyncio
+    async def test_exclude_resolved_answers_over_a_non_string_parent_id(self, store):
+        """comments.json is decoded verbatim, so a hand edit can store a list."""
+        (store.root / "test" / "comments.json").write_text(
+            json.dumps(
+                [
+                    {"id": "done", "status": "resolved"},
+                    {"id": "odd", "parent_id": ["done"], "thread_id": "gone"},
+                    {"id": "open"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        resp = await h.api_artifact_comments(_req("test", {"exclude_resolved": "true"}))
+        assert resp.status == 200
+        assert [c["id"] for c in _j(resp)["comments"]] == ["odd", "open"]

@@ -147,7 +147,8 @@ async def run_bg_oneliner(
     """
     # Pinned before the acquisition, which is itself a suspension point: a slot
     # reset, switch or compaction meanwhile gives the successor a new ACP session
-    # id, and a later lookup would charge this spend to it.
+    # id. The pin says whether the slot moved during the call (the entry then goes to
+    # the newest unit, since an older unit never grows).
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     if memory_gate and start_priority is StartPriority.BACKGROUND:
         await _refuse_while_memory_critical(sel_source)
@@ -249,7 +250,10 @@ async def run_bg_oneliner(
             elif event.kind == EVENT_COMPLETE:
                 _raise_if_unfinished(event, text)
                 break
-        return text
+        # kiro-cli's [STEERING steer-…] ack is protocol, not the answer.
+        from kiro_crew.messaging.driver import strip_steering_markers
+
+        return strip_steering_markers(text)
 
     async def _run(model_to_use: str | None) -> str:
         if timeout is not None:
@@ -314,6 +318,8 @@ async def run_bg_oneliner(
                         model=_served,
                         provider=_provider_label(session),
                         elapsed_ms=_elapsed_ms,
+                        sessions=sessions,
+                        crew_log_session_key=crew_log_session_key,
                     )
                     await persist_token_record_async(
                         sel_session_key,
@@ -383,11 +389,20 @@ def _record_background_crew_log(
     model: str,
     provider: str,
     elapsed_ms: int,
+    sessions: Any = None,
+    crew_log_session_key: str = "",
 ) -> None:
     """File one background model call in the crew log of the session it served.
 
     ``owner_sid`` is the unit :func:`_background_crew_log_owner` pinned before the
-    call, never one resolved here. Empty means "do not write".
+    call. Empty means "do not write".
+
+    The entry lands in the slot's NEWEST unit. A crew log is append-only, and a
+    write into a unit the slot has moved past (a reset, switch or compaction during
+    the call) grows an older unit, which retires the slot's savepoints beside the
+    newest one. So when *crew_log_session_key* now resolves to another unit, the
+    entry goes there and counts in that unit's usage; the slot's total is the same.
+    An unresolvable key keeps the pinned unit.
 
     Both background entry points call this after the same ``usage_has_billing``
     gate the usage store uses, so they agree on WHETHER a call is billable. Either
@@ -401,9 +416,18 @@ def _record_background_crew_log(
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
 
+        target, moved = owner_sid, False
+        if sessions is not None and crew_log_session_key:
+            from kiro_crew.crew_log.resolve import unit_for_session_key
+
+            current = unit_for_session_key(sessions, crew_log_session_key)
+            if current and current != owner_sid:
+                target, moved = current, True
+
         crew_log_emit.on_background_completed(
-            owner_sid,
+            target,
             kind=crew_log_kind,
+            newer_unit=moved,
             model=model,
             provider=provider,
             credits=float(getattr(usage, "credits", 0.0) or 0.0),
@@ -716,6 +740,8 @@ async def background_turn(
                         model=str(getattr(client, "served_model", "") or "").strip(),
                         provider=_provider_label(client),
                         elapsed_ms=turn_elapsed_ms,
+                        sessions=sessions,
+                        crew_log_session_key=crew_log_session_key,
                     )
                     await persist_token_record_async(
                         key,

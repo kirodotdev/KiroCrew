@@ -381,7 +381,15 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
  * therefore mis-renders every restored row.
  */
-export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay' | 'automation_notice' | 'workflow'
+export type InjectKind =
+  | 'cron'
+  | 'mcp_app'
+  | 'recovery'
+  | 'synthesis'
+  | 'user_replay'
+  | 'automation_notice'
+  | 'workflow'
+  | 'heartbeat'
 
 /**
  * Whether each gateway-stamped inject kind OPENS a turn of its own, or
@@ -422,6 +430,9 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // The gateway's follow-up after a workflow result lands, asking the agent to
   // answer the request that started the run: a dispatch of its own.
   workflow: true,
+  // A heartbeat task's prompt delivered to this chat
+  // (`deliver:prompt:dashboard:<slot>`): a dispatch of its own.
+  heartbeat: true,
 }
 
 /**
@@ -499,7 +510,7 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // the Sessions page (transcriptRenderers `automation_notice_inject`) because
   // the refusal's `notice` bar already shows it, and hidden in the crewmate DM
   // by MACHINERY_ROLES — so it never needs a card.
-  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow') return null
+  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat') return null
 
   return {
     kind: 'generic',

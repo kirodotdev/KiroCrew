@@ -41,6 +41,7 @@ import logging
 import sys as _sys
 from typing import (
     TYPE_CHECKING,
+    Callable,
     Container,
     Dict,
     Mapping,
@@ -288,13 +289,36 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     return _ceiling_has_no_say(ref, ceiling)
 
 
-def _ceiling_has_no_say(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
+def _commands_only_pin_the_floor(control: object) -> bool:
+    """Whether a ``commands`` control only pins built-in deny rules.
+
+    True for a deny-mode set whose every pattern is string-identical to a built-in
+    deny rule (``security._rule_id_for_pattern``). The gate force-enables each such
+    rule in its deny floor (``hook_runtime.denied_commands``), so the deny-rules row
+    has already refused any call one of them names before a grant row runs. An
+    edition that pins its self-protection rules this way says nothing more about the
+    shell. Any other pattern, an allow-mode set or an unknown shape is an opinion.
+    """
+    from kiro_crew.platform.governance_parts import carriers
+    from kiro_crew.security import _rule_id_for_pattern
+
+    if str(getattr(control, "mode", "") or "").strip().lower() != MODE_DENY:
+        return False
+    pins = carriers._command_deny_patterns(control)
+    return all(_rule_id_for_pattern(pin) for pin in pins)
+
+
+def _ceiling_has_no_say(
+    ref: str, ceiling: Optional[GovernanceCeiling], *, at_gate: bool = False
+) -> bool:
     """:func:`may_skip_gate` after its floor clause: the ceiling's own question.
 
     True when the ceiling could never have an opinion about *ref*, so a grant of it
     stands. Shared by the static writers (through :func:`may_skip_gate`, which
     refuses a floor-gated builtin first) and the gate-answered grant
     (:func:`may_grant_builtin_at_gate`, whose call has already met the floor).
+    *at_gate* is that second caller: there a ``commands`` scope that only pins
+    built-in deny rules (:func:`_commands_only_pin_the_floor`) is not an opinion.
     """
     # An LTS build has no ungoverned host: an unnamed scope is answered by
     # the built-in baseline, read through ``policy_level_control`` below.
@@ -332,7 +356,12 @@ def _ceiling_has_no_say(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         # bypassed a `tools`-scope ceiling (e.g. tools.deny=["report"]). The
         # capability scopes it DOES map to add path/host granularity on top.
         scopes = ("tools",) + tuple(BUILTIN_TOOL_SCOPES.get(ref, ()))
-        if any(_ruleset_has_an_opinion(policy_level_control(ceiling, scope)) for scope in scopes):
+        for scope in scopes:
+            control = policy_level_control(ceiling, scope)
+            if not _ruleset_has_an_opinion(control):
+                continue
+            if at_gate and scope == "commands" and _commands_only_pin_the_floor(control):
+                continue
             return False
         capability = BUILTIN_TOOL_CAPABILITIES.get(ref)
         return not (capability and _capability_restricts(policy_level_control(ceiling, capability)))
@@ -839,6 +868,36 @@ def may_skip_gate_now(ref: str) -> bool:
     return _policy_may_skip_gate_now(ref) and not _operator_requires_confirmation(ref)
 
 
+def may_skip_gate_for_session(session_key: str, app: Optional[str]) -> Callable[[str], bool]:
+    """The :func:`may_skip_gate_now` predicate for a writer built for one session.
+
+    The KAS projection is built per session, so the profiles its predicate asks
+    about are the ones the gate could resolve for that session
+    (``governance_profiles.session_profiles_govern``), never every configured one:
+    a profile bound to another surface or another app does not withhold a grant
+    from this session. *app* is the session's governance app, or ``None`` when it
+    is not known, which counts every app-bound profile. The ceiling and
+    ``hooks.confirm_tools`` are asked as :func:`may_skip_gate_now` asks them, at
+    each call, and an error withholds.
+    """
+
+    def permits(ref: str) -> bool:
+        try:
+            from kiro_crew.platform.context import current_context
+            from kiro_crew.platform.governance_profiles import session_profiles_govern
+
+            if not may_skip_gate(ref, getattr(current_context(), "governance", None)):
+                return False
+            if session_profiles_govern(ref, session_key, app=app):
+                return False
+        except Exception:  # noqa: BLE001 - cannot tell -> withhold
+            logger.warning("cannot evaluate the session's governance for %r; withholding", ref)
+            return False
+        return not _operator_requires_confirmation(ref)
+
+    return permits
+
+
 def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     """Whether a spec's grant of the built-in *ref* may approve a call AT the gate.
 
@@ -853,7 +912,10 @@ def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) ->
     floor, the sensitive-path check and governance have all run on the real
     arguments, so the floor clause has nothing left to protect there. Everything
     else stands: a ceiling with any opinion on the tool's scopes, or any configured
-    profile that could govern it, withholds the grant and the call prompts.
+    profile that could govern it, withholds the grant and the call prompts. The one
+    exception is a ceiling ``commands`` scope that only pins built-in deny rules,
+    which the deny floor has already applied to this call
+    (:func:`_commands_only_pin_the_floor`).
 
     *ceiling* is the one the gate's own context snapshot carries, so the call is
     judged under one ceiling throughout. Fails closed on any error.
@@ -861,7 +923,7 @@ def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) ->
     if not isinstance(ref, str) or not ref or ref.startswith("@"):
         return False
     try:
-        if not _ceiling_has_no_say(ref, ceiling):
+        if not _ceiling_has_no_say(ref, ceiling, at_gate=True):
             return False
         from kiro_crew.platform.governance_profiles import any_configured_profile_has_say
 
@@ -1274,6 +1336,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _match_path,
         _norm_item,
         _origin_form,
+        _UnmatchableCommand,
         _upper_drive,
         _url_host,
         _windows_glob,
@@ -1325,6 +1388,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         TIER_HOME,
         _audit_policy_tier,
         _audit_tier_intersect_once,
+        _compose_allow_terminal,
         _declared_distribution,
         _intersect_ceilings,
         _intersect_update_pins,
@@ -1364,6 +1428,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RUNNING_PREFIX,
         _TRUNCATED_SCAN_ITEM,
         _UNANCHORED_TARGET_ITEM,
+        _UNSPLITTABLE_COMMAND_ITEM,
         CU_CLASS_CONTROL,
         CU_CLASS_KEYBOARD,
         CU_CLASS_MUTATE,
@@ -1374,6 +1439,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cu_action_key,
         _governed_targets,
         _tool_arg_paths,
+        classify_image_reads,
         classify_tool_args,
         classify_tool_title,
         computer_use_action_classes,

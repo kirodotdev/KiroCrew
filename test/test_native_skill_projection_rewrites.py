@@ -29,6 +29,7 @@ from native_skill_projection_helpers import (
     _crew_home_id,
     _hold_the_prune_clock,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from kiro_crew.acp import skill_projection as projection
@@ -157,7 +158,7 @@ def test_a_relaunched_alias_stays_owned_and_is_reclaimed_as_a_pair(native_tree, 
     _launcher_reserialize(alias, nonce=str(uuid.uuid4()))
     assert projection._managed_metadata_for_alias(agents, alias, alias.read_bytes()) is not None
     del old
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     _hold_the_prune_clock(monkeypatch)
     source.write_text(json.dumps(_launcher_spec("n1", {"V": "1", "W": "2"})), encoding="utf-8")
 

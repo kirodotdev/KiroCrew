@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 import re
 import stat
-import subprocess
 import sys
 import threading
 import time
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
@@ -24,7 +24,9 @@ from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
     bundled_kiro_cli_entry,
     is_bundled_kiro_cli,
 )
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+if TYPE_CHECKING:
+    from kiro_crew.kiro_prerequisite import ProcessResult
 
 KIRO_CLI_NAME = "kiro-cli"
 
@@ -155,6 +157,71 @@ _VERSION_PROBE_TIMEOUT_SECS = 5
 #: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
 #: instead of leaving a whole gateway lifetime on a stale verdict.
 _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+
+
+def _sandboxed_probe(binary: str, args: Sequence[str], timeout_secs: float) -> ProcessResult | None:
+    """Run one fixed-argv kiro-cli probe inside the sandbox; ``None`` if it could not run.
+
+    The pinned install can sit in a directory the sandboxed agent writes as the same
+    account (``~/.local/bin``), so a probe that ran it outside the sandbox would run
+    whatever an agent left there as the gateway itself. The probe goes through
+    ``kiro_prerequisite._run_process`` instead, at the configured tier, as an agent
+    session runs the same binary and as ``agent_sdk.drivers.acp._sandboxed_acp_help``
+    runs a ``PATH`` hit. ``first_party_fixed_argv``: the argv is fixed and the binary
+    is :func:`pin_kiro_cli`'s, so a host with no sandbox backend still runs the probe
+    unconfined, as before. Called on a running event loop, the probe runs in a worker
+    thread and blocks the caller as the plain spawn did. Never raises.
+    """
+    # Imported here: this module is a leaf every setup and launch path imports at boot.
+    import asyncio  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    from kiro_crew.kiro_prerequisite import _run_process  # noqa: PLC0415
+    from kiro_crew.sandbox import (  # noqa: PLC0415
+        configured_sandbox_mode,
+        scrub_agent_subprocess_env,
+    )
+
+    try:
+        if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
+            # Main's plain spawn failed here; the runner's ``env`` hop would instead
+            # exit 127 with a line that reads like the child's own answer.
+            return None
+        probe = _run_process(
+            binary,
+            list(args),
+            # Scrubbed as for a session spawn: on Windows the runner skips the sandbox,
+            # so its own launcher scrub never runs.
+            env=scrub_agent_subprocess_env(dict(os.environ)),
+            timeout_secs=timeout_secs,
+            sandbox_mode=configured_sandbox_mode(),
+            first_party_fixed_argv=True,
+            reap_survivors=True,
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(probe)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, probe).result()
+    except Exception:  # noqa: BLE001 - a probe that could not run is unknown
+        return None
+
+
+def _probe_ran(result: ProcessResult) -> bool:
+    """Whether *result* is the child's own whole answer.
+
+    False for a spawn, sandbox or timeout failure, and for output that filled the
+    capture bound, which may have lost the line a caller looks for.
+    """
+    from kiro_crew.kiro_prerequisite import _MAX_CAPTURED_OUTPUT  # noqa: PLC0415
+
+    return (
+        result.returncode is not None
+        and not result.timed_out
+        and result.sandbox_failure is None
+        and len(result.output) < _MAX_CAPTURED_OUTPUT
+    )
 
 
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
@@ -292,26 +359,18 @@ def kiro_cli_version_at(binary: str) -> tuple[int, int, int] | None:
         return None
     if key in _version_cache:
         return _version_cache[key]
+    result = _sandboxed_probe(binary, ["--version"], _VERSION_PROBE_TIMEOUT_SECS)
+    if result is not None and result.sandbox_failure is not None:
+        # Not cached: a sandbox that could not be built says nothing about the binary.
+        return None
     version: tuple[int, int, int] | None = None
-    completed: subprocess.CompletedProcess[str] | None
-    try:
-        completed = subprocess.run(
-            [binary, "--version"],
-            capture_output=True,
-            timeout=_VERSION_PROBE_TIMEOUT_SECS,
-            check=False,
-            # A console-less Windows gateway would otherwise flash a console
-            # window for this child; the constant is 0 elsewhere.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            # Pinned UTF-8 rather than bare text=True: a platform-locale decode
-            # could mangle the version token and report a supported kiro-cli as
-            # unparseable, which this gate reads as refusing.
-            **UTF8_TEXT,
+    if result is not None and result.ok:
+        # stdout and stderr arrive as one text, so each line is read on its own: a
+        # line after the version would otherwise hide it from the last-token parse.
+        version = next(
+            (v for line in result.output.splitlines() if (v := parse_kiro_cli_version(line))),
+            None,
         )
-    except Exception:  # noqa: BLE001 - see the docstring: unknown, never raising
-        completed = None
-    if completed is not None and completed.returncode == 0:
-        version = parse_kiro_cli_version(completed.stdout or completed.stderr or "")
     _version_cache[key] = version
     return version
 
@@ -332,22 +391,59 @@ def kas_relay_help(binary: str) -> str | None:
     serve KAS at all, and reporting that as "unknown" would let a broken
     configuration pass the readiness check and fail later at spawn instead.
 
+    Call only on :func:`pin_kiro_cli`'s install, or from ``kirocrew doctor`` on the
+    binary it resolved. The probe runs inside the sandbox (:func:`_sandboxed_probe`).
     Local binary, argv list, no shell, no credential involved.
     """
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv list, no shell, local binary
-            [binary, "acp", "--help"],
-            capture_output=True,
-            timeout=_KAS_HELP_PROBE_TIMEOUT_SECS,
-            check=False,
-            # Pinned UTF-8 rather than bare text=True: help output is decoded
-            # here, and a platform-locale decode could mangle the flag name this
-            # probe searches for and report a supported kiro-cli as unreadable.
-            **UTF8_TEXT,
-        )
-    except (OSError, subprocess.SubprocessError):
+    result = _sandboxed_probe(binary, ["acp", "--help"], _KAS_HELP_PROBE_TIMEOUT_SECS)
+    if result is None or not _probe_ran(result):
         return None
-    return f"{proc.stdout}\n{proc.stderr}"
+    return result.output
+
+
+#: Ceiling on the v3 start probe. With stdin closed a v3 engine that runs here
+#: exits on its own once it reads EOF: about ten seconds measured on kiro-cli 3.1.0,
+#: most of it kiro-cli's own start-up work before the engine runs, which is the
+#: path its refusal comes from too. The cap bounds only a start that never exits.
+_KAS_START_PROBE_TIMEOUT_SECS = 30
+#: Start-probe answers, keyed by (path, mtime, argv) like the version cache.
+_kas_start_cache: dict[tuple[str, int, tuple[str, ...]], str] = {}
+
+
+def kas_relay_start_output(binary: str, argv_tail: Sequence[str]) -> str | None:
+    """Output of one ``binary *argv_tail`` start with stdin closed, or ``None`` when it FAILED.
+
+    The KAS engine check behind ``agent_sdk.kas_engine_start_verdict``: kiro-cli's
+    ``acp --help`` lists ``--agent-engine v3`` even on a host where starting that
+    engine is refused, so only a start shows the refusal. It runs through
+    :func:`_sandboxed_probe`, inside the sandbox at the configured tier: the child
+    reads EOF on stdin and serves nothing, its output is bounded, and it leads its
+    own process group under the supervisor, so a start still running at
+    :data:`_KAS_START_PROBE_TIMEOUT_SECS` is ended with the engine it launched.
+    ``None`` means only that nothing is known: the spawn failed, the sandbox
+    refused it, or the start timed out. Cached by path, mtime and argv, so an
+    upgrade in place is re-read.
+
+    Call only on :func:`pin_kiro_cli`'s install, or from ``kirocrew doctor`` on the
+    binary its ``acp --help`` row already ran.
+    Local binary, argv list, no shell, and Kiro Crew passes and reads no credential.
+    Blocking: one bounded spawn on the first call per binary identity.
+    """
+    argv = tuple(argv_tail)
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns, argv)
+    except OSError:
+        return None
+    cached = _kas_start_cache.get(key)
+    if cached is not None:
+        return cached
+    result = _sandboxed_probe(binary, argv, _KAS_START_PROBE_TIMEOUT_SECS)
+    if result is None or not _probe_ran(result):
+        # Not cached: a start that failed, was refused or never exited says nothing
+        # about the host.
+        return None
+    _kas_start_cache[key] = result.output
+    return result.output
 
 
 #: Ceiling on the ``chat --help`` spawn, for the same reason as the ``acp --help`` one.
@@ -384,9 +480,9 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
     means the probe could not run (absent binary, spawn error, timeout, nonzero
     exit). Cached by path and mtime, so an upgrade in place is re-read.
 
-    Call only on a path derived from :func:`pin_kiro_cli`: the probe runs outside
-    the sandbox. Blocking: one bounded spawn on the first call per binary
-    identity. Local binary, argv list, no shell, no credential involved.
+    Call only on a path derived from :func:`pin_kiro_cli`. The probe runs inside the
+    sandbox (:func:`_sandboxed_probe`). Blocking: one bounded spawn on the first call
+    per binary identity. Local binary, argv list, no shell, no credential involved.
     """
     try:
         key = (binary, os.stat(binary).st_mtime_ns)
@@ -394,20 +490,13 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
         return None
     if key in _chat_engines_cache:
         return _chat_engines_cache[key]
+    result = _sandboxed_probe(binary, ["chat", "--help"], _CHAT_HELP_PROBE_TIMEOUT_SECS)
+    if result is not None and result.sandbox_failure is not None:
+        # Not cached: a sandbox that could not be built says nothing about the binary.
+        return None
     engines: tuple[str, ...] | None = None
-    try:
-        proc = subprocess.run(
-            [binary, "chat", "--help"],
-            capture_output=True,
-            timeout=_CHAT_HELP_PROBE_TIMEOUT_SECS,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            **UTF8_TEXT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        proc = None
-    if proc is not None and proc.returncode == 0:
-        engines = chat_agent_engines(f"{proc.stdout}\n{proc.stderr}")
+    if result is not None and _probe_ran(result) and result.ok:
+        engines = chat_agent_engines(result.output)
     _chat_engines_cache[key] = engines
     return engines
 
@@ -440,8 +529,8 @@ def kiro_acp_engine_args(binary: str) -> list[str]:
     or value would fail the whole spawn, which is worse than an unpinned one.
     Cached by path and mtime, so an upgrade in place is re-read.
 
-    Call only on a trusted, resolved kiro-cli path: the probe
-    (:func:`kas_relay_help`) runs outside the sandbox. Blocking: one bounded spawn
+    Call only on a trusted, resolved kiro-cli path. The probe
+    (:func:`kas_relay_help`) runs inside the sandbox. Blocking: one bounded spawn
     on the first call per binary identity.
     """
     try:

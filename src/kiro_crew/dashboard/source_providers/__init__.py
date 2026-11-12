@@ -18,9 +18,12 @@ order, each owner importing only owners earlier in this list:
 * ``bitbucket_server`` -- the REST-backed Bitbucket Server reads, served through the seam;
 * ``gerrit`` -- the REST-backed Gerrit change reads, served through the seam;
 * ``chip_status`` -- the sidebar chip cache, its deltas and the visibility gate;
-* ``cache`` -- the coalesced full-payload, checks, issue and contributor reads;
+* ``cache`` -- the coalesced full-payload, checks, issue and contributor reads,
+  and the redaction and cache behind issue search;
 * ``chip_refresh`` -- the background chip reads;
-* ``mutations`` and ``review`` -- the owner-authenticated writes.
+* ``mutations`` -- the owner-authenticated writes;
+* ``issue_search`` -- the GitHub and GitLab issue list and search;
+* ``review`` -- the owner-authenticated review writes.
 
 Tests and callers patch these names through the handler, which forwards the write
 to the owner. A sibling is therefore always reached AS A MODULE

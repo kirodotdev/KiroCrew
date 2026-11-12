@@ -53,6 +53,8 @@ _OPEN_SCOPES: dict[str, str] = {
     "capabilities.theme_persona": "",
     "capabilities.milestones": "",
     "capabilities.decisions_local": "",
+    # Discover keeps querying every registry until a policy names the key.
+    "external_access.registry_hosts": "skills.sh",
 }
 
 # scope -> (items the baseline permits, items it denies). One row per catalog scope.
@@ -167,6 +169,9 @@ _OPEN_DENIES: dict[str, dict[str, object]] = {
     "capabilities.theme_persona": {"capabilities": {"theme_persona": {"enabled": False}}},
     "capabilities.milestones": {"capabilities": {"milestones": {"enabled": False}}},
     "capabilities.decisions_local": {"capabilities": {"decisions_local": {"enabled": False}}},
+    "external_access.registry_hosts": {
+        "external_access": {"registry_hosts": {"mode": "deny", "deny": ["skills.sh"]}}
+    },
 }
 
 

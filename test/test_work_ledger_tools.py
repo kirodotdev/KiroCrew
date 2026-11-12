@@ -412,6 +412,10 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "invalid_action": 400,
         "invalid_status": 400,
         "invalid_value": 400,
+        "wake_at_requires_progress": 400,
+        "wake_at_invalid": 400,
+        "wake_at_in_past": 400,
+        "wake_at_too_far": 400,
         # Maintenance-only: raised by ``purge_conductor``, reachable from no
         # route. Mapped so the exhaustiveness property above keeps its meaning.
         "ledger_not_finished": 409,
@@ -443,6 +447,11 @@ async def test_already_bound_is_409():
 @pytest.mark.asyncio
 async def test_item_closed_is_409_for_both_halves():
     ids = await two_by_two()
+    assert (
+        await _record(
+            CONDUCTOR_A, {"action": "verdict", "item_id": ids["item_a"], "verdict": "pass"}
+        )
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
@@ -513,6 +522,9 @@ async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it
         CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
     )
     assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": second, "verdict": "pass"})
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
     )
@@ -524,11 +536,11 @@ async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it
 
 
 @pytest.mark.asyncio
-async def test_the_item_cap_is_advisory_over_http_and_the_read_flags_it():
-    """A create past ``item_cap`` is admitted; ``cap_exceeded`` turns true on the
-    read's ``conductor`` block, compact reads included, and a new goal clears it."""
+async def test_the_read_carries_the_goal_total_and_no_item_cap():
+    """``goal_items_used`` rides the read's ``conductor`` block, compact reads
+    included, and a new goal restarts it; ``item_cap`` and ``cap_exceeded`` are gone."""
     await two_by_two()
-    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 2})
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "goal": "g"})
     assert status == 200
     acceptance = {"kind": "human_approval"}
     # two_by_two already created one item on this board.
@@ -537,32 +549,31 @@ async def test_the_item_cap_is_advisory_over_http_and_the_read_flags_it():
     )
     assert status == 200
     status, read = await _read(CONDUCTOR_A)
-    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (2, False)
+    assert read["conductor"]["goal_items_used"] == 2
     status, body = await _record(
         CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
     )
     assert status == 200, body
     status, read = await _read(CONDUCTOR_A)
-    assert read["conductor"]["item_cap"] == 2
-    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (3, True)
+    assert read["conductor"]["goal_items_used"] == 3
+    assert read["conductor"]["created_total"] == 3
+    assert "item_cap" not in read["conductor"] and "cap_exceeded" not in read["conductor"]
     status, compact = await _read_with(CONDUCTOR_A, "compact=true")
     assert status == 200
-    assert (compact["conductor"]["goal_items_used"], compact["conductor"]["cap_exceeded"]) == (
-        3,
-        True,
-    )
+    assert compact["conductor"]["goal_items_used"] == 3
     # A goal the user replaced, recorded with new_goal, starts the count again.
     status, _ = await _record(CONDUCTOR_A, {"action": "goal", "goal": "next", "new_goal": True})
     assert status == 200
     status, read = await _read(CONDUCTOR_A)
-    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (0, False)
+    assert read["conductor"]["goal_items_used"] == 0
 
 
 @pytest.mark.asyncio
 async def test_a_cap_past_its_ceiling_is_refused_400():
     await two_by_two()
-    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 257})
-    assert status == 400
+    # The removed ``item_cap`` is refused as an unknown field.
+    status, body = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 20})
+    assert status == 400 and "item_cap" in str(body)
     status, _ = await _record(
         CONDUCTOR_A, {"action": "goal", "concurrency_cap": wl.MAX_GOAL_CONCURRENCY_CAP + 1}
     )
@@ -575,13 +586,12 @@ def test_the_tool_schemas_spell_the_stores_cap_ceilings():
     from kiro_crew import mcp_work
 
     record = validation.WORK_LEDGER_RECORD_SCHEMA
-    item_cap = next(f for f in record.fields if f.name == "item_cap")
+    assert all(f.name != "item_cap" for f in record.fields)
     concurrency = next(f for f in record.fields if f.name == "concurrency_cap")
-    assert (item_cap.min_val, item_cap.max_val) == (1, wl.MAX_GOAL_ITEM_CAP)
     assert (concurrency.min_val, concurrency.max_val) == (1, wl.MAX_GOAL_CONCURRENCY_CAP)
     tool = next(t for t in mcp_work._tool_definitions() if t["name"] == "work_ledger_record")
     props = tool["inputSchema"]["properties"]
-    assert props["item_cap"]["maximum"] == wl.MAX_GOAL_ITEM_CAP
+    assert "item_cap" not in props and "item_cap" not in mcp_work._RECORD_FIELDS
     assert props["concurrency_cap"]["maximum"] == wl.MAX_GOAL_CONCURRENCY_CAP
     assert "concurrency_cap" in mcp_work._RECORD_FIELDS
 
@@ -655,6 +665,26 @@ async def test_invalid_action_is_400():
     status, body = await _record(CONDUCTOR_A, {"action": "delete"})
     assert status == 400
     assert body["code"] == wl.CODE_INVALID_ACTION
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_session_is_told_what_not_bound_means():
+    """A bound worker reads its item; any other session gets ``not_bound`` with what
+    to do next in the refusal itself, so the caller has nothing to work out."""
+    ids = await two_by_two()
+    status, body = await _brief(WORKER_A)
+    assert status == 200, body
+    assert body["brief"]["item_id"] == ids["item_a"]
+
+    status, body = await _brief("chat-nobody-bound")
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "the message you were given is your whole task" in body["error"]
+
+    # A refused report may come from a worker whose item moved on: it gets the
+    # code and no task.
+    status, body = await _report("chat-nobody-bound", {"status": "progress", "summary": "s"})
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "whole task" not in body["error"]
 
 
 @pytest.mark.asyncio
@@ -1022,7 +1052,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr", "reason"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
     for forbidden in (
         "item_id",
         "session",
@@ -1589,6 +1619,9 @@ async def test_read_filters_by_item_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_read_filters_by_state(monkeypatch):
     ids = await _three_dated_items(monkeypatch)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": ids[0], "verdict": "pass"})
+    )[0] == 200
     status, body = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
     )

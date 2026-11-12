@@ -11,7 +11,7 @@
  * The toast is mounted from store state here exactly as `App.tsx` mounts it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useRef, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import { Provider, useSelector } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -159,7 +159,6 @@ describe('ChatPane: the in-pane switch error is silenced and the toast announces
 function AutoCompactHost() {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
-  const ctxWrapRef = useRef<HTMLDivElement>(null) as React.RefObject<HTMLDivElement>
   const autoCompactThreshold = useAutoCompactThreshold({
     activeSlot: 'slot-a', ctxPopoverOpen: true, queryClient, dispatch,
   })
@@ -170,7 +169,6 @@ function AutoCompactHost() {
         shelfCompact={false}
         ctxPopoverOpen
         setCtxPopoverOpen={() => {}}
-        ctxWrapRef={ctxWrapRef}
         autoCompactThreshold={autoCompactThreshold}
       />
       <button data-testid="drag" onClick={() => autoCompactThreshold.pushAutoCompact(80)}>drag</button>

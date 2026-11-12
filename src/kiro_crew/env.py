@@ -812,9 +812,22 @@ def user_tool_bin_dirs(home: str) -> list[str]:
     mise_data = mise_data_dir(home)
     return [
         e
-        for d in _EXTRA_PATH_DIRS
+        for d in _extra_path_templates()
         if (e := _validated_bin_dir(os.path.normpath(d.format(home=home, mise_data=mise_data))))
     ]
+
+
+def _extra_path_templates() -> tuple[str, ...]:
+    """:data:`_EXTRA_PATH_DIRS`, minus the fixed POSIX roots on Windows.
+
+    ``/opt/homebrew/bin`` and ``/usr/local/bin`` name nothing on Windows, where
+    Python 3.12's ``isabs`` still accepts them and they resolve against the
+    current drive (``C:\\opt\\homebrew\\bin``), a folder any local account can
+    create. Every ``{home}``/``{mise_data}`` template stays.
+    """
+    if platform_compat.IS_WINDOWS:
+        return tuple(d for d in _EXTRA_PATH_DIRS if not d.startswith("/"))
+    return _EXTRA_PATH_DIRS
 
 
 # Where a POSIX PATH's system section starts. An inherited well-known dir only
@@ -885,7 +898,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     extra += pinned
     extra += [
         e
-        for d in _EXTRA_PATH_DIRS
+        for d in _extra_path_templates()
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
     if platform_compat.IS_WINDOWS and (
@@ -1519,6 +1532,10 @@ def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
     text substitution, never a shell. The import is function-local because the
     rewriter imports this module.
 
+    On Windows a missing ``HOME``/``USER`` is filled from ``USERPROFILE``/
+    ``USERNAME``, so a POSIX-written ``${HOME}`` resolves to the same home
+    ``Path.home()`` uses there instead of reaching the child literally.
+
     Returns a NEW list, leaving the caller's config untouched. Non-string
     elements and a non-list ``args`` pass through, so a malformed spec keeps
     its own error.
@@ -1528,6 +1545,16 @@ def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
     from kiro_crew.mcp_gateway.rewriter import _expand_env_placeholders
 
     source = {name: value for name in _SPEC_ARG_VARS if (value := os.environ.get(name))}
+    # On Windows the home and login-name live under USERPROFILE/USERNAME, not
+    # HOME/USER, so a POSIX-written ``${HOME}``/``${USER}`` would stay literal
+    # (the process has no HOME). Fill each missing name from its Windows twin so
+    # the one home Path.home() already resolves there (see managed_mcp.py's
+    # _HOME_DERIVING_ENV_KEYS) reaches the spec. A set HOME/USER still wins, and
+    # no name outside _SPEC_ARG_VARS is read, so no other value reaches argv.
+    if platform_compat.IS_WINDOWS:
+        for name, twin in (("HOME", "USERPROFILE"), ("USER", "USERNAME")):
+            if name not in source and (value := source.get(twin)):
+                source[name] = value
     return [
         _expand_env_placeholders(a, source=source, server=server) if isinstance(a, str) else a
         for a in args

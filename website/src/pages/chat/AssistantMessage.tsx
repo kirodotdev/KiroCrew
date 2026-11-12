@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
-import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
@@ -13,6 +12,8 @@ import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
+import InfoTip from '../../components/InfoTip'
+import { lazyRetry } from '../../components/lazyRetry'
 import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
 import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
@@ -29,6 +30,7 @@ import { extractInlineThinking } from '../../app-sdk/protocol/inlineThinking'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
@@ -42,7 +44,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
  *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
  *  API cost (claude_code). Zero fields are omitted by the backend. */
-export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string; cache?: 'rewrite' }
 
 /** Trim a served model id to a compact footer label: drop region/vendor
  *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
@@ -112,8 +114,14 @@ function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolea
 const ROW_ACTION_CLS = 'text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50'
 
 /** Loaded on first open: the share dialog pulls in html-to-image, which no
- *  chat render path should pay for before the user actually shares. */
-const LazyShareMessageModal = lazy(() => import('./share/ShareMessageModal'))
+ *  chat render path should pay for before the user actually shares. A chunk
+ *  that fails to load shows one line under the message, with Try Again and
+ *  Reload page, and no hand-off, as for this message's other notices. */
+const LazyShareMessageModal = lazyRetry(() => import('./share/ShareMessageModal'), {
+  layout: 'inline',
+  title: () => i18nT('pages.chat.assistantMessage.share_load_failed'),
+  scope: 'share-message',
+})
 
 /** The footer's hover-reveal + touch-target contract, shared by the action row and the
     unavailable fork affordance that sits outside it. */
@@ -224,6 +232,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const rawBoxHeightRef = useRef(rawBoxHeight); rawBoxHeightRef.current = rawBoxHeight
   useEffect(() => { if (rawBoxHeightRef.current !== null) setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
+  const versionPager = usePagerFocus()
   const localIdxRef = useRef(localIdx); localIdxRef.current = localIdx
   useEffect(() => { if (localIdxRef.current !== null) setLocalIdx(null) }, [content, variants?.length])
 
@@ -519,10 +528,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" collisionPadding={forkWithHistory ? 8 : undefined} className={forkWithHistory ? 'min-w-[210px] max-w-[min(20rem,calc(100vw_-_1rem))]' : 'min-w-[210px]'}>
-          {/* Listed whenever Quote is offered, row seat or not: the bubble's
-              right-click menu leads with it, so the two look-alike menus on one
-              message agree about what it can do. */}
-          {quoteOffered && (
+          {/* Only when the row does not show Quote: More lists what the row
+              lacks. The right-click menu is a separate surface with no row
+              beside it, so it keeps Quote first on every reply. */}
+          {quoteOffered && !quoteRow && (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="quote-message-menu-item" onSelect={quoteShown}>
               <span className="flex items-center gap-2">
                 <Quote className="lucide-inline shrink-0" />
@@ -804,6 +813,21 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+            {/* Only a turn the gateway marked as one that rebuilt the prompt cache;
+                the hint says why it cost more than its neighbours. */}
+            {turnStats.cache === 'rewrite' && (<>
+              <span aria-hidden="true">·</span>
+              {/* Plain footer text, then the app's one help-tip pattern: the
+                  glyph shows the reason on hover, on keyboard focus and on a
+                  tap, and gives it to a screen reader as a description. The
+                  empty `title` stops the footer's own title from applying
+                  here: an open tip drops its glyph's title, and the browser
+                  would otherwise show the footer summary as a second tooltip. */}
+              <span className="inline-flex shrink-0 items-center gap-0.5" data-testid="turn-cache-rewrite" title="">
+                {i18nT('pages.chat.assistantMessage.turn_cache_rewritten')}
+                <InfoTip text={i18nT('pages.chat.assistantMessage.turn_cache_rewritten_hint')} />
+              </span>
+            </>)}
           </>
         })()}
       </div>
@@ -845,7 +869,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           const switchFn = onSwitchVariant || ((i: number) => setLocalIdx(i))
           return (
             <div className="flex items-center gap-0.5 ml-1 text-[11px] leading-4 text-muted">
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => switchFn(curIdx - 1)}><ChevronLeft size={14} /></button>
+              <button ref={versionPager.prevRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => { switchFn(curIdx - 1); versionPager.pressedPrev() }}><ChevronLeft size={14} /></button>
               {/* No `font-mono`, same as the timestamp two elements to the left:
                   "2/3" is a pagination counter, not code, and it sits in the
                   SAME hover row — leaving it on `var(--mono)` would have made
@@ -853,7 +877,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                   it. `tabular-nums` also stops the chevrons shifting when the
                   index crosses into two digits. */}
               <span className="tabular-nums">{curIdx + 1}/{variants!.length}</span>
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => switchFn(curIdx + 1)}><ChevronRight size={14} /></button>
+              <button ref={versionPager.nextRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => { switchFn(curIdx + 1); versionPager.pressedNext() }}><ChevronRight size={14} /></button>
             </div>
           )
         })()}
@@ -880,7 +904,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         the menu (and the entry), but must not unmount the dialog with the
         user's edits in it — the modal shows a notice and withdraws its actions
         instead, and the user closes it when ready. */}
-    {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} /></Suspense>}
+    {shareOpen && <LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} />}
   </div>
 })
 

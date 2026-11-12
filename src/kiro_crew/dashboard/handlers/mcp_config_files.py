@@ -447,7 +447,10 @@ def _refuse_commented_config(*paths: Path) -> None:
 
     The write helpers call it, so no writer can rewrite such a file; a handler
     with other side effects also calls it before the first of them, so its
-    work is refused whole instead of stopping part way.
+    work is refused whole instead of stopping part way. A file that is not
+    UTF-8 raises ``UnicodeDecodeError`` rather than reading as comment-free, so
+    no writer replaces it; a route that runs this check up front answers that
+    raise as ``config_corrupt``.
     """
     for path in paths:
         if _has_json_comments_on_disk(path):

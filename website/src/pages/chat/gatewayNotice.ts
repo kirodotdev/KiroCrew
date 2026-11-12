@@ -121,6 +121,7 @@ const NOTICE_FAMILIES = {
   turn_interrupted_close: { role: 'error', card: 'error' },
   capability_tool_limits_unsupported: { role: 'error', card: 'error' },
   kas_signed_out: { role: 'error', card: 'error' },
+  windows_spawn_blocked: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -207,6 +208,7 @@ const COPY_KEY = {
   turn_interrupted_close: 'pages.chat.gatewayNotice.turn_interrupted_close',
   capability_tool_limits_unsupported: 'pages.chat.gatewayNotice.capability_tool_limits_unsupported',
   kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
+  windows_spawn_blocked: 'pages.chat.gatewayNotice.windows_spawn_blocked',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -562,12 +564,13 @@ function legacyKasSignedOutRoute(content: string): '' | 'relay' | 'bundle' | nul
   // row carries, never shown here (the token's catalog copy is).
   if (!content.endsWith(', then start a new chat.') && !content.endsWith(', then send your message again.')) return null
   const head = content.slice(0, content.lastIndexOf(', then '))
-  if (head === 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in') return ''
-  if (head === "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in") return 'relay'
-  const bundle =
-    head.startsWith("KAS runs on Kiro Crew's own engine") &&
-    head.endsWith('. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in')
-  return bundle ? 'bundle' : null
+  // The path names the Kiro Agent row the card sits in; older rows name it without.
+  const lead = /^(?<lead>.*?)Not signed in to Kiro\. Sign in from Settings → Agent Harness → (?:Kiro Agent → )?Kiro sign-in$/u
+    .exec(head)?.groups?.lead
+  if (lead === undefined) return null
+  if (lead === '') return ''
+  if (lead === "KAS runs through kiro-cli's relay. ") return 'relay'
+  return lead.startsWith("KAS runs on Kiro Crew's own engine") && lead.endsWith('. ') ? 'bundle' : null
 }
 
 interface Shape {

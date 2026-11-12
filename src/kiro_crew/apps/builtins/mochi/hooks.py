@@ -981,7 +981,9 @@ class MochiRuntime:
         now = _now_ms()
         out = []
         for item in due:
-            last = item.get("lastCheckedAt")
+            # ``lastChecked`` is the field a check records (watchlist_file's
+            # ``historyEntry`` update), the one the dashboard shows.
+            last = item.get("lastChecked")
             last_ms = _epoch_ms(last) if last else None
             if last_ms is None or now - last_ms >= floor_ms:
                 out.append(item)

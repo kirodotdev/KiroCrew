@@ -11,7 +11,11 @@ the daemon's own liveness ping missed while it was doing so.
 :class:`SpawnGate` is the one bound: a daemon-wide count of spawns in flight,
 where "in flight" runs from just before the fork until the backend's first
 ``initialize`` has resolved (or provably will never arrive). Callers past the
-count wait in FIFO order. It does not replace ``max_backends`` (resident
+count wait in start order (``kiro_crew.start_priority.StartOrder``, the rule the
+gateway's own start queues follow): a spawn a person's session start is waiting
+on goes first, first-in first-out within a priority, and a background spawn is
+passed at most a bounded number of times. A caller that names no priority is
+background. It does not replace ``max_backends`` (resident
 ceiling, still enforced by the pool) or the circuit breaker (per-key crash
 loop); it sits INSIDE both -- acquired after the per-key spawn lock and after
 ``CircuitBreaker.allow`` -- so a permit is never held during a breaker cooldown
@@ -48,6 +52,8 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
+
+from kiro_crew.start_priority import StartOrder, StartPriority
 
 from .host_budget import HostBudget, HostCharge
 
@@ -191,12 +197,19 @@ class Permit:
 
 
 class _Waiter:
-    __slots__ = ("future", "label", "enqueued_at")
+    __slots__ = ("future", "label", "enqueued_at", "priority")
 
-    def __init__(self, future: "asyncio.Future[None]", label: str, enqueued_at: float) -> None:
+    def __init__(
+        self,
+        future: "asyncio.Future[None]",
+        label: str,
+        enqueued_at: float,
+        priority: StartPriority,
+    ) -> None:
         self.future = future
         self.label = label
         self.enqueued_at = enqueued_at
+        self.priority = priority
 
 
 OnQueued = Callable[[QueuePosition], Awaitable[None]]
@@ -204,7 +217,7 @@ OnSettle = Callable[[str], None]
 
 
 class SpawnGate:
-    """FIFO admission with a movable fixed capacity. Single event loop."""
+    """Admission in start order with a movable fixed capacity. Single event loop."""
 
     def __init__(
         self,
@@ -225,7 +238,7 @@ class SpawnGate:
         self._clock = clock
         self._on_settle = on_settle
         self._in_flight = 0
-        self._waiters: deque[_Waiter] = deque()
+        self._order: StartOrder[_Waiter] = StartOrder(lambda w: w.future.done())
         self._closed = False
         self._watchers: set[asyncio.Task[None]] = set()
         self._outcomes: dict[str, int] = {o: 0 for o in _OUTCOMES}
@@ -255,7 +268,7 @@ class SpawnGate:
 
     @property
     def queued(self) -> int:
-        return sum(1 for w in self._waiters if not w.future.done())
+        return len(self._order.waiting())
 
     @property
     def closed(self) -> bool:
@@ -283,9 +296,11 @@ class SpawnGate:
         deadline: Optional[float] = None,
         on_queued: Optional[OnQueued] = None,
         keepalive_secs: float = QUEUED_KEEPALIVE_SECS,
+        priority: StartPriority = StartPriority.BACKGROUND,
     ) -> Permit:
-        """Wait for a slot in FIFO order and return its :class:`Permit`.
+        """Wait for a slot in start order and return its :class:`Permit`.
 
+        ``priority`` is the caller's place in that order (module docstring).
         ``deadline`` is an absolute time on this gate's clock; ``None`` waits
         until admitted or closed. ``on_queued`` runs every ``keepalive_secs``
         while queued and receives the waiter's current position; an exception
@@ -295,14 +310,14 @@ class SpawnGate:
         if self._closed:
             raise SpawnGateClosed("spawn gate closed")
         now = self._clock()
-        if not self._waiters and self._in_flight < self._capacity:
+        if not self._order.waiting() and self._in_flight < self._capacity:
             self._in_flight += 1
             self._granted += 1
             return Permit(self, label, now)
 
         loop = asyncio.get_running_loop()
-        waiter = _Waiter(loop.create_future(), label, now)
-        self._waiters.append(waiter)
+        waiter = _Waiter(loop.create_future(), label, now, priority)
+        self._order.push(priority, waiter)
         try:
             while True:
                 now = self._clock()
@@ -355,18 +370,14 @@ class SpawnGate:
         )
 
     def _position_of(self, waiter: _Waiter) -> int:
-        position = 0
-        for w in self._waiters:
-            if w.future.done():
-                continue
-            position += 1
+        waiting = self._order.waiting()
+        for position, w in enumerate(waiting, start=1):
             if w is waiter:
                 return position
-        return max(position, 1)
+        return max(len(waiting), 1)
 
     def _drop_waiter(self, waiter: _Waiter) -> None:
-        with contextlib.suppress(ValueError):
-            self._waiters.remove(waiter)
+        self._order.discard(waiter.priority, waiter)
         if not waiter.future.done():
             waiter.future.cancel()
 
@@ -377,10 +388,11 @@ class SpawnGate:
     def _wake(self) -> None:
         if self._closed:
             return
-        while self._waiters and self._in_flight < self._capacity:
-            waiter = self._waiters.popleft()
-            if waiter.future.done():
-                continue
+        while self._in_flight < self._capacity:
+            picked = self._order.pop_next()
+            if picked is None:
+                return
+            waiter, _priority = picked
             self._in_flight += 1
             waiter.future.set_result(None)
 
@@ -479,11 +491,9 @@ class SpawnGate:
     async def close(self) -> None:
         """Refuse new admissions, fail every waiter, release every watcher."""
         self._closed = True
-        waiters = list(self._waiters)
-        self._waiters.clear()
-        for waiter in waiters:
-            if not waiter.future.done():
-                waiter.future.set_exception(SpawnGateClosed("spawn gate closed for drain"))
+        for waiter in self._order.waiting():
+            self._order.discard(waiter.priority, waiter)
+            waiter.future.set_exception(SpawnGateClosed("spawn gate closed for drain"))
         watchers = list(self._watchers)
         for task in watchers:
             task.cancel()

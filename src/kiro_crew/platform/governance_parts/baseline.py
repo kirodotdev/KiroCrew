@@ -115,13 +115,17 @@ BASELINE_UNGATED: Dict[str, str] = {
     + "local UI only; the user still opts in through Feature Preview and settings",
     "capabilities.decisions_local": _OPEN
     + "a local model; it stays inert while `capabilities.decisions` is off",
+    "external_access.registry_hosts": _OPEN
+    + "Discover queries every registry unless a policy names the key",
 }
 
 # LTS minimal values for the policy-only fields outside ``controls``, filled
 # into the authority before tiers compose (``tiers._with_lts_baseline``) so a
 # local tier can only narrow them, and read again where each is consumed.
-#: ``updates.channel`` (appendix "Update channel"): stable.
-LTS_UPDATE_CHANNEL = "stable"
+#: ``updates.channel`` (appendix "Update channel", D11): ``lts``, the edition's own
+#: channel. Fixed: no tier, the central one included, moves it. Not one of
+#: ``carriers.UPDATE_CHANNELS``, so an ``oss`` policy cannot pin it.
+LTS_UPDATE_CHANNEL = "lts"
 #: ``yolo_max_seconds`` (appendix "Auto-approval duration"): the shortest selectable
 #: duration, ``agent.yolo_duration`` ``30m``. The baseline already denies ``yolo``.
 LTS_YOLO_MAX_SECONDS = 1800

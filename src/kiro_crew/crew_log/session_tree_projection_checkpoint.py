@@ -453,7 +453,7 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         logger.debug("session tree checkpoint unreadable; rebuilding", exc_info=True)
         return None
     if not isinstance(payload, dict) or payload.get("ver") != CHECKPOINT_VERSION:

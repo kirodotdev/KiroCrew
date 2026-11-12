@@ -658,6 +658,56 @@ def _doctor_acp_runtimes(issues: list[str]) -> None:
         return
     for line in _acp_runtime_lines(census, _ACP_CPU_WINDOW_SECS):
         print(line)
+    try:
+        kept = _kept_scope_lines()
+    except Exception:
+        kept = ["  kept scopes: ⚠️  could not read the agent scopes — check skipped"]
+    for line in kept:
+        print(line)
+
+
+def _kept_scope_lines() -> list[str]:
+    """Runtime scopes the gateway's cleanup keeps, each with the command that ends it.
+
+    Named by unit, never by command line. Empty where this install has no agent slice.
+    """
+    from kiro_crew import session_scope_reap
+
+    slice_dir, _why = session_scope_reap._instance_scope_dir()
+    if slice_dir is None:
+        return []
+    tracked, complete = cli_doctor.session_pid._read_tracked_agent_pids()
+    if not complete:
+        return ["  kept scopes: ⚠️  could not read the session registry — check skipped"]
+    kept = session_scope_reap.kept_scopes(
+        slice_dir,
+        tracked_pids=tracked,
+        now_monotonic=time.clock_gettime(time.CLOCK_MONOTONIC),
+        proc_root=_PROC_ROOT,
+    )
+    if not kept:
+        return ["  kept scopes: ✅ none"]
+    lines = [
+        f"  kept scopes: ⚠️  {len(kept)} runtime scope(s) no session tracks; "
+        "the gateway does not stop them"
+    ]
+    for unit, category, age in kept:
+        memory = cli_doctor.sandbox.read_cgroup_int(slice_dir / unit / "memory.current")
+        tasks = cli_doctor.sandbox.read_cgroup_int(slice_dir / unit / "pids.current")
+        what = (
+            "no agent runtime left in it"
+            if category == "no-runtime-anchor"
+            else "it holds a process Kiro Crew cannot attribute"
+        )
+        lines.append(
+            f"               {unit}: up {age / 3600:.1f}h, "
+            f"{'?' if memory is None else memory // (1024 * 1024)} MiB, "
+            f"{'?' if tasks is None else tasks} tasks, {what}"
+        )
+        lines.append(f"                 stop it: systemctl --user stop {unit}")
+    lines.append("               What is left can be a server an agent was asked to keep")
+    lines.append("               running, so stop a scope only when you do not need it.")
+    return lines
 
 
 # ── Task ceilings (agents slice TasksMax, per-scope TasksMax, thread pools) ──
@@ -1278,13 +1328,14 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
     rewritten = counts.get("rewritten", 0)
     floor = "+" if counts.get("truncated", 0) else ""
     metadata_dir, _lease_dir = acp_driver.skill_view_sidecar_dirs()
-    warn = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN or rewritten
+    backlog = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN
+    warn = backlog or rewritten
     print(
         f"  skill-view residue: {'⚠️ ' if warn else '✅'} {orphans}{floor} ownership sidecar(s) in"
         f" {metadata_dir}/ with no alias, {locks}{floor} leftover alias .lock file(s),"
         f" {rewritten}{floor} alias(es) rewritten by another program"
     )
-    if orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN:
+    if backlog:
         print(
             f"{render._INDENT}The gateway removes the ones it can prove are its own residue"
             f" (this home's sidecars, unheld empty locks) in bounded batches at boot and on"

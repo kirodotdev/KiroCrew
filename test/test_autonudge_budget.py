@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 from autonudge_helpers import _enable  # noqa: F401
-from autonudge_helpers import svc_fixture  # noqa: F401
+from autonudge_helpers import _structured_monitor, svc_fixture  # noqa: F401
 
 from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_authz as _autonudge_mod
@@ -30,6 +30,8 @@ from kiro_crew.autonudge import (
     NudgeLoop,
     runtime_budget_exceeded,
 )
+from kiro_crew.autonudge_service import model as _model
+from kiro_crew.autonudge_service import timers as _timers
 from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.models import MonitorBudgets
 
@@ -1102,3 +1104,39 @@ async def test_a_finished_loop_is_displaced_by_a_new_arm_not_by_a_create(svc, tm
     )
     assert replacement.id != loop.id and replacement.active
     assert [lp.id for lp in svc.list_all()] == [replacement.id]
+
+
+@pytest.mark.parametrize(
+    ("budget", "shape", "armed_secs"),
+    [
+        (600, {}, 501.0),
+        (200_000, {}, 86400.0),
+        (50, {}, 86400.0),
+        (600, {"waiting_on_person": True}, 86400.0),
+        (600, {"monitor": _structured_monitor()}, 86400.0),
+    ],
+    ids=["runs-out-first", "outlasts-the-deadline", "already-spent", "person-wait", "monitor"],
+)
+def test_a_prompt_loop_wakes_when_its_runtime_budget_runs_out(
+    tmp_path, monkeypatch, manual_clock, budget, shape, armed_secs
+):
+    """100 s into the budget on a one-day interval, a budget that runs out first wakes
+    the timer one second after it does, so ``_timer`` stops the loop then."""
+    manual_clock.install(monkeypatch, _timers)
+    manual_clock.install(monkeypatch, _model)
+    now = manual_clock.time()
+    svc = AutoNudgeService(base_dir=tmp_path)
+    armed: list[float | None] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda target, delay=None: armed.append(delay))
+    loop = NudgeLoop(
+        id="budget01",
+        slot_key="chat-1-123",
+        message="go",
+        idle_secs=86400,
+        max_runtime_secs=budget,
+        created_ts=now - 100,
+        next_due_ts=now + 86400,
+        **shape,
+    )
+    svc._arm_from_deadline(loop)
+    assert armed == [armed_secs]

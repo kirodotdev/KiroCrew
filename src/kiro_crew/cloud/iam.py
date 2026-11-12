@@ -361,13 +361,37 @@ def crew_exec_boundary_policy_json() -> str:
 STACK_PREFIX = "kirocrew-"
 
 
+#: IAM's cap on one customer-managed policy document, in characters with
+#: whitespace not counted (non-adjustable; over it, ``CreatePolicy`` and
+#: ``CreatePolicyVersion`` fail with LimitExceeded and IAM keeps none of it).
+MANAGED_POLICY_MAX_CHARS = 6144
+
+#: The addendum statement that lets a launch read the host policies first.
+HOST_POLICY_READ_SID = "IamReadHostPolicies"
+
+
+def _policy_chars(doc: dict[str, Any]) -> int:
+    """The size IAM counts for *doc*: its JSON without whitespace."""
+    return len(json.dumps(doc, separators=(",", ":")))
+
+
 def host_policy_document() -> dict[str, Any] | None:
     """The launcher-policy addendum for an edition's host policies, or ``None``.
 
     A SECOND customer-managed policy, applied beside :func:`policy_document`, that
     lets the launcher attach (and on teardown detach) exactly the edition's
-    ``cloud_instance_policy`` ARNs. ``None`` when the edition adds none, so a
-    build without them needs one policy, as before.
+    ``cloud_instance_policy`` ARNs, and read them so a launch can check that the
+    account holds each one first (``host_policy.require_managed_policies``).
+    ``None`` when the edition adds none, so a build without them needs one
+    policy, as before.
+
+    The read lists every ARN a second time, so a valid edition with long policy
+    paths can push the document past :data:`MANAGED_POLICY_MAX_CHARS`, and IAM
+    would then refuse the attach grant along with it. The read statement is
+    therefore included only when the whole document fits; otherwise the
+    document is the attach statement alone, and :func:`grants_host_policy_read`
+    says so. The read is never widened to fit: a wildcard resource would let
+    the launcher read every policy in the account.
 
     Separate for two reasons. The main policy is within a few dozen characters of
     IAM's 6,144-character cap, so it has no room for another statement. And the
@@ -384,7 +408,7 @@ def host_policy_document() -> dict[str, Any] | None:
     arns = host_policy.managed_policy_arns("*")
     if not arns:
         return None
-    return {
+    doc: dict[str, Any] = {
         "Version": "2012-10-17",
         "Statement": [
             {
@@ -401,9 +425,31 @@ def host_policy_document() -> dict[str, Any] | None:
                     "ArnEquals": {"iam:PolicyARN": arns},
                     "StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"},
                 },
-            }
+            },
+            {
+                # The pre-deploy existence check: a read of these policies' metadata
+                # and nothing else.
+                "Sid": HOST_POLICY_READ_SID,
+                "Effect": "Allow",
+                "Action": "iam:GetPolicy",
+                "Resource": arns,
+            },
         ],
     }
+    if _policy_chars(doc) > MANAGED_POLICY_MAX_CHARS:
+        doc["Statement"] = [s for s in doc["Statement"] if s["Sid"] != HOST_POLICY_READ_SID]
+    return doc
+
+
+def grants_host_policy_read(doc: dict[str, Any] | None) -> bool:
+    """True when the addendum *doc* lets the launcher read the host policies.
+
+    False for ``None`` and for an addendum whose read did not fit IAM's cap: a
+    launch under it cannot ask IAM first whether the account holds them.
+    """
+    if doc is None:
+        return False
+    return any(stmt.get("Sid") == HOST_POLICY_READ_SID for stmt in doc["Statement"])
 
 
 def policy_document() -> dict[str, Any]:

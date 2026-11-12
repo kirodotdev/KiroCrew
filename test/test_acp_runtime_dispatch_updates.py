@@ -439,6 +439,7 @@ def test_handle_update_malformed_cost_is_noop(cost):
         (10**400, 10000),  # bignum: math.isfinite itself raises OverflowError
         ([5000], {"n": 1}),
         (True, True),
+        (-5000, 10000),  # a negative count would read as a negative context_pct
     ],
 )
 def test_handle_update_malformed_usage_is_noop(used, size):

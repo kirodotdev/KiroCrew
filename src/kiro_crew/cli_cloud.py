@@ -182,9 +182,10 @@ def _cloud_status(args: argparse.Namespace) -> int:
         return 0
     ui.note(f"{ui.BOLD}{tag}{ui.RESET}")
     ui.detail(f"stack:    {st.get('stack_name', '')} ({st.get('stack_status', '')})")
-    ui.detail(
-        f"instance: {st.get('instance_id') or '(id unknown)'} [{st.get('instance_state', '?')}]"
-    )
+    instance_id = st.get("instance_id", "")
+    # No InstanceId output yet (still creating, or rolled back): the stack status says why.
+    state = (st.get("instance_state") or "gone") if instance_id else st.get("stack_status", "")
+    ui.detail(f"instance: {instance_id or '(id unknown)'} [{state}]")
     ui.detail(f"region:   {st.get('region', region)}")
     return 0
 
@@ -390,15 +391,16 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
     tag = _resolve_tag(args)
 
+    # Before the dry run too, so it never offers to delete a stack the real run cannot find.
+    st = ec2.describe(tag, profile, region)
+    if not st.get("exists"):
+        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
+        return 0
+
     if getattr(args, "dry_run", False):
         res = ec2.destroy(tag, profile, region, dry_run=True)
         ui.info("Dry run — would run:")
         ui.detail("aws " + " ".join(res["argv"]))
-        return 0
-
-    st = ec2.describe(tag, profile, region)
-    if not st.get("exists"):
-        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
         return 0
 
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")
@@ -487,7 +489,9 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
 
     stdout stays one JSON document either way, so it can be piped straight into
     ``aws iam create-policy``. When the edition adds host policies, the plain form
-    says on stderr that a second policy is needed and how to print it.
+    says on stderr that a second policy is needed and how to print it, and the
+    ``--host-policies`` form says there when the addendum had no room for the read
+    a launch uses to check that the account holds them.
     """
     want_addendum = getattr(args, "host_policies", False)
     if not want_addendum:
@@ -505,6 +509,15 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
             ui.fail("This build adds no host policies, so there is no second policy to apply.")
             return 1
         print(json.dumps(addendum, indent=2))
+        if not iam.grants_host_policy_read(addendum):
+            print(
+                "This build's host policy ARNs are too long for this policy to also let "
+                "the launcher read them within IAM's policy size limit, so it grants only "
+                "the attach. A launch therefore cannot check first that the account holds "
+                "them, and CloudFormation's attach still fails if one is missing. To get "
+                "that check, grant iam:GetPolicy on exactly these ARNs in a separate policy.",
+                file=sys.stderr,
+            )
         return 0
     if addendum is not None:
         print(
@@ -629,6 +642,9 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
 
     profile, region = _resolve(args)
     ui.note(f"{ui.BOLD}KiroCrew cloud — diagnostics{ui.RESET}")
+    # Every ✗ line sets this, so a script can gate on the exit code. A service
+    # that is not reachable stays a ⚠: the launch still tries it.
+    failed = False
     # Client prerequisites. Probe the exact binary resolved spawn sites execute
     # (the shared deploy-engine resolver), so the doctor's verdict agrees with
     # what `kirocrew cloud` commands actually run under a GUI-launched
@@ -638,14 +654,17 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.ok("aws CLI found")
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
         # Found but refused: the install link would put the same refused file back.
+        failed = True
         ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
         ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
+        failed = True
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
     elif (refusal := ssm.session_manager_plugin_refusal()) is not None:
-        ui.warn(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
+        failed = True
+        ui.fail(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
         if refusal.remedy_command:
             # Making the tree root-owned turns whatever binary is in it into an
             # accepted credential receiver, so the user confirms it is AWS's first.
@@ -659,8 +678,13 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         else:
             ui.detail(ssm.REFUSAL_NEXT_STEP.get(refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
-        ui.warn("session-manager-plugin not found — needed to connect over SSM")
-        ui.detail(ssm.session_manager_plugin_install_hint())
+        failed = True
+        ui.fail("session-manager-plugin not found — `kirocrew cloud launch` needs it")
+        if install := ssm.session_manager_plugin_install_command():
+            ui.detail(f"Install it with: {install}")
+            ui.detail("Then rerun `kirocrew cloud doctor`.")
+        else:
+            ui.detail(ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor"))
     # AWS reachability.
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
@@ -671,6 +695,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
                 f"{svc}: {'reachable' if reach[key] else 'not reachable'}"
             )
     else:
+        failed = True
         ui.fail("AWS not reachable")
         # With the CLI refused, the profile was never checked: the note's
         # credential or helper advice would send the user to the wrong fix.
@@ -679,7 +704,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             if cli_refusal is not None
             else reach.get("note", "")
         )
-    return 0
+    return 1 if failed else 0
 
 
 def _ensure_session_manager_plugin() -> bool:

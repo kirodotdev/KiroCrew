@@ -11,8 +11,9 @@ Writes: ``_channel_window_mtime``, ``_dirty_flag``, ``_dirty_gen``,
 ``_disk_window_len``, ``_foreign_reported``, ``_frozen_prefix_cache``,
 ``_guarded_history_writes``, ``_lazy_tail``, ``_lazy_window``, ``_messages``,
 ``_metadata_persist_inflight``, ``_pending_rewrite``, ``_question_pending``,
-``_resumed_count``, ``_unknown_row_fields_bytes``, ``_window_loader_thread``,
-``total_messages``.
+``_resumed_count``, ``_row_links_memo``, ``_row_redacted_memo``,
+``_row_summary_memo``, ``_slot_links_memo``, ``_unknown_row_fields_bytes``,
+``_window_loader_thread``, ``total_messages``.
 Reads only: ``_buffers``, ``_coordinator_approvals``, ``_on_card_event``,
 ``_on_message``, ``_on_question_retired``, ``_on_row``, ``_pending``, ``_projection``,
 ``event``, ``key``.
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import resolve_effective_agent
 from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.dashboard.slot_row_memo import ROW_MEMO
 from kiro_crew.dashboard.state_parts.source_links import (
     _budgeted_source_links,
     _project_source_links,
@@ -214,6 +216,11 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # retraction of this slot's name must order itself after the real write,
     # so it waits on these futures, which complete with the worker.
     self._guarded_history_writes = set()
+    # The sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` is no memo.
+    self._row_summary_memo = None
+    self._row_redacted_memo = None
+    self._row_links_memo = None
+    self._slot_links_memo = None
     # Transcript mtime the in-memory window was last brought up to date
     # against. Only meaningful for a slot bound to a channel session, whose
     # transcript the channel also writes to (see channel_slots).
@@ -263,6 +270,11 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # file since we last saved?" signal that gates the cross-process
     # foreign-append merge. See chat_persistence._save_*.
     self._frozen_prefix_cache = None
+    # What the last committed save left on disk (path, file identity,
+    # disk_older, metadata line, window digests, first file-change row), so
+    # the next save can append its new rows instead of rewriting the file.
+    # None: the next save rewrites.
+    self._append_basis = None
     # Hashes of kept foreign lines already logged, so a re-scan stays quiet.
     self._foreign_reported = frozenset()
     # Set by rewind/regenerate after they TRUNCATE the window. While set,
@@ -659,6 +671,25 @@ def to_dict(
     coordinator_pending: list[dict] = (
         coordinator_approvals(self.key) if coordinator_approvals is not None else []
     )
+    projected: list[dict] | None = None
+    ctx = ROW_MEMO.get()
+    if not include_check_status and not dashboard_user and ctx is not None:
+        # The bare audience reads no status cache and audits nothing, so its
+        # chips are a pure function of the extracted links. That list is
+        # rebuilt (a new object) whenever extraction reruns, so its identity
+        # keys the memo; holding it keeps the identity from being reused.
+        memo = self._row_links_memo
+        if memo is not None and memo[0] is source_links:
+            ctx.counts["chips_hit"] += 1
+        else:
+            ctx.counts["chips_miss"] += 1
+            memo = (
+                source_links,
+                _project_source_links(_budgeted_source_links(source_links), False),
+            )
+            self._row_links_memo = memo
+        # Fresh dicts per row, as the projection itself returns.
+        projected = [dict(link) for link in memo[1]]
     return self._projection.to_dict(
         self,
         include_check_status=include_check_status,
@@ -684,4 +715,5 @@ def to_dict(
         project_source_links=(
             lambda links, incl: _project_source_links(links, incl, dashboard_user=dashboard_user)
         ),
+        source_links_projected=projected,
     )

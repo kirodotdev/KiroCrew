@@ -37,6 +37,7 @@ from kiro_crew.telegram.client import (
     TelegramInbound,
 )
 from kiro_crew.telegram.renderer import _split_markdown_bounded, md_to_telegram_html_safe
+from kiro_crew.telegram.renderer_display import _utf16_chunks, _utf16_len
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,9 @@ class TelegramInboundMessage(InboundMessage):
     # activation gate reads this; the comparison against the bot's own id happens in
     # the dispatcher, the only layer that knows it.
     reply_to_user_id: int = 0
+    # ``message_id`` of the message this one replies to, or 0. With the chat id it
+    # names a bridged approval note a reply answers (notifications bridge, B4d).
+    reply_to_message_id: int = 0
     # Handles Telegram marked as ``mention`` entities, lowercased and without the ``@``, plus
     # whether the update carried an entity list at all. The activation gate reads
     # these instead of scanning the text: Telegram classifies a handle inside a URL
@@ -347,6 +351,30 @@ class TelegramTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
+        if _utf16_len(content) > TELEGRAM_MAX_TEXT:
+            # Callers split by code points, and an emoji costs two of Telegram's
+            # units, so a part can still be over the cap here. The client cap would
+            # cut its tail and Telegram would still answer with an id, which a
+            # caller reads as the whole message sent. Split again in Telegram's
+            # unit instead, as send_markdown does; the id is the last piece's, and
+            # any refused piece fails the send. The cut drops a newline, so the
+            # pieces are graded like send_markdown's: no key may rejoin across it.
+            from kiro_crew.messaging.split import bounded_for_delivery
+            from kiro_crew.platform.context import redact_via_context
+
+            pieces = await asyncio.to_thread(
+                bounded_for_delivery,
+                [content],
+                TELEGRAM_MAX_TEXT,
+                redact_via_context,
+                _utf16_chunks,
+            )
+            last = ""
+            for piece in pieces:
+                last = await self.send_message(conversation_id, piece, thread_id)
+                if not last:
+                    return ""
+            return last
         mid = await self._client.send_message(
             int(conversation_id),
             content,
@@ -364,7 +392,7 @@ class TelegramTransport(MessagingTransport):
         # may already be in the chat, so the send reports unconfirmed instead of
         # posting a second, plain copy.
         html_text = await asyncio.to_thread(md_to_telegram_html_safe, content)
-        if len(html_text) > TELEGRAM_MAX_TEXT:
+        if _utf16_len(html_text) > TELEGRAM_MAX_TEXT:
             # The caller splits by SOURCE length, and escaping and tags grow a part
             # past the cap. Split it again by rendered length, as the reply renderer
             # does, so each piece still goes out rendered rather than as raw markup.
@@ -383,7 +411,7 @@ class TelegramTransport(MessagingTransport):
                     if not last:
                         return ""
                 return last
-        if len(html_text) <= TELEGRAM_MAX_TEXT:
+        if _utf16_len(html_text) <= TELEGRAM_MAX_TEXT:
             err: dict[str, Any] = {}
             mid = await self._client.send_message(
                 int(conversation_id),
@@ -637,6 +665,7 @@ class TelegramTransport(MessagingTransport):
             chat_type=inbound.chat_type,
             username=prompt_safe_handle(inbound.username),
             reply_to_user_id=inbound.reply_to_user_id,
+            reply_to_message_id=inbound.reply_to_message_id,
             attachments=list(inbound.attachments),
             mentions=inbound.mentions,
             has_entities=inbound.has_entities,

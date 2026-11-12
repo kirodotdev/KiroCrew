@@ -4,12 +4,12 @@
  * `TabBody` renders a terminal, Browser, MCP app, file or working-tree diff,
  * folder, artifact or turn-diff tab: through `FileTabBody` (the editor with the
  * file-browser rail), `HydratingFileTab` (a restored file tab before its first
- * read) or the shared viewers. `McpAppTabBody` and `AppPanelTabBody` render the
- * cross-slot app frames, and `AppPanelTabsErrorNotice` reports a failed app list
- * at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
+ * read, and the file pop-out window's first read) or the shared viewers.
+ * `McpAppTabBody` and `AppPanelTabBody` render the cross-slot app frames, and
+ * `AppPanelTabsErrorNotice` reports a failed app list at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, useCallback, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -31,7 +31,7 @@ import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
@@ -39,9 +39,18 @@ import { mcpAppKey } from '../../store/chatSlice'
 import McpAppFrame from '../../components/McpAppFrame'
 import { dashboardPreviewTargetFromRef } from '../../utils/dashboardPreview'
 import { DocumentPanelTabs } from './DocumentPanelTabs'
+import { openFilePopout } from '../../utils/filePopout'
 import { i18nT } from '../../i18n/t'
 
-const DashboardPreviewPanel = lazy(() => import('./DashboardPreviewPanel'))
+// A chunk that fails to load shows its notice in the tab, with Try Again, never
+// the route's card over the host page.
+// No hand-off: the side panel's other tabs and the host page can hold unsaved edits.
+const DashboardPreviewPanel = lazyRetry(() => import('./DashboardPreviewPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.membersPage.dashboard_unavailable'),
+  scope: 'dashboard-preview',
+  askAgent: false,
+})
 
 /** Body renderer for terminal + document tabs. Module-scope (NOT nested inside
  *  SidePanel): a nested component definition would produce a new component
@@ -137,11 +146,13 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * and file-open host it stays mounted through tree-read failures so its notice,
  * toggle, and Refresh escape hatch remain reachable.
  */
-function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onPanelHandle, onSubmitComments, connected = true, onRevealConsumed }: {
+function FileTabBody({ tab, active, slot, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onPanelHandle, onSubmitComments, connected = true, onRevealConsumed }: {
   tab: PanelTab
   /** Is this the visible tab? Background file tabs stay mounted, so the panel
    *  needs this to keep its Cmd+F handler off a document the user cannot see. */
   active: boolean
+  /** The panel's chat: the pop-out's chat for a tab that names none of its own. */
+  slot: string
   projectDir?: string
   /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`. */
   scrollMemoryKey?: string
@@ -201,6 +212,9 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
       onFileOpen={onFileOpen ? (p, opts) => onFileOpen(p, opts?.line != null ? { line: opts.line, endLine: opts.endLine } : undefined) : undefined}
+      // A working-tree diff tab is a view of the plain file tab's path; the pop-out
+      // window shows that file, so only the file tab offers it.
+      onPopout={tab.kind === 'file' ? () => openFilePopout(tab.path || '', tab.slot || slot) : undefined}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (
@@ -254,7 +268,12 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void }) {
+export function HydratingFileTab({ path, slot, onDiskContent }: {
+  path: string
+  /** The chat the read is made for (the file pop-out window's); a restored tab passes none. */
+  slot?: string | null
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void
+}) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -272,7 +291,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
         // unmounting stops this consumer without cancelling the shared read.
         const r = await qc.fetchQuery({
           queryKey: fileReadQueryKey(path),
-          queryFn: ({ signal }) => fetchFileRead(path, signal),
+          queryFn: ({ signal }) => fetchFileRead(path, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         })
         if (ac.signal.aborted) return
@@ -296,7 +315,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
       }
     })()
     return () => ac.abort()
-  }, [path, qc])
+  }, [path, slot, qc])
   if (error !== null) {
     return (
       <div data-testid="file-tab-hydration-failed" className="h-full p-4">
@@ -370,6 +389,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
       <FileTabBody
         tab={tab}
         active={docActive}
+        slot={slot}
         projectDir={projectDir}
         scrollMemoryKey={scrollMemoryKey}
         onContentChange={onContentChange}
@@ -406,9 +426,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   if (tab.kind === 'artifact') {
     // A crewmate's staged dashboard rides the artifact tab (see `dashboardPreviewRef`).
     const previewTarget = dashboardPreviewTargetFromRef(tab.artifactSlug)
-    // A local boundary: a failed chunk load must not reach the route boundary and
-    // unmount the host page (and any unsaved form on it).
-    if (previewTarget) return <ErrorBoundary scope="dashboard-preview" retryOnly><Suspense fallback={null}><DashboardPreviewPanel target={previewTarget} /></Suspense></ErrorBoundary>
+    if (previewTarget) return <DashboardPreviewPanel target={previewTarget} />
     return (
       <DocumentPanelTabs target={{ kind: 'artifact', slug: tab.artifactSlug || '', artifactKind: tab.artifactKind || 'markdown' }} active={active} slot={slot}>
       {(docActive: boolean) => (

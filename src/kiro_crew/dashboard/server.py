@@ -8,6 +8,7 @@ import errno  # noqa: F401
 import faulthandler
 import functools
 import logging
+import mimetypes
 import os
 import socket  # noqa: F401
 import stat  # noqa: F401
@@ -512,11 +513,12 @@ if TYPE_CHECKING:
 # fallback, so aiohttp returns ``application/octet-stream`` for .woff/.woff2/.ttf.
 # Register the correct font MIME types into that singleton at import time so ALL
 # static routes (including ``/fonts``) serve proper Content-Type headers.
-from aiohttp.web_fileresponse import CONTENT_TYPES as _AIOHTTP_CONTENT_TYPES
+# aiohttp 3.9 has no such table (None here) and guesses with the stdlib's module table.
+from kiro_crew.dashboard.dist_file_response import _AIOHTTP_CONTENT_TYPES
 
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff", ".woff")
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff2", ".woff2")
-_AIOHTTP_CONTENT_TYPES.add_type("font/ttf", ".ttf")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff", ".woff")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff2", ".woff2")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/ttf", ".ttf")
 
 logger = logging.getLogger(__name__)
 
@@ -726,13 +728,6 @@ _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 _OWN_HOST_WARM_TASKS: "set[asyncio.Future[None]]" = set()
 
 
-# Deep link at the approval toggle itself (Settings -> Skills, highlighted), so
-# the notification can offer the opt-out at the exact moment the user is being
-# asked to review yet another candidate. Same highlight=key:<configKey> format
-# the frontend's <SettingRef> builds, consumed by useSettingHighlight.
-_SKILL_APPROVAL_SETTING_URL = "/settings/skills?highlight=key:skills.approval_required"
-
-
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -752,7 +747,7 @@ async def start_dashboard(
     assume_kiro_ready: bool = False,
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
-    schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    schedule_memory_preparation: "Callable[[DashboardState], asyncio.Task[None] | None] | None" = None,
     approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
@@ -1144,7 +1139,10 @@ async def start_dashboard(
         # handover on to the client-sent relay-header strip.
         from kiro_crew.edition_locks import relay_selected
 
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
+            enabled=relay_selected(_cfg),
+            handle_email_domains=_cfg.tunnel.relay_handle_email_domains,
+        )
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
@@ -1333,6 +1331,8 @@ async def start_dashboard(
     # the sidecar is filed under the real one -- which would publish coverage for
     # an address nothing listens on and leave the real one free for anyone to take.
     _bound_port = _resolved_bound_port(runner, port)
+    # The gateway announces this to the MCP gateway daemon it owns.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
@@ -1592,13 +1592,20 @@ async def start_dashboard(
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
         logger.warning("bot-owned-config migration failed", exc_info=True)
-    # A folder Default agent saved as a crewmate's label is pointed at that
-    # crewmate's key: once per data home, after the socket is up; never raises.
+    # Each folder whose Default agent holds a crewmate's label is named in one
+    # notice: once per data home, after the socket is up; never raises.
     # Imported here, like the Crew Mode start pass below, so the server's own
     # namespace, which its composition contract test freezes, gains no name.
     from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels
 
     await migrate_folder_member_labels(state, cfg)
+
+    # Publish and start the gateway's shared memory task before the restore so
+    # the preparation overlaps it rather than following it. The restore awaits,
+    # so the task's worker can start now; state.ready stays False until the end
+    # of boot, and a turn waits on this task, not on ready.
+    if schedule_memory_preparation is not None:
+        state.memory_startup_task = schedule_memory_preparation(state)
 
     await _restore_dashboard_sessions(state, cfg)
 
@@ -1671,11 +1678,6 @@ async def start_dashboard(
     # Boot-to-ready (rec #1): full dashboard init is complete and the server is
     # about to accept traffic. Privacy-safe — the only labels are the fixed
     # ``server``/``outcome`` enums. Best-effort; never blocks the return.
-    # Publish the gateway's shared memory task first and do not yield between
-    # these assignments. create_task cannot enter its restore/open worker until
-    # this coroutine yields back to the gateway after returning the ready state.
-    if schedule_memory_preparation is not None:
-        state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
     # Tells the NEXT boot that this instance got the whole startup battery

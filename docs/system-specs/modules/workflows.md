@@ -188,16 +188,21 @@ the configured pool agent.
 passes, so it outranks the crew pin and the configured default. It must be one of
 `kiro_crew.effort.EFFORT_LEVELS`; any other value fails the step
 (`WorkflowEffortInvalid`) before a session is allocated. Unset (`None` or `""`)
-passes nothing and the session resolves its effort as before. Effort applies
-when the step's session starts: the pooled adapter keys its warm sub-pools on
-`(agent, model, cwd, effort)` so a reused worker always runs at the effort the
-call asked for, and a named `session=` chain keeps the effort its first step
-started it with. A warm reuse's `new_conversation()` re-applies the model but,
-except on claude, not the effort, and a harness that takes effort as a
-per-session config option (KAS, Codex) pushes it only at cold start, so the
-worker pushes its effort again through `provider.change_effort` after each
-cheap reset; a push that raises takes
-the hard-reset fallback, which cold-starts with the override. There is no
+passes nothing and the session resolves its effort as before. The override
+applies when the step's session starts: the pooled adapter keys its warm
+sub-pools on `(agent, model, cwd, effort)` so a reused worker always runs at the
+effort the call asked for. A named `session=` chain starts at its first step's
+effort, and each later step that names an effort pushes it onto the live session
+through `provider.change_effort` before its turn, on whichever backend the chain
+runs; a level the session does not offer (`accepts_effort_level` returns False)
+is skipped as on a cold start, and a push that raises fails the step. A warm
+reuse's `new_conversation()` re-applies the model but, except on claude, not the
+effort, and a harness that takes effort as a per-session config option (KAS,
+Codex) pushes it only at cold start, so the worker pushes its effort again
+through `provider.change_effort` after each cheap reset; a push that raises takes
+the hard-reset fallback, which cold-starts with the override, except a level
+kiro-cli refuses (`AcpCommandRefused.command_refused`): the worker logs a warning and keeps
+its conversation, because a cold start would only replay the level. There is no
 run-level effort default.
 
 `backend` is the harness the step runs on, named as `spawn_run(backend=)` and a
@@ -234,7 +239,10 @@ all, and returns results in input order. A task may be a zero-arg thunk
 both are accepted deliberately, because Python authors reach for the latter out of
 `gather(*coros)` habit and a coroutine is not callable, which would otherwise turn
 every task into `None`. A task that raises resolves to `None` and the call itself
-never raises, so callers filter falsy entries. An empty list returns `[]`.
+never raises, so callers filter falsy entries. The one exception is
+`BudgetExceeded`: it is held until every task has settled, so no sibling outlives
+the run, then raised, so a run ceiling hit inside a fan-out still ends the run. An
+empty list returns `[]`.
 
 **`pipeline(items, *stages)` has no barrier between stages.** Each item flows
 through all stages in its own chain, so item B can reach stage 2 while item A is
@@ -242,8 +250,9 @@ still in stage 1; wall clock is the slowest single chain, not the sum of the
 slowest per stage. Stages are called `stage(prev, item, index)`, **arity-adapted**
 (a 1-arg stage receives only `prev`); for stage 0, `prev` is the item itself. A
 stage may be sync or async. A stage that raises drops that item to `None` and
-skips its remaining stages. Results come back in input order; with no stages, the
-items are returned as-is.
+skips its remaining stages, except that a `BudgetExceeded` is held and raised once
+every chain has settled, as in `parallel`. Results come back in input order; with
+no stages, the items are returned as-is.
 
 Both take an optional `limit` at the `dsl` level (a semaphore); the runner passes
 its `concurrency`.
@@ -343,7 +352,8 @@ class Budget(Protocol):
 `run_failed` with `where="ceiling"`. The same exception is raised by
 `context.AgentCounter.increment()` once the per-run agent-call cap
 (`DEFAULT_MAX_AGENTS_PER_RUN` = 1000) is reached, so a runaway fan-out lands on the
-same terminal path.
+same terminal path; `parallel` and `pipeline` pass it on rather than resolving it to
+`None`.
 
 > Open question: nothing in the shipped engine calls `Budget.charge()`. The
 > ceiling is enforced (`would_exceed` before each call), but `spent()` stays 0 and
@@ -449,7 +459,7 @@ untouched. On top of those verbs the port adds only:
 - **A `workflow-opened` sidebar tag** on every session `open_session` opens,
   applied through the auto-tag writer (`chat_auto_tag.apply_label_tag`) without
   claiming the auto-tag once-flag, so the session's first message still gets its
-  project tag.
+  project tag (when `dashboard.project_tags_enabled` is on).
 - **`open_session` and `send_to_session` spend the run's agent cap.** Each call
   increments the run's `AgentCounter` and refuses with `BudgetExceeded` at the
   budget ceiling, exactly as `ctx.agent()` does, so a script cannot loop turns
@@ -518,7 +528,7 @@ are allowed** so a journal stays forward-compatible.
 | `budget_update` | `spent`, `remaining` | **builder exists, nothing emits it** (see the Budget open question) |
 | `approval_requested` | `prompt`, `approval_id` | **builder exists, nothing emits it**; `ctx.approve` delegates straight to its port |
 | `run_finished` | `result`, `duration_s` | terminal. `result` is the script's return value; `duration_s` is host `time.monotonic()` elapsed |
-| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec` |
+| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec`, `interrupted`. On a wall-clock `ceiling` the `error` text names the agent call(s) still running and how long the run had been silent (e.g. `run exceeded 3600s; agent a3 "compose" still running, no event for 3540s`), or `no agent call in flight` when the run was stuck in its own code |
 | `run_cancelled` | `reason` | terminal |
 
 **Ordering invariants**, asserted by `test_workflows_runner.py` and
@@ -535,6 +545,7 @@ agent_finished, run_finished`.
 | `validate` | static validation failed, or the script references a ctx primitive this host did not wire |
 | `ceiling` | wall-clock timeout, `BudgetExceeded`, or the per-run agent-call cap |
 | `exec` | the script itself raised |
+| `interrupted` | the script returned, but a `ctx.agent()` step's turn was stopped from outside (`WorkflowStepInterrupted`); `error` is that step's error |
 
 ### Persistence of the stream
 
@@ -561,7 +572,11 @@ Static rejections:
   `breakpoint`, `memoryview`, `classmethod`, `staticmethod`, `super`, `type`.
 - **No dunder, private or introspection attribute access, and no dunder name access**
   (`().__class__`, `__builtins__`, `x._y`, `FORBIDDEN_ATTRS` — frame, code and
-  generator internals such as `gi_frame` / `f_globals` / `tb_frame`, and `mro`),
+  generator internals such as `gi_frame` / `f_globals` / `tb_frame`, and `mro`;
+  the coroutine drivers `send` / `throw`, which hand back the pending Future a ctx
+  coroutine suspended on; the `Future` → loop accessor `get_loop`; and the event
+  loop's out-of-sandbox capabilities `subprocess_shell` / `subprocess_exec` /
+  `run_in_executor`),
   nor `.format` / `.format_map`, whose template is interpreted at run time. One
   predicate (`_attr_reason`) judges an attribute node, a format-string field and
   a class-pattern keyword (`MatchClass.kwd_attrs`, a plain string rather than an
@@ -580,6 +595,17 @@ Static rejections:
   authoring time instead of dying mid-run with `NameError`. Conservative by design:
   only names the symbol table marks as referenced-global-and-never-assigned are
   flagged, and walrus / `global` bindings are treated as bound.
+- **Compile-stage syntax errors**: `ast.parse` only parses, so `validate` also
+  compiles the parsed tree (nothing runs). `return` / `await` outside a function
+  and a `nonlocal` with no binding are reported as `syntax error: ...`; the runner
+  compiles the same way, so each such script already failed at `exec`, and
+  authoring now regenerates it instead of launching a run that cannot start.
+  These errors are also kept apart as `ValidationResult.compile_errors`. A run
+  (`start`, `author`, `rerun_subtree`) refuses them like any error; a save path
+  (`save_definition`, `update_definition`, `promote_run_definition` and the
+  workflow save/update change card) checks only `save_errors`, so it keeps saving
+  such a script as it did before `validate` reported them, and the reply carries
+  them as `warnings` with a log line.
 - **DSL-contract misuse** (`_DslContractVisitor`). These are structurally legal
   Python, so the security pass and the name pass both wave them through; only a
   contract-aware pass catches them. A type checker would too, but mypy is not
@@ -696,7 +722,7 @@ None-guard, and `validate` rejects the inline unguarded dereference.
 
 | Ceiling | Constant | Value | Behavior at the limit |
 |---------|----------|-------|----------------------|
-| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed` with `where="ceiling"` and `error="run exceeded <N>s"`; the `RunResult.error` is `"timeout"` |
+| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed` with `where="ceiling"`; `error` starts with `run exceeded <N>s` and names the still-running agent call(s) and the silence, e.g. `run exceeded <N>s; agent aN "<label>" still running, no event for <M>s` (or `run exceeded <N>s; no agent call in flight, no event for <M>s`); the `RunResult.error` is `"timeout"` and `RunResult.terminal_error` (forwarded to the registry snapshot) holds that enriched text |
 | Wall-clock bounds | `MIN_RUN_TIMEOUT_SECS` / `MAX_RUN_TIMEOUT_SECS` | 60s / 21600s (6h) | a caller value is clamped into the range |
 | Agent calls per run | `context.DEFAULT_MAX_AGENTS_PER_RUN` | 1000 | `BudgetExceeded` -> `run_failed`, `where="ceiling"` |
 | Tool calls per agent step | `agent_exec._MAX_TURNS_PER_STEP` | 200 | `stream_and_collect` stops the step; prevents an infinite tool loop from prompt injection |
@@ -1039,8 +1065,8 @@ KAS. Unlike run snapshots, definitions do not follow the configurable
 directory, so the shared sensitive-path gate blocks agent file tools and shell
 commands from planting or rewriting executable definitions. Dashboard and
 workflow-service operations open the directory directly after the human action.
-The create and revision endpoints require a positively authenticated dashboard
-user, not an app token or internal agent call. An app token is also refused before
+The create, revision and removal endpoints require a positively authenticated
+dashboard user who is the owner, not an app token or internal agent call. An app token is also refused before
 a saved run accepts its caller-supplied session header, so it cannot spoof result
 delivery into another live session. Every allow or deny decision at these
 authorization gates is SEL-audited.
@@ -1173,11 +1199,88 @@ if credential or exfiltration redaction would change executable source, the save
 the library never persists a corrupted script. Async gateway, authoring, and saved-run
 paths offload library disk I/O to worker threads, while the service serializes library
 operations so slug allocation and revision checks remain atomic in-process.
-Creates and revision updates also hold a sidecar file lock across the disk read
-(slug allocation, or the expected-revision check) and atomic replacement. A create
-with `exact_slug` refuses a used slug rather than suffixing it. This makes two gateway or harness processes sharing
-the library reject the second update to the same revision rather than silently
-accepting both and losing one writer's source.
+Creates, revision updates and removals hold one sidecar file lock, `.revisions.lock`,
+across the disk read (slug allocation, or the check) and the atomic replacement. A create
+with `exact_slug` refuses a used slug rather than suffixing it. This makes two
+gateway or harness processes sharing the library reject the second update to the
+same revision rather than silently accepting both and losing one writer's source,
+and stops a removal and an update from interleaving so that neither undoes the
+other.
+
+The library reads every `*.json` file in its folder and keys each record by its
+`id` field, not by its file name, so a copied or restored record file is a live,
+runnable definition under whatever name it has, unless a removed record holds its
+id and slug (below).
+
+Removal is a tombstone, not a file delete. `remove(ref)` sets `removed_at` on the
+record and keeps every revision on disk as stored, without re-running the
+save-time source gate, so a record saved under older redaction rules stays removable; who removed it is recorded by the route's
+SEL audit row. A v1 record also gains its default `format` field, the value every
+reader already assumes for it. The tombstone replaces the file the record was read
+from, whatever that file is named, and every file holding a live copy of the id is
+tombstoned, so no copy stays runnable after a removal succeeds. A removed definition
+is absent from `get` by id or slug, `list`, `search`, `/workflow`,
+`workflow_library_list`, saved runs and the authoring reference examples, and a
+revision update to it is refused as not found. Its id and slug stay reserved for
+good, whether a later ref matches as an id or as a slug, so a
+`/workflow <slug>` saved in a cron job or prompt answers not found from then on
+and never runs a different workflow. The reservation covers the id and the slug
+a record holds when it is removed. A rename still frees the old slug at once, so
+a written-down `/workflow <old slug>` can reach a newer workflow (#23680), and
+the reservation lives in the tombstone: deleting or damaging a removed record's
+file releases its refs, and the library logs a warning once per unreadable file
+until it changes. A revision is written to the file its record was read from,
+as a tombstone is, so a save never replaces a tombstone of the same id. One set,
+the id and the slug of every
+removed record, drives both sides. Every read by ref (`get`, `/workflow`, the
+run route, `workflow_run` with `workflow`, and the PATCH and DELETE routes)
+refuses a ref in it before matching, whether a live record carries that ref as
+its id or as its slug; otherwise ids are matched before slugs, so a free id
+reaches its own record whatever order the folder lists files in. Slug
+allocation counts that set and the id and slug of every live record, except a
+renamed record's own, as taken: a new workflow that would take one gets the
+first free numbered slug instead. A live record can still carry a reserved ref
+when it was placed by hand or restored from a tombstone; it answers to its other
+ref while that one is free. One index per read answers which record each ref
+reaches, and both what a read offers and what a ref then runs come from it. A
+record's own slug or id can miss it: a removed record holds the ref, or another
+live record answers to it first (one whose id is this record's slug, or an
+earlier one with the same slug). Reads list such refs in `shadowed_refs`,
+computed on every read and never stored (a stored copy is ignored), so the
+Customize > Workflows list and editor, `/workflow` with no name and
+`workflow_library_list` offer a ref that reaches the record, the slug first,
+else the id, and an offered command always runs the record it is listed on. With
+both listed no ref reaches it: the library list keeps the row, marked No slash
+command, the editor draws its fields, source and run input read-only, disables
+save, run and remove and says to give its file a new id and slug or delete it,
+and `/workflow`, `workflow_library_list` and their
+search leave it out; authoring references may still show it, since an adaptation
+records `id@revision`. The dashboard sends each request to the id, or to the
+slug when the id does not reach the record. Save and Remove also send the id the
+editor shows as `expected_id` (in the PATCH body, as a DELETE query parameter): when the ref now
+resolves to another workflow, because a rename freed that slug and another
+workflow took it, the request answers 409 and nothing is written or removed,
+and the dashboard re-reads the list and keeps the row. A removal that fails after tombstoning one of several copies
+leaves the rest live with their id reserved: a copy whose own slug no removed
+record holds still answers to that slug, the others to no ref, and a retried
+Remove that answers not found re-reads the list, so it never reports such a copy
+as removed. The dashboard reads the list again once any removal settles, failed
+ones included: a removal can change which ref reaches another record (a
+hand-placed record whose id is the removed slug then answers only to its own
+slug), so no row keeps a ref the library no longer answers to. Lineage is not a read by ref:
+`derived_from` still resolves a parent by id and revision, removed parents and
+reserved ids included.
+A revision saved from the dashboard sends the slug again
+and so gets the first free numbered slug, like any rename to a taken slug.
+`lineage_candidates()` is the one read
+that still returns it. `save_definition` checks `derived_from` against that read,
+so drafts and runs adapted from a removed workflow keep saving and a
+completed run's provenance keeps resolving. Lineage names a parent by id and
+revision, never by slug. Removal is a human action only: the owner-only dashboard
+route below is the single entry point, and no agent tool, MCP tool or CLI command
+can remove a saved workflow, for the same reason agents cannot write the library
+directory. Restoring a removed workflow is not offered; the tombstone keeps that
+possible later.
 
 A finished ad-hoc run can be appended to a definition the owner picks, as its next
 revision (`workflows/update_from_run.py`, reached through
@@ -1205,7 +1308,9 @@ An explicit id or slug reference takes the opposite path: `start_definition`
 executes the exact current saved source. Python definitions place free-form
 slash-command input in `ctx.args["input"]`. `task-plan` definitions delegate
 their exact YAML to TaskRunner without LLM decomposition and retain the saved
-definition id, slug, and revision on both the project and shared run.
+definition id, slug, and revision on both the project and shared run. While Task
+Runner is switched off in Library, a `task-plan` definition is refused before it
+is planned (TaskRunner spec, "Starting is refused").
 
 The chat run card offers explicit promotion after an ad-hoc Python run reaches
 `finished`. Customize > Workflows has **Workflow library** and **Runs**
@@ -1357,6 +1462,9 @@ so an in-flight checkpoint cannot resurrect a removed run.
 Run ids are durable monotonic `wf_NNNNNN` values allocated by
 `workflow_memory.allocate_run_id()`. The service's recovered sequence is only a
 lower bound; the cross-process, fsync-backed high-water allocator is authoritative.
+The lower bound counts only a reloaded id whose tail is ASCII digits within the
+allocator's uint64 range; any other stored id is skipped, since the allocator
+never issues one.
 See [Atomic run identity allocation](#atomic-run-identity-allocation).
 
 ### Authoring
@@ -1433,12 +1541,39 @@ never spawns `kiro-cli` in tests. Two production adapters:
   restarts at `:0`), released with `cleanup=True` afterwards. A `session=<key>`
   call reuses the named session, which persists so a stateful chain keeps its
   history. Each step runs through `llm_helpers.stream_and_collect` with
-  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`, then the output passes
+  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`. A turn that ends `cancelled`
+  or `error: cancel unacked` (a gateway stop or session reset cancelled it; a run
+  cancel or step timeout cancels the task instead) raises `WorkflowStepInterrupted`
+  through `StepStopWatch`, in both executors, so its cut-off text never becomes the
+  step's result. The step still resolves to `None`, so the script runs on, but the
+  runner ends a run that holds one `run_failed` with `where="interrupted"`, never
+  `run_finished`. Every executor path (cold, pooled worker, unpooled overflow)
+  writes the turn's usage row before that raise, so a cut-off turn's spend is still
+  recorded. Otherwise the output passes
   through `redact_credentials` and `redact_exfiltration_urls` before it can reach a
   run record, history, or parent chat. A per-turn usage row is persisted with
   `surface="workflow"` on a best-effort basis, with deliberately **narrow** guards:
   one wide try around import plus context read plus persist would let a single
   import failure silently drop every row from the workflow surface.
+
+  **Person-only directives are refused out loud.** A step is never a person's
+  turn and no session applier reads its stream, so a `USER_ORIGIN_DIRECTIVES`
+  call (`set_project`, `reset_conversation`, `chat_tag`, `suggest_followup`)
+  would otherwise leave only the tool's own "requested" text and no audit row
+  (#32461). Every executor path streams with `person_only_directive_refuser`
+  (`dashboard/session_directive_apply.py`, the one the cron turn uses) as
+  `on_event`: each completed call is refused with
+  `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the
+  step's own session key), and the refusals lead the step's text before
+  redaction (`agent_exec.step_text`). Nothing is applied. A `schema=` step is
+  the exception: its text is parsed as JSON, and a refusal line ahead of a
+  scalar reply would fail that parse and spend the step's re-asks, so there the
+  refusal stays in its SEL row and an INFO log line and the text is left as the
+  model wrote it. The cold path reads the step's `opts`; a pooled worker's
+  `send_message` carries no options, so the pooled `agent_fn` sets the
+  `_STEP_HAS_SCHEMA` context variable around the call (`WorkerPool.send` awaits
+  the worker in the caller's task). Covered by
+  `test/test_workflow_user_origin_directive_refusal.py`.
 - **`agent_pool.build_pooled_agent_fn`** (warm sessions; the service default,
   `pool_agents=True`). Per-call sessions make every call pay a full cold start
   (subprocess spawn plus ACP `initialize` plus `session/new`, which loads the MCP
@@ -1512,6 +1647,9 @@ released.
   `waiting_dependency`, is settled `cancelled` by the admission itself
   (`taskq.md` § Runner adapters), so a cancelled run leaves no `workflow_agent`
   row behind and none is left `queued` for a dispatcher this kind does not have.
+  A cancel landing between the two, while the `running` mark is written, meets
+  the same synchronous `cancel` around `running_async`: `admit` has already
+  handed over the lane slot and the lease, and nothing else would give them back.
   A
   dependency error the adapters recognise parks the row in `waiting_dependency`
   with its slot released and re-runs the call on the wake, at most
@@ -1582,7 +1720,8 @@ launch a script under a trusted chat's identity.
 | `POST /api/workflows/definitions` | `{source, format?, name?, description?, slug?, exact_slug?, derived_from?}` | explicitly save a validated definition; format defaults to `python`; with `exact_slug: true` a used slug is 409 `workflow_slug_taken` instead of a suffixed one |
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
-| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
+| `DELETE /api/workflows/definitions/{id-or-slug}` | | owner only; tombstone the definition and answer `{ok, id, removed_at}`; 404 `workflow_definition_not_found` when unknown or already removed; one SEL `api_access` row with outcome `completed` per removal |
+| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 409 `app_disabled` for a `task-plan` definition while Task Runner is off, 503 when its executor is unavailable |
 
 Every mutation route that accepts JSON requires a top-level object. A syntactically
 valid scalar or array is rejected with 400 and `code: invalid_json` instead of
@@ -1806,8 +1945,8 @@ identical across Kiro and adapted harnesses, and prevents an explicit reference
 from being reinterpreted by a harness. The definition format selects its owning
 driver; there is no user-facing engine choice. The Customize →
 Workflows tab is the human management surface. Its Workflow library view owns
-listing, authoring unsaved drafts, lineage, source edits as new revisions, and
-exact saved runs; its Runs view owns common history and explicit promotion.
+listing, authoring unsaved drafts, lineage, source edits as new revisions,
+removal behind a confirmation that names the workflow, and exact saved runs; its Runs view owns common history and explicit promotion.
 
 The `workflows` builtin app (`apps/builtins/workflows/`) is `defaultEnabled:
 false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over its
@@ -1922,7 +2061,7 @@ delivery milestone markers, not gates, and have no entry here.
 |---|---|---|---|
 | A3 | `pipeline()` has NO barrier between stages (an item may reach a later stage while another item is still in an earlier one), while `parallel()` IS a barrier (it awaits every thunk before returning). | `test_workflows_dsl.py::test_pipeline_no_inter_stage_barrier_deadlock_proof`, `::test_parallel_is_a_barrier` | `dsl.py` |
 | A4 | `Budget` is a HARD ceiling: `charge()` that reaches or passes `total` raises `BudgetExceeded`; `total=None` means unbounded and `remaining()` is `inf`. | `test_workflows_context.py::test_budget_hard_ceiling_raises_at_total`, `::test_budget_hard_ceiling_raises_over_total`, `::test_budget_unbounded_when_total_none` | `context.py` (`Budget`) |
-| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none` | `dsl.py` |
+| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. The one exception is `BudgetExceeded`, raised once every task has settled. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none`, `::test_budget_exceeded_is_raised_after_every_task_settles` | `dsl.py` |
 | A7 | A run emits exactly the documented event vocabulary, in order, with contiguous `seq` from zero: `run_started` first, one of `run_finished` / `run_failed` / `run_cancelled` last. `REQUIRED_DATA_KEYS` covers exactly `EVENT_TYPES`, and the validator rejects an unknown type or a missing required key. | `test_workflows_events.py::test_required_keys_cover_exactly_event_types`, `::test_every_event_type_has_a_builder_and_validates`, `::test_seq_is_monotonic_from_zero`, `::test_validate_rejects_unknown_type`, `::test_validate_rejects_missing_required_keys`; `test_workflows_runner.py::test_happy_path_emits_full_stream_in_order`, `::test_run_started_first_and_finished_last` | `events.py`, `runner.py`, `__init__.py` (`EVENT_TYPES`) |
 
 ### Group B: sandbox, ceilings, and audit
@@ -1939,7 +2078,7 @@ by name; the two together are why a single missed AST pattern is not an escape.
 | B2 | No dunder attribute or name access (`().__class__`, `__builtins__`, and the rest), no private (`_`-prefixed) attribute access, and no `.format` / `.format_map` call — their template is interpreted at run time, so a traversal can be assembled from parts no static fold can resolve (f-strings are the replacement: their fields are real AST and are already checked). An inline adversarial-escape corpus is rejected wholesale. | `test_workflows_invariants.py::test_b2_dunder_attribute_rejected`, `::test_b2_adversarial_escapes_rejected` | `validate.py` |
 | B3 | The nondeterminism modules (`time`, `random`, `uuid`) are unreachable, statically (they cannot be imported) and at run time (no `__import__` in the sandbox namespace, and `SAFE_BUILTINS` excludes nondeterministic and I/O builtins). Determinism is what makes a run stream resume-stable. | static: `test_workflows_invariants.py::test_b3_determinism_modules_rejected`, `::test_b3_safe_builtins_exclude_nondeterminism_and_io`; runtime: `test_workflows_context.py::test_import_statement_fails_in_safe_globals`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals` | `validate.py`, `context.py` (`build_safe_globals`) |
 | B4 | Event persistence is JSON only: `serialize_events` / `deserialize_events` round-trip through `json`, reject non-JSON and non-array input, and the module imports no `pickle` / `marshal` / `shelve`. | `test_workflows_events.py::test_round_trip_through_json`, `::test_serialize_output_is_pure_json`, `::test_deserialize_rejects_non_json`, `::test_events_module_has_no_pickle_import` | `events.py` |
-| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` (event error `run exceeded <N>s`) and a `RunResult` whose `error == "timeout"`. The ceiling is one deadline for the whole run, taken when `run()` starts: an in-run authoring phase spends it too, and the script gets only what authoring left. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller, during authoring or during the script; a caller cancel returns `error == "cancelled"` with a final `run_cancelled` event. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_timeout_never_leaks_cancellederror`, `::test_wall_clock_timeout_covers_in_run_authoring`, `::test_in_run_authoring_and_its_script_share_one_deadline`, `::test_cancel_during_in_run_authoring_returns_a_result`, `::test_wall_clock_timeout_still_ends_an_authored_script` | `runner.py` |
+| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` and a `RunResult` whose `error == "timeout"`. The event error starts with `run exceeded <N>s` and names the agent call(s) still in flight and how long the run had been silent (e.g. `run exceeded <N>s; agent aN "<label>" still running, no event for <M>s`, or `... no agent call in flight, no event for <M>s`), snapshotted at the ceiling before the run's cancellation and cleanup run. That enriched text is also carried on `RunResult.terminal_error` and forwarded to the registry terminal snapshot, so the Runs detail / completion summary show it instead of a bare `timeout`. The ceiling is one deadline for the whole run, taken when `run()` starts: an in-run authoring phase spends it too, and the script gets only what authoring left. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller, during authoring or during the script; a caller cancel returns `error == "cancelled"` with a final `run_cancelled` event. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_ceiling_names_the_silent_agent_in_flight`, `::test_ceiling_in_flight_empty_when_no_agent_in_flight`, `::test_ceiling_silence_snapshot_predates_cleanup_logs`, `::test_timeout_never_leaks_cancellederror`, `::test_wall_clock_timeout_covers_in_run_authoring`, `::test_in_run_authoring_and_its_script_share_one_deadline`, `::test_cancel_during_in_run_authoring_returns_a_result`, `::test_wall_clock_timeout_still_ends_an_authored_script` | `runner.py` |
 | B6 | `AgentCounter` caps lifetime `ctx.agent()` calls per run (default `DEFAULT_MAX_AGENTS_PER_RUN = 1000`) and the cap is enforced through the runner: an unbounded agent loop stops at the limit and ends as `run_failed` at the ceiling. | `test_workflows_context.py::test_agent_counter_raises_past_limit`, `::test_agent_counter_default_limit`; `test_workflows_runner.py::test_agent_count_cap_enforced` | `context.py` (`AgentCounter`), `runner.py` |
 | B7 | The exec namespace exposes only `SAFE_BUILTINS` plus `ctx`, so a script has no filesystem or egress reach: `open`, `eval`, `exec`, `compile`, `__import__`, `input` and `getattr` are absent, and benign safe builtins still work. | `test_workflows_context.py::test_safe_globals_only_exposes_ctx_and_safe_builtins`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals`, `::test_safe_builtins_actually_usable` | `context.py` (`build_safe_globals`) |
 | B9 | Every hostile script in the on-disk escape corpus (`test/workflows/malicious/*.py`) is statically rejected, with a non-empty error. The corpus directory must exist and be non-empty, and a new escape idea is added by dropping a file in it: the test parametrizes over the directory. | `test_workflows_malicious.py::test_every_malicious_script_is_rejected`, `::test_corpus_dir_exists_and_is_populated` | `validate.py`, `test/workflows/malicious/` |

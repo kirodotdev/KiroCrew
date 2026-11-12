@@ -4,9 +4,9 @@
  * The card component and the reducers are covered in FollowUpCard.test.tsx; what
  * is only reachable from the page is the ORDER and the failure handling of the
  * multi-step handoff: create the worktree (in a git repository), open a
- * session, scope it to the new directory, activate it, and only then prefill —
- * with the session deleted again if scoping fails, so a retry cannot accumulate
- * wrongly-scoped sessions.
+ * session, scope it to the new directory, send it the prompt, and only then
+ * activate it — with the session deleted again if scoping fails, so a retry
+ * cannot accumulate wrongly-scoped sessions.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
@@ -62,6 +62,8 @@ vi.mock('../api/client', () => ({
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     createChatSlot: vi.fn().mockResolvedValue({ key: 'chat-2', title: 'chat-2', messages: 0, running: false }),
     deleteChatSlot: vi.fn().mockResolvedValue({ ok: true }),
+    // A refused one-click send discards its still-empty session.
+    discardChatSlot: vi.fn().mockResolvedValue({ ok: true }),
     setSlotColor: vi.fn().mockResolvedValue({ ok: true }),
     setSlotFolder: vi.fn().mockResolvedValue({ ok: true }),
     chatSlotProject: vi.fn().mockResolvedValue({ ok: true }),
@@ -164,32 +166,100 @@ beforeEach(() => {
 describe('ChatPage follow-up worktree orchestration', () => {
   const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
 
-  it('creates the worktree, scopes the new session, then hands the prompt to it', async () => {
+  const sendCalls = () => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.map(c => [c[0], c[1]])
+  /** Settings, "Send follow-ups with one click". Off by default; the dock reads
+   *  it when it mounts, so this runs before renderPage. */
+  const oneClickSend = () => localStorage.setItem('mc-followup-start-sends', '1')
+
+  it('by default, creates the worktree, scopes the new session, then puts the prompt in its message box', async () => {
     const store = makeStore()
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     // Worktree BEFORE session: a git refusal must not leave an empty session.
     await waitFor(() => expect(api.createWorktree).toHaveBeenCalledWith('/repo', 'followup/add-rate-limits'))
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo-wt-limits'))
     expect((api.createWorktree as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
       .toBeLessThan((api.createChatSlot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
-    // The prompt is handed to the NEW slot through the prefill channel the
-    // slot-restore effect reads — asserting the handoff target rather than a
-    // rendered composer, which has several other drivers in this harness (the
-    // rendered value is covered by the "Add to this session" case below and by
-    // the Playwright capture harness). Activation is asserted separately, in the
-    // scoping-order test above.
     // The prompt lands in the NEW session's composer: seeded into the prefill
     // channel before the switch, then applied (and cleared) by the slot-restore
-    // effect when that slot activates.
+    // effect when that slot activates. Nothing is sent.
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
     await waitFor(() => expect(composer().value).toBe(ITEM.prompt))
     expect(sessionStorage.getItem('kirocrew_prefill')).toBeNull()
-    // NOT asserted here: the final card-clear. It runs after `switchSlot(...)`
-    // resolves, and that thunk does not settle under this harness (it wants
-    // hydration machinery the page mock does not provide), so asserting it would
-    // be asserting the harness. The clear IS asserted in the "Add to this
-    // session" case below, which takes the same final branch.
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps pre-filling for a stored value other than the exact on marker', async () => {
+    // Only '1' is on. A truthy look-alike, or the field a chat-config blob (and
+    // so the agent-writable uiPrefs backup) could carry, must not turn it on.
+    localStorage.setItem('mc-followup-start-sends', 'true')
+    localStorage.setItem('mc-chat-config', JSON.stringify({ followupStartSends: true }))
+    const store = makeStore()
+    await renderPage(store)
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    await waitFor(() => expect(composer().value).toBe(ITEM.prompt))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('with one-click send on, creates the worktree, scopes the new session, then sends it the prompt and stays put', async () => {
+    oneClickSend()
+    const store = makeStore()
+    await renderPage(store)
+    fireEvent.click(screen.getByRole('button', { name: /run in a separate copy/i }))
+    // Worktree BEFORE session: a git refusal must not leave an empty session.
+    await waitFor(() => expect(api.createWorktree).toHaveBeenCalledWith('/repo', 'followup/add-rate-limits'))
+    await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo-wt-limits'))
+    expect((api.createWorktree as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
+      .toBeLessThan((api.createChatSlot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
+    // The prompt is SENT to the new session, once, and lands in no composer.
+    await waitFor(() => expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']]))
+    await waitFor(() => expect(store.getState().chat.followups['chat-1']).toBeUndefined())
+    expect(composer().value).toBe('')
+    expect(sessionStorage.getItem('kirocrew_prefill')).toBeNull()
+    // It runs in the background: the user is still on the origin, which keeps
+    // its own transcript, and the notice offers the new session.
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some(c => c[0] === 'chat-2')).toBe(false)
+    expect(store.getState().chat.agentSwitchNotice).toEqual({
+      message: 'The follow-up is running in a new session on the copy at /repo-wt-limits.',
+      openSlot: 'chat-2',
+    })
+  })
+
+  it('a double-click on Start sends the prompt once', async () => {
+    oneClickSend()
+    const store = makeStore()
+    await renderPage(store)
+    const start = screen.getByRole('button', { name: /run in a separate copy/i })
+    // Both clicks land before React re-renders the busy state.
+    fireEvent.click(start)
+    fireEvent.click(start)
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.openSlot).toBe('chat-2'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(api.createWorktree).toHaveBeenCalledTimes(1)
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']])
+  })
+
+  it('shows a refused send on the card item and keeps the card', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 403, json: () => Promise.resolve({ ok: false, error: 'session expired' }) })
+    oneClickSend()
+    const store = makeStore()
+    await renderPage(store)
+    fireEvent.click(screen.getByRole('button', { name: /run in a separate copy/i }))
+    await waitFor(() => expect(screen.getByTestId('follow-up-error-0')).toHaveTextContent(/prompt was not sent/i))
+    // The empty session goes through the server's discard, which closes it only
+    // while it is still empty, never through a plain close.
+    expect(api.discardChatSlot).toHaveBeenCalledWith('chat-2')
+    expect(api.deleteChatSlot).not.toHaveBeenCalled()
+    // One report, on the card: no page notice telling the user to copy and resend by hand.
+    expect(screen.queryByText(/Message not sent/)).not.toBeInTheDocument()
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(store.getState().chat.followups['chat-1']).toBeDefined()
+    // Nothing pre-filled anywhere: the origin composer stays empty.
+    expect(composer().value).toBe('')
+    expect(sessionStorage.getItem('kirocrew_prefill')).toBeNull()
   })
 
   it('inherits the spawning session folder so the worktree session is filed with it (#6347)', async () => {
@@ -200,7 +270,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     // (name, agent, model, mode, memory_mode, title, artifact, folder_id, instance_id).
     const store = makeStore('folder-proj')
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
     // Locate by stable identity (the create call), not by the value asserted.
     const call = (api.createChatSlot as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -212,7 +282,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     // the new session must NOT be handed a folder — today's top-level behaviour.
     const store = makeStore()
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
     const call = (api.createChatSlot as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(call[7]).toBeUndefined()
@@ -229,7 +299,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     )
     const store = makeStore()
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalled())
     // Scoping is still in flight: the ORIGIN session is still active AND the new
     // slot is not published yet, so it cannot be selected from the sidebar and
@@ -244,11 +314,12 @@ describe('ChatPage follow-up worktree orchestration', () => {
     ;(api.chatSlotProject as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('nope'))
     const store = makeStore()
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2'))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2', undefined))
     // The failed session was never published, so no unscoped slot is left behind.
     expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2')
-    // No prefill into the wrong composer, and the suggestion survives for a retry.
+    // Nothing sent and nothing pre-filled, and the suggestion survives for a retry.
+    expect(api.sendChat).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
     expect(store.getState().chat.followups['chat-1']).toBeDefined()
   })
@@ -257,7 +328,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     ;(api.createWorktree as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Branch already exists: followup/limits'))
     const store = makeStore()
     await renderPage(store)
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Branch already exists/i))
     expect(api.createChatSlot).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
@@ -276,6 +347,21 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo'))
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
     await waitFor(() => expect(composer().value).toBe(ITEM.prompt))
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(api.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it('with one-click send on, in a project that is not a git repo, sends the prompt to the new chat', async () => {
+    ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: false })
+    oneClickSend()
+    const store = makeStore('folder-proj')
+    await renderPage(store)
+    fireEvent.click(await screen.findByRole('button', { name: /run in new chat/i }))
+    await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo'))
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.openSlot).toBe('chat-2'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']])
+    expect(composer().value).toBe('')
     expect(api.createWorktree).not.toHaveBeenCalled()
   })
 
@@ -288,12 +374,13 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/the new chat could not be opened/i))
     // createSlot removed the session it could not scope, so nothing is left
     // behind, the origin composer is untouched and the suggestion survives.
-    expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2')
+    expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2', undefined)
     expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2')
     expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(composer().value).toBe('')
     expect(store.getState().chat.followups['chat-1']).toBeDefined()
     expect(api.createWorktree).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
   })
 
   it('"Add to this session" prefills without touching git', async () => {
@@ -303,6 +390,8 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(composer().value).toBe(ITEM.prompt))
     expect(api.createWorktree).not.toHaveBeenCalled()
     expect(store.getState().chat.followups['chat-1']).toBeUndefined()
+    // Pre-fill only: Add never sends.
+    expect(api.sendChat).not.toHaveBeenCalled()
   })
 
   it('appends to an unsent draft instead of destroying it', async () => {

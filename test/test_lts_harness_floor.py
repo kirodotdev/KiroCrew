@@ -171,7 +171,10 @@ class TestOssUnchanged:
             raise AssertionError("must not run in oss")
 
         monkeypatch.setattr(lts_boot, "kas_unrunnable", _boom)
-        lts_boot.require_kas_harness(_cfg(KAS))
+        monkeypatch.setattr(lts_boot, "_kas_refusal", ("stale", "stale"))
+        assert lts_boot.require_kas_harness(_cfg(KAS)) is None
+        # Each boot judges afresh, in oss too: a stale record never refuses a session.
+        assert lts_boot.kas_refusal() is None
 
 
 def _cfg(main, member=None, *, kas_bundle=False):
@@ -244,6 +247,147 @@ class TestKasUnrunnable:
         _failed, fix = lts_boot.kas_unrunnable(kas_route=_CONFIGURED_BUNDLE)
         assert fix == lts_boot.KAS_FIX_ENGINE_UNAVAILABLE_CONFIGURED
         assert "`agent.kas_bundle` to false" in fix
+
+
+def _record_then_fresh_start(monkeypatch, tmp_path, *, stderr, fake_start=True):
+    """A ``starts: false`` entry is on record; a fresh v3 start answers *stderr*.
+
+    The record leaf is sandbox-visible, so an agent can write it. Returns the list
+    of v3 starts the boot gate ran.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.agent_sdk import kas_bundle
+
+    binary = tmp_path / "kiro-cli"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: str(binary))
+    monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
+    starts: list[tuple] = []
+
+    def _fresh(path, argv_tail):
+        starts.append((path, tuple(argv_tail)))
+        return stderr
+
+    if fake_start:
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", _fresh)
+    monkeypatch.setattr(kas_bundle, "kas_route", lambda: _RELAY)
+    _verdict(monkeypatch, True, None)
+    _bundle(monkeypatch, installed=False, installable=False)
+    _write_record_leaf(binary, starts=False)
+    return binary, starts
+
+
+def _write_record_leaf(binary, *, starts):
+    """Write the start record the way an agent would: straight to the leaf."""
+    import json
+
+    from kiro_crew.acp.kas_engine_refusal import _start_record_path
+
+    stat = binary.stat()
+    entry = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "starts": starts}
+    path = _start_record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({str(binary): entry}), encoding="utf-8")
+
+
+class TestARecordIsNeverProofAtBoot:
+    """A kept ``starts: false`` is a reason to run one fresh bounded start, not proof."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(lts_boot, "_kas_refusal", None)
+
+    def test_a_record_that_no_longer_reproduces_does_not_refuse_boot(
+        self, lts, monkeypatch, tmp_path
+    ):
+        from kiro_crew.acp.kas_engine_refusal import recorded_start_verdict
+
+        _registered(monkeypatch, KIRO, KAS)
+        binary, starts = _record_then_fresh_start(monkeypatch, tmp_path, stderr="")
+        lts_boot.require_kas_harness(_cfg(KAS))
+        assert len(starts) == 1, "a refusal on record was taken as proof without a fresh start"
+        assert lts_boot.kas_refusal() is None
+        assert recorded_start_verdict(str(binary)) is True, "the stale record was not rewritten"
+
+    def test_a_refusal_that_reproduces_still_refuses_boot(self, lts, monkeypatch, tmp_path, capsys):
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        _registered(monkeypatch, KIRO, KAS)
+        _binary, starts = _record_then_fresh_start(
+            monkeypatch, tmp_path, stderr=f"{KAS_ENGINE_REFUSED_REASON}\n"
+        )
+        with pytest.raises(SystemExit) as exc:
+            lts_boot.require_kas_harness(_cfg(KAS))
+        assert exc.value.code == lts_boot.EXIT_CODE
+        assert len(starts) == 1
+        assert "KAS cannot start" in capsys.readouterr().err
+
+    def test_the_relay_check_refuses_only_on_a_fresh_refusal(self, monkeypatch, tmp_path):
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        _binary, starts = _record_then_fresh_start(
+            monkeypatch, tmp_path, stderr=f"{KAS_ENGINE_REFUSED_REASON}\n"
+        )
+        refusal = lts_boot.kas_unrunnable()
+        assert refusal is not None and KAS_ENGINE_REFUSED_REASON in refusal[0]
+        assert len(starts) == 1
+
+    def test_an_agent_written_refusal_cannot_refuse_a_gateway_start(
+        self, lts, monkeypatch, tmp_path
+    ):
+        _registered(monkeypatch, KIRO, KAS)
+        _binary, starts = _record_then_fresh_start(monkeypatch, tmp_path, stderr="")
+        lts_boot.require_kas_harness(_cfg(KAS))
+        assert len(starts) == 1
+        assert lts_boot.kas_refusal() is None
+        lts_boot.refuse_unstartable_kas()
+
+    def test_a_cached_refusal_is_not_replayed_by_the_fresh_start(self, monkeypatch, tmp_path):
+        """The in-process start cache must not stand in for the fresh start."""
+        from kiro_crew import kiro_cli
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        binary, _starts = _record_then_fresh_start(
+            monkeypatch, tmp_path, stderr="", fake_start=False
+        )
+        monkeypatch.setattr(
+            kiro_cli,
+            "_kas_start_cache",
+            {
+                (str(binary), binary.stat().st_mtime_ns, ("acp", "--agent-engine", "v3")): (
+                    KAS_ENGINE_REFUSED_REASON
+                )
+            },
+        )
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
+
+        binary.chmod(0o755)
+        spawned: list[list[str]] = []
+
+        async def _started(command, args, **_kw):
+            spawned.append([command, *args])
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _started)
+        assert lts_boot.kas_unrunnable() is None
+        assert len(spawned) == 1, "the cached refusal was replayed instead of a fresh start"
+
+    def test_a_start_that_learns_nothing_is_not_proof(self, monkeypatch, tmp_path):
+        _binary, starts = _record_then_fresh_start(monkeypatch, tmp_path, stderr=None)
+        assert lts_boot.kas_unrunnable() is None
+        assert len(starts) == 1
+
+    def test_a_path_only_kiro_cli_is_never_started_and_its_record_is_no_proof(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import kiro_cli
+
+        _binary, starts = _record_then_fresh_start(monkeypatch, tmp_path, stderr="")
+        monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: None)
+        assert lts_boot.kas_unrunnable() is None
+        assert starts == [], "a PATH-only kiro-cli was started unsandboxed"
 
 
 class TestRequireKasHarness:
@@ -370,11 +514,15 @@ class TestASessionOnAnUnstartableKasIsRefused:
 
     def test_nothing_recorded_refuses_nothing(self, lts, monkeypatch):
         monkeypatch.setattr(lts_boot, "_kas_refusal", None)
-        lts_boot.refuse_unstartable_kas()
+        factory, built = self._factory(monkeypatch, KAS)
+        factory(session_key="dashboard:chat-1", agent="kirocrew")
+        assert [kw["acp_backend"] for kw in built] == [KAS]
 
     def test_oss_refuses_nothing(self, monkeypatch):
         monkeypatch.setattr(lts_boot, "_kas_refusal", REFUSAL)
-        lts_boot.refuse_unstartable_kas()
+        factory, built = self._factory(monkeypatch, KAS)
+        factory(session_key="dashboard:chat-1", agent="kirocrew")
+        assert [kw["acp_backend"] for kw in built] == [KAS]
 
     def _factory(self, monkeypatch, selected):
         from kiro_crew import members

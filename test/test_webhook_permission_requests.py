@@ -427,6 +427,24 @@ def test_every_webhook_deny_steers_its_cause_before_rejecting(
     assert client.rejected == [_REQUEST_ID]
 
 
+class _AcknowledgingClient(_SteeringClient):
+    """kiro-cli folds the steered notice and has the model acknowledge it inline."""
+
+    async def stream(self, _message: str):
+        yield self._permission_event
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Checking. [STEERING steer-83cc1f2a: The notice")
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text=" named the rule.]I could not push the branch.")
+        yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(duration_ms=0, credits=1.0))
+
+
+def test_the_notices_steer_acknowledgement_is_not_in_the_result(monkeypatch):
+    """The ack is protocol: the result the webhook delivers and records is the answer."""
+    client = _AcknowledgingClient()
+    *_, result_text = _drive(monkeypatch, None, client=client)
+    assert [kind for kind, _ in client.trace] == ["steer", "reject"], client.trace
+    assert result_text == "Checking. I could not push the branch."
+
+
 def test_an_unauditable_auto_approve_steers_the_audit_cause(monkeypatch):
     class _RaisingSel(_RecordingSel):
         def log_tool_invocation(self, **kwargs) -> None:

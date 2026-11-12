@@ -453,6 +453,7 @@ export function ArtifactDetailPageBody({
           <span className="min-w-0 flex-1">{i18nT(publishNoticeKey({
             rolling_out: 'pages.artifactDetailPage.publication_still_rolling_out',
             distribution_disabled: 'pages.artifactDetailPage.publication_distribution_disabled',
+            origin_mismatch: 'pages.artifactDetailPage.publication_origin_mismatch',
             notice_generic: 'pages.artifactDetailPage.publication_notice_generic',
           }, artifact.publication.notice_code))}</span>
           {/* A notice is recorded once, at publish time, and the ordinary happy path

@@ -58,6 +58,7 @@ from kiro_crew.constants import (
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.messaging.directive_tracker import DirectiveTracker
+from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.messaging.empty_turn_copy import (
     EMPTY_TURN_NOTICE,
     EMPTY_TURN_NOTICE_AFTER_WORK,
@@ -689,6 +690,10 @@ class TurnDriver:
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
+        # Bound here, not at module scope: ``kiro_crew.acp`` imports this package
+        # while it initialises (``acp.prompt_blocks`` reads ``messaging.raster``).
+        from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+
         accumulated = ""
         self.empty_turn_notice = ""
         # Set when the terminal is one of UNFINISHED_STOP_REASONS; the dispatcher
@@ -706,6 +711,7 @@ class TurnDriver:
         # UUID nor its internal summary is ever committed to a renderer. The
         # security redactor then keeps its existing rolling credential boundary.
         compaction_filter = _CompactionNoticeFilter()
+        quoted_marker_filter = QuotedDirectiveFilter()
         steering_filter = _SteeringMarkerFilter()
         stream_redactor = StreamRedactor(_redact)
         # Last character fed to the redactor this turn, and whether a tool call
@@ -950,7 +956,11 @@ class TurnDriver:
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
-        async for event in self.provider.stream(message, **gated):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model in this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: self.provider.stream(prompt, **gated), message
+        ):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)
@@ -958,7 +968,7 @@ class TurnDriver:
                     logger.debug("driver: event tap failed; the turn goes on", exc_info=True)
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
-                filtered = compaction_filter.feed(event.text or "")
+                filtered = quoted_marker_filter.feed(compaction_filter.feed(event.text or ""))
                 if filtered:
                     await dispatch_frames(steering_filter.feed(filtered))
             elif kind == EVENT_THINKING_CHUNK:
@@ -1006,6 +1016,11 @@ class TurnDriver:
                     tool_name=getattr(event, "tool_name", "") or "",
                     mcp_server=getattr(event, "mcp_server_name", "") or "",
                 )
+                # The call ends the line the quoted-marker filter holds, so that
+                # text stays ahead of the card like the rest of the text before it.
+                held_line = quoted_marker_filter.flush()
+                if held_line:
+                    await dispatch_frames(steering_filter.feed(held_line))
                 tool_gap = True
                 if segment_tail is not None and len(fed_raw) != tail_fed_at:
                     # Text came since the pending run without ending it (it
@@ -1367,7 +1382,8 @@ class TurnDriver:
                             "monitor turn completion callback failed",
                             exc_info=True,
                         )
-                pending = compaction_filter.flush()
+                pending = quoted_marker_filter.feed(compaction_filter.flush())
+                pending += quoted_marker_filter.flush()
                 if pending:
                     await dispatch_frames(steering_filter.feed(pending))
                 await dispatch_frames(steering_filter.flush())
@@ -1420,18 +1436,19 @@ class TurnDriver:
             )
         if not self.completion_observed:
             # The stream ended without a terminal. The text is not final yet: the
-            # compaction filter, the steering filter and the stream redactor each
-            # hold back a tail (the redactor withholds a whole trailing letter
-            # run, so a last chunk of "Done" is still in its buffer), and only the
-            # terminal branch above flushed them. Flush the same trio in the same
-            # order here, or the verdict below reads a buffer and tells the user
-            # the turn ended without a reply while the reply sits unflushed --
+            # compaction, quoted-marker and steering filters and the stream
+            # redactor each hold back a tail (the redactor withholds a whole
+            # trailing letter run, so a last chunk of "Done" is still in its
+            # buffer), and only the terminal branch above flushed them. Flush them
+            # in the same order here, or the verdict below reads a buffer and tells
+            # the user the turn ended without a reply while the reply sits unflushed --
             # and the dispatcher, which reads ``accumulated`` for the transcript,
             # files the same wrong story. The unmatched steer boundaries are
             # dispatched as the terminal branch dispatches them. No DONE is
             # dispatched: the dispatcher's ``finally`` (or its own synthetic DONE)
             # closes the renderer; the verdict is still owed to the transcript.
-            pending = compaction_filter.flush()
+            pending = quoted_marker_filter.feed(compaction_filter.flush())
+            pending += quoted_marker_filter.flush()
             if pending:
                 await dispatch_frames(steering_filter.feed(pending))
             await dispatch_frames(steering_filter.flush())

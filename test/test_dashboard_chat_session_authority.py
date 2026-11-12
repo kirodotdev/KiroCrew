@@ -526,7 +526,8 @@ class TestSessionReload:
 
     The endpoint's contract: refuse while a turn is in flight (409), otherwise
     tear down via reset(skip_if_busy=True), append the session_reload feed
-    notice, and eagerly re-arm the resume spawn.
+    notice, eagerly re-arm the resume spawn, and append one more row saying how
+    that respawn ended.
     """
 
     @staticmethod
@@ -551,6 +552,8 @@ class TestSessionReload:
         slot = state.get_or_create_slot("s1")
         state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
         state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        # Eager spawn off: nothing is scheduled.
         eager = MagicMock(return_value=None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
 
@@ -563,12 +566,155 @@ class TestSessionReload:
         state.sessions.reset.assert_awaited_once_with("dashboard:s1", skip_if_busy=True)
         # The feed carries the durable confirmation, tagged so the follow-up
         # options / continuable scans skip it (isSystemNoticeKind frontend twin).
-        notice = slot.messages[-1]
+        notice, outcome = slot.messages[-2:]
         assert notice["role"] == "assistant"
         assert notice["meta"]["kind"] == "session_reload"
         assert "Reloading session" in notice["content"]
+        # Nothing was scheduled, so the row after it says when the agent starts.
+        assert outcome["role"] == "assistant"
+        assert outcome["meta"]["kind"] == "session_reload"
+        assert outcome["content"] == "The reloaded agent starts with the next message."
         eager.assert_called_once()
         assert eager.call_args.kwargs.get("allow_resume") is True
+
+    # A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
+    _TOKEN = "AKIA" + "RELOADROW0123456"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("live", "running", "failure", "expected"),
+        [
+            (True, False, None, "The reloaded agent is ready."),
+            # A running turn with no row after the notice yet claimed what the
+            # respawn registered.
+            (True, True, None, "The reloaded agent is ready."),
+            (False, False, None, "The reloaded agent starts with the next message."),
+            (False, False, RuntimeError(f"spawn failed with {_TOKEN}"), "did not start"),
+            # A running turn is starting the agent itself and reports it.
+            (False, True, RuntimeError("spawn failed"), None),
+        ],
+        ids=["ready", "joined", "stood-down", "failed", "turn-starts-it"],
+    )
+    async def test_the_respawn_ending_closes_the_reload_with_one_row(
+        self, tmp_path, monkeypatch, live, running, failure, expected
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        # Scheduled, not ended: the notice is the newest row.
+        assert "Reloading session" in slot.messages[-1]["content"]
+        before = len(slot.messages)
+
+        state.sessions.has_session.return_value = live
+        if running:
+            turn = asyncio.get_running_loop().create_future()
+            slot.task = asyncio.ensure_future(turn)
+        try:
+            eager.call_args.kwargs["on_ended"](failure)
+        finally:
+            if running:
+                turn.set_result(None)
+                await await_until(slot.task, what="the stand-in turn")
+
+        if expected is None:
+            assert len(slot.messages) == before
+            return
+        assert len(slot.messages) == before + 1
+        row = slot.messages[-1]
+        assert row["role"] == "assistant"
+        assert row["meta"]["kind"] == "session_reload"
+        if failure is None:
+            assert row["content"] == expected
+        else:
+            assert row["content"].startswith("⚠️ The reloaded agent did not start.")
+            assert "spawn failed" in row["content"]
+            assert self._TOKEN not in row["content"]
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_slot_gets_no_outcome_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        before = len(slot.messages)
+        state._slots.pop("s1")
+
+        eager.call_args.kwargs["on_ended"](None)
+
+        assert len(slot.messages) == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("written", "failure", "expected"),
+        [
+            # A BACKGROUND respawn queued for its start permit: the person's
+            # send started the agent and was answered before it stood down.
+            ("answered", None, None),
+            ("answered", RuntimeError("spawn failed"), None),
+            ("error-card", None, None),
+            # A send still waiting on the respawn (it joined the load): the
+            # reload closes before that turn's reply.
+            ("sent", None, "The reloaded agent is ready."),
+            # A system notice is not a turn's answer: the reload still closes.
+            ("notice", None, "The reloaded agent is ready."),
+            # The chat was cleared: no notice is left to close.
+            ("cleared", None, None),
+        ],
+        ids=["answered", "answered-then-failed", "error-card", "sent", "notice-between", "cleared"],
+    )
+    async def test_the_closing_row_never_lands_after_a_later_message(
+        self, tmp_path, monkeypatch, written, failure, expected
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        assert "Reloading session" in slot.messages[-1]["content"]
+        if written in ("answered", "error-card", "sent"):
+            slot.append("user", "are you back?")
+        if written == "answered":
+            slot.append("assistant", "yes")
+        elif written == "error-card":
+            slot.append("error", "the agent did not answer", "msg msg-err")
+        elif written == "notice":
+            slot.append("assistant", "Model switched.", meta={"kind": "session_switch"})
+        elif written == "cleared":
+            slot.messages = []
+        before = len(slot.messages)
+        state.sessions.has_session.return_value = failure is None
+
+        eager.call_args.kwargs["on_ended"](failure)
+
+        if expected is None:
+            assert len(slot.messages) == before
+            return
+        assert len(slot.messages) == before + 1
+        assert slot.messages[-1]["content"] == expected
+        assert slot.messages[-1]["meta"]["kind"] == "session_reload"
 
     @pytest.mark.asyncio
     async def test_reload_refused_while_turn_in_flight(self, tmp_path, monkeypatch):

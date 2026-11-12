@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 from contextvars import ContextVar
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from . import shell_normalizer as _shell
 
@@ -111,12 +111,12 @@ class ShellCommand(NamedTuple):
 
     @property
     def words(self) -> "tuple[ShellWord, ...]":
-        """Words split at live blanks; a live redirection starts its own word, keeping
-        a standalone fd prefix (``2``, ``{fd}``) glued in front of it."""
+        """Words split at live blanks and at a ``\\``-newline (bash drops it) before the first
+        word; a live redirection starts its own word, keeping a standalone fd prefix glued."""
         words: list[tuple[ShellStep, ...]] = []
         word: list[ShellStep] = []
         for step in self.steps:
-            if step.active and step.char in _BLANKS:
+            if step.active and step.char in _BLANKS or step.text == "\\\n" and not (words or word):
                 if word:
                     words.append(tuple(word))
                 word = []
@@ -346,6 +346,21 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
     return out
 
 
+def pipelines(commands: "list[ShellCommand]") -> "list[list[ShellCommand]]":
+    """*commands*, one :func:`read_commands` result, grouped into pipelines: a command joins
+    the one before it when that one ended in ``|``, in ``|&`` (read as ``|`` then an empty
+    ``&``), or opened the ``( … )`` group the pipe feeds (``| (sh)``)."""
+    out: list[list[ShellCommand]] = []
+    feeds = False
+    for cmd in commands:
+        if feeds:
+            out[-1].append(cmd)
+        else:
+            out.append([cmd])
+        feeds = cmd.separator == "|" or feeds and cmd.separator in ("&", "(") and not cmd.argv
+    return out
+
+
 def redirect_free_views(command: str) -> "list[str]":
     """Each command with a live redirection before an argv word, without its redirections:
     ``sh -c 2>/dev/null '<script>'`` runs ``<script>``. Read once per frame, without quoted
@@ -366,7 +381,10 @@ def redirect_free_views(command: str) -> "list[str]":
 
 
 #: One gate call's payloads per frame text, shared by its walks; unset outside a call.
-_CALL_VIEWS: "ContextVar[dict[str, list[str]] | None]" = ContextVar("call_views", default=None)
+#: ``shell_normalizer._shell_payload_walk`` keeps its frames here too, under tuple keys.
+_CALL_VIEWS: "ContextVar[dict[str | tuple[str, str], list[Any]] | None]" = ContextVar(
+    "call_views", default=None
+)
 
 
 def sharing_views(fn):  # type: ignore[no-untyped-def]  # one view cache per call of fn

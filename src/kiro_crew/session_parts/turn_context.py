@@ -203,6 +203,19 @@ def consume_needs_reinjection(self: SessionManager, key: str) -> bool:
     return self._compaction.consume_needs_reinjection(key)
 
 
+def remember_agent_spawn_context(self: SessionManager, key: str, texts: list[str]) -> None:
+    """Keep the ``agentSpawn`` hook output a live session's first turn sent."""
+    session = self._sessions.get(self._fold_key(key))
+    if session is not None:
+        session.agent_spawn_context = tuple(texts)
+
+
+def agent_spawn_context(self: SessionManager, key: str) -> tuple[str, ...]:
+    """The ``agentSpawn`` hook output kept for a live session; empty if none."""
+    session = self._sessions.get(self._fold_key(key))
+    return session.agent_spawn_context if session is not None else ()
+
+
 def provider_switch_replay_pending(self: SessionManager, key: str) -> bool:
     """Return whether a live session still owes conversation replay.
 

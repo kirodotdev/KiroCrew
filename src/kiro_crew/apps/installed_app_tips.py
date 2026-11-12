@@ -10,11 +10,13 @@ index-tier registry has no prewarm, and ``refresh_registries`` expires the sourc
 cache on every refresh, so an app installed from such a registry was never shown,
 or automatically given, a newer release.
 
-:func:`refresh_installed_tips` runs after ``refresh_registries`` fetched an
-index-tier registry's index. For each row of that FRESH index that carries no
-publishable version and names an app installed from that row (the same registry
-and clone URL the install recorded), it reads ``app.json`` from the branch tip
-with one shallow clone and writes it as the row's source manifest cache. The clone
+:func:`refresh_installed_tips` runs after an index-tier registry's index was
+fetched: by ``refresh_registries``, and by the listing's own index fetch
+(``_load_external_registries``) whenever its cached index lapsed. For each row of
+that FRESH index that carries no publishable version, names an app installed from
+that row (the same registry and clone URL the install recorded) and has no fresh
+source manifest cache, it reads ``app.json`` from the branch tip with one shallow
+clone and writes it as the row's source manifest cache. The clone
 is ``_fetch_app_manifest``'s own throwaway clone, made as the listing makes it for
 that row: anonymous git environment and strict sandbox, behind the trusted-host
 check, except for a row in the configured registry repository itself, which takes
@@ -39,20 +41,23 @@ from kiro_crew.apps.registry_pipeline import sources as _sources
 
 logger = logging.getLogger(_FACADE)
 
-#: Most rows one refresh reads a tip for, per registry. Only installed apps whose
+#: Most rows one batch reads a tip for, per registry. Only installed apps whose
 #: row has no version qualify, so a real registry stays far below it; the cap keeps
-#: an index that lists one app many times from turning a refresh into a crawl.
-#: Rows past it, in index order, are not read on any refresh: their apps show no
-#: newer release, and an update the user runs still installs the branch tip.
+#: an index that lists one app many times from turning a refresh or a listing into
+#: a crawl. Rows past it, in index order, are not read by that batch. A later
+#: listing batch reaches them only while the rows before them still hold fresh
+#: caches, and a refresh, which expires every cache first, never does. Until one is
+#: read its app shows no newer release, and an update the user runs still installs
+#: the branch tip.
 MAX_ROWS = 20
 
-#: Tip clones one refresh runs at once.
+#: Tip clones one batch runs at once.
 CONCURRENCY = 4
 
 #: Seconds one registry's batch may take. A clone still running at the deadline is
 #: cancelled, which kills its process tree and removes its temporary directory. Its
-#: row is left with the cache the refresh expired, so its app shows no newer release
-#: until a later refresh reads the tip in time.
+#: row keeps the cache that lapsed or that the refresh expired, so its app shows no
+#: newer release until a later batch reads the tip in time.
 BATCH_BUDGET_SECS = 30.0
 
 
@@ -62,9 +67,16 @@ def _rows_to_read(
     """The rows of *entries* whose tip :func:`refresh_installed_tips` reads.
 
     A row qualifies when it is this registry's (``_registry`` is its public
-    name), it carries no publishable version, and an installed app recorded this
-    row as its source: same name, ``registry:`` source, same ``sourceRegistry``
-    and the same repository as the row's clone URL.
+    name), it carries no publishable version, an installed app recorded this
+    row as its source (same name, ``registry:`` source, same ``sourceRegistry``
+    or another build-pinned one, and the same repository as the row's clone
+    URL), and its source manifest cache is not fresh. A fresh one already
+    answers the listing and ``update_status`` with a tip read within the
+    cache's life, so the
+    listing's hourly index fetch clones each tip at most once per manifest TTL.
+    ``refresh_registries`` expires that cache first, so an explicit refresh
+    reads every row that otherwise qualifies. Reads the cache files, so it
+    runs off the loop.
     """
     from kiro_crew.apps.registry import is_registry_source
     from kiro_crew.apps.update_status import publishable_version
@@ -93,10 +105,15 @@ def _rows_to_read(
         if not any(
             _git_targets._same_git_target(git_url, url)
             and (
-                registry == registry_name or _git_targets._same_git_target(registry, registry_name)
+                registry == registry_name
+                or _git_targets._same_git_target(registry, registry_name)
+                or _sources._is_pinned_registry_move(registry, registry_name)
             )
             for url, registry in sources.get(name, [])
         ):
+            continue
+        # The same test ``_resolve_manifest`` applies before it reads anything else.
+        if _caches._read_manifest_cache(entry):
             continue
         if len(rows) >= MAX_ROWS:
             logger.warning(
@@ -152,12 +169,14 @@ async def _read_tip(entry: dict[str, Any], gate: asyncio.Semaphore, written: lis
 async def refresh_installed_tips(reg: Any, entries: list[dict[str, Any]]) -> int:
     """Cache the branch-tip ``app.json`` of the apps installed from *reg*'s rows.
 
-    *entries* MUST be the index a fetch of *reg* just returned, after
-    ``refresh_registries`` expired its manifest caches: written before that
-    expiry, the manifests would be expired with the rest. Any registry tier but
-    the index tier returns 0 at once, because the owner-tier prewarm already
-    reads the tip of an installed app's row, with the owner's credentials. Never
-    raises: a refresh must still answer when a tip cannot be read.
+    *entries* MUST be the index a fetch of *reg* just returned, never a cached
+    one. ``refresh_registries`` calls this after it expired the rows' manifest
+    caches: written before that expiry, the manifests would be expired with the
+    rest. The listing's index fetch calls it before the rows resolve. Any
+    registry tier but the index tier returns 0 at once, because the owner-tier
+    prewarm already reads the tip of an installed app's row, with the owner's
+    credentials. Never raises: a refresh or a listing must still answer when a
+    tip cannot be read.
 
     Returns the number of manifests written.
     """
@@ -177,7 +196,7 @@ async def refresh_installed_tips(reg: Any, entries: list[dict[str, Any]]) -> int
     except Exception:  # noqa: BLE001 - see above
         logger.warning("installed app tips: could not list installed apps", exc_info=True)
         return 0
-    rows = _rows_to_read(reg, entries, installed)
+    rows = await asyncio.to_thread(_rows_to_read, reg, entries, installed)
     if not rows:
         return 0
     gate = asyncio.Semaphore(CONCURRENCY)

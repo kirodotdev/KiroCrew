@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import stat
-from collections.abc import Collection, Iterable, Sized
+from collections.abc import Collection, Iterable, Mapping, Sized
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,50 @@ def mcp_entry_is_registry_governed(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
     return entry.get("type") == MCP_REGISTRY_TYPE
+
+
+#: ``type`` values that name a remote transport, as the agent spec schema and the
+#: session projections spell them.
+MCP_REMOTE_TRANSPORT_TYPES = frozenset({"http", "sse"})
+
+
+def mcp_transport_is_remote(*, url: Any, command: Any, declared_type: Any) -> bool:
+    """Whether a server with these transport fields is reached at its ``url``.
+
+    The field-level form of :func:`mcp_entry_is_remote`, for a caller that holds
+    the fields rather than the entry (``McpServerInfo``).
+
+    A ``url`` is required: without one there is nothing remote to reach. Given one,
+    the server is remote when its ``type`` is ``http`` or ``sse``, whatever
+    ``command`` holds, or when ``command`` is absent or blank. A command is not
+    evidence of a process on its own because the agent spec schema requires the
+    key on every server and defaults it to ``""``, so a schema-valid remote entry
+    carries one: a placeholder such as ``"http"``, or the empty default. A ``type``
+    that is not a string reads as no type, so a hand-edited list or object never
+    raises here.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if isinstance(declared_type, str) and declared_type in MCP_REMOTE_TRANSPORT_TYPES:
+        return True
+    return not (isinstance(command, str) and command.strip())
+
+
+def mcp_entry_is_remote(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry is a remote server rather than a local process.
+
+    Every site that decides whether an entry has a process behind it -- the
+    sharing rows, the gateway rewriter, the probe -- asks this, so they agree with
+    each other. For every entry this reads as remote, the session projections
+    already connect to the ``url`` instead of running the ``command``. Reading the
+    mere presence of ``command`` as "stdio" would offer a remote server for
+    sharing, and sharing it fails because no launch resolves for the placeholder.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return mcp_transport_is_remote(
+        url=entry.get("url"), command=entry.get("command"), declared_type=entry.get("type")
+    )
 
 
 def mcp_entry_is_muted(entry: Any) -> bool:
@@ -171,6 +215,25 @@ def mcp_scope_muted_aliases() -> frozenset[str]:
         for key, entry in servers.items()
         if isinstance(key, str) and mcp_entry_is_muted(entry)
     )
+
+
+# The reader of an agent spec's mcp.json opt-in that the gateway rewriter and the
+# KAS projection share, here because both import this module: the rewriter may
+# not import ``kiro_crew.acp`` (``scripts/check_agent_sdk_boundary.py``), and
+# ``kiro_crew.acp.kas_settings_mcp`` re-exports it. Two readers of one flag would
+# hand the same agent different servers on the two sides.
+def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
+    """The spec's mcp.json opt-in under either spelling, ``None`` when unstated.
+
+    ``includeMcpJson`` wins when both are set; kiro-cli refuses such a spec as a
+    duplicate field, so either answer is a guess and the canonical one is kept.
+    A non-bool is unstated: the wire's ``z.boolean()`` would drop the whole agent.
+    """
+    for key in ("includeMcpJson", "useLegacyMcpJson"):
+        value = spec.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 logger = logging.getLogger(__name__)

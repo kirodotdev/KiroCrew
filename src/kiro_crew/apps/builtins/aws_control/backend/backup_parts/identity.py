@@ -59,8 +59,10 @@ INSTALL_KEY = "install"
 
 #: An install id: ``uuid4().hex``. Fixed length and charset, which is what lets
 #: :func:`classify_key` decide whether a key segment IS an install id rather than
-#: an ordinary folder name someone created in the console.
-_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+#: an ordinary folder name someone created in the console. It ends at ``\Z``, not
+#: ``$``: ``$`` also matches before a trailing newline, and a folder named
+#: "<32 hex>\n" would then read as an install id.
+_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}\Z")
 
 
 #: The label sidecar each install writes at its OWN archive prefix

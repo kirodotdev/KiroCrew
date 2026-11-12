@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import keepalive_route as _keepalive_route
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -230,11 +231,19 @@ class SessionRegistryState:
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
     #: Per key, the event a speculative (eager) allocation sets when it returns,
-    #: registered or not, and that allocation's start priority. A real claim of
-    #: no higher priority that finds no live session but finds this waits for it
-    #: and claims what it registered, instead of cold-starting a second process
-    #: for the same key. Removed by the call that added it.
-    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
+    #: registered or not, its start priority, whether it is a resume prefetch
+    #: (``speculative_resume``) and its reservation token. A real claim that
+    #: finds no live session but finds this waits for it and claims what it
+    #: registered, instead of cold-starting a second process for the key: when
+    #: of no higher priority, or when the start is a resume prefetch past its
+    #: spawn door (token in ``spawning_reservations``). Removed by its caller.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
+        default_factory=dict
+    )
+    #: Tokens of BACKGROUND resume prefetches a person's claim found short of
+    #: their spawn door and started itself: each stands down at that door
+    #: (``SpeculativeResumeRefused``). Removed with the announcement.
+    superseded_speculative_starts: set[object] = field(default_factory=set)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -246,6 +255,20 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+
+
+class _CallbackToken:
+    """One counted callback claim, remembering the task that reserved it.
+
+    The owner is what lets a confirmed restart tell a claim held by a running
+    turn (``close_all`` cuts it, which releases the claim) from one that is
+    still admitting a message (the part a restart must wait for).
+    """
+
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+        self.owner = owner
 
 
 class InboundCallbackReservation:
@@ -507,10 +530,16 @@ class SessionAllocationService:
         return self._deps.canonical_key(key)
 
     def advance_ownership_generation(self, key: str) -> int:
-        """Advance and return *key*'s monotonic ownership generation."""
+        """Advance and return *key*'s monotonic ownership generation.
+
+        Every publication and removal of *key* passes here, so this is also where
+        the registry ``/api/session-keepalive`` reads marks a provider it just
+        published (``kiro_crew.keepalive_route``).
+        """
         bucket = self._generation_key(key)
         generation = self._ownership_generations.get(bucket, 0) + 1
         self._ownership_generations[bucket] = generation
+        _keepalive_route.mark_published(self._owner, self._sessions.get(key))
         return generation
 
     def session_generation(self, key: str) -> int:
@@ -1055,7 +1084,11 @@ class SessionAllocationService:
         """Claim one pre-turn callback atomically against update/shutdown admission."""
         if self._closing:
             return None
-        token = object()
+        try:
+            owner = asyncio.current_task()
+        except RuntimeError:
+            owner = None
+        token = _CallbackToken(owner)
         self._inbound_callback_reservations.add(token)
         return InboundCallbackReservation(self._inbound_callback_reservations, token)
 
@@ -1226,6 +1259,11 @@ class SessionAllocationService:
                 # than a task that has let the permit go
                 # (``compaction_waits_for_turn``, ``cancel_owned_turn``).
                 session.turn_owner = None
+                # The turn's leftover-memory notice is spent with it, so the next
+                # turn gets its own (``session_cleanup_leftovers.report_busy_sessions``).
+                cleanup_state = getattr(self._owner, "_cleanup_state_boundary", None)
+                if cleanup_state is not None:
+                    cleanup_state().leftover_noticed.pop(key, None)
                 # A release marks the end of a live turn, not the start of
                 # idleness: refresh liveness so the idle sweep measures from
                 # when the session went quiet rather than when it was

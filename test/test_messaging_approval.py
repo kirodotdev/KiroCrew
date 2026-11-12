@@ -680,6 +680,26 @@ class TestReservationRace:
         assert pending.resolve("s1", True, request_id=1) is False
 
     @pytest.mark.asyncio
+    async def test_an_answered_unadopted_reservation_is_discarded_with_the_turn(self) -> None:
+        """Approve landed after the turn failed, before any decider read it.
+
+        The next turn's request reuses the address (ACP ids restart at 1), and a
+        muted turn never reserves first, so adopting that answer would approve a
+        tool whose prompt nobody saw.
+        """
+        pending = PendingApprovals("webex")
+        nonce = pending.reserve("s1", 1)
+        assert pending.resolve("s1", True, request_id=1, expected_nonce=nonce) is True
+
+        pending.discard_reservations("s1")
+
+        # The later request opens a fresh window instead of adopting the old Approve.
+        task = asyncio.create_task(pending.decide_with_cause("s1", _event(1)))
+        await _until(lambda: pending.has_pending("s1"))
+        assert pending.resolve("s1", False, request_id=1) is True
+        assert await task == (False, "")
+
+    @pytest.mark.asyncio
     async def test_discarding_leaves_another_sessions_reservation_alone(self) -> None:
         pending = PendingApprovals("webex")
         pending.reserve("s1", 1)

@@ -152,10 +152,15 @@ def test_the_known_appliers_are_found() -> None:
     assert {
         ("cli_server_update.py", "_update"),
         ("cli_server_update.py", "_update_wheel"),
-        ("dashboard/handlers/updates_apply.py", "api_update_apply"),
-        ("slack/gateway_runtime/update_apply.py", "_auto_apply_update"),
-        ("slack/gateway_runtime/update_schedule.py", "_check_for_updates_via_provider"),
     } <= found
+    # The dashboard's Update only arms and the gateway's unattended paths only notify
+    # or stage beside the install (the copy is `wheel_apply`'s), so no site is
+    # expected in these files; they stay listed so a rewrite added back is guarded.
+    assert not [
+        site
+        for site in found
+        if site[0].endswith(("update_schedule.py", "update_apply.py", "updates_apply.py"))
+    ]
 
 
 @pytest.mark.parametrize(

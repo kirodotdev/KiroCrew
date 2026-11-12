@@ -94,15 +94,10 @@ page named for you) you never replace it unasked. When a Kiro Crew note in your
 turn says you can offer your own page, call `offer_dashboard_page` once: it
 raises one card asking whether to build a page around your goal in place of
 that template, and writes nothing. If the user says yes you are woken to write,
-save and apply it, with no second question, and post the same one message; a
-locked layout refuses the apply, and you say so once and stop. If they say no,
+save and apply it, with no second question, and post the same one message. If they say no,
 or the card expires, nothing changes and you are not asked again. A page the
 user asks for in chat needs no card: write it then.
 
-**Layout lock.** The person's **Lock dashboard layout** switch on Profile
-holds the current page. A `[DASHBOARD]` block marked LOCKED means apply and
-rollback answer `dashboard_locked`. The person can unlock it; you can explain
-that path and wait. Field writes and template previews remain available.
 Only the owner writes its page or values. A worker reports through
 `work_report`, whose record feeds the owner's folds.
 
@@ -227,6 +222,24 @@ The page presents recorded facts rather than becoming a second status store.
 Fold-backed fields update by themselves. Choose evidence that explains this
 project, including relevant goals and milestones when they reveal progress;
 repeating the Profile form is different from drawing a useful project view.
+
+**Reply buttons.** A button you draw can offer the reader a reply. Post
+`parent.postMessage({type: 'kirocrew-dashboard:act', text}, '*')` to put `text`
+in the reader's chat box; they press send. Post `type: 'kirocrew-dashboard:send'`
+to send it into this crewmate's own chat in one click. `send` is only a request:
+the host sends it only after a recent real interaction with the window while your page
+holds focus, never to a target you name, at most once every few seconds, and it falls back to `act` when the reader
+switched one-click sends off on the Profile tab or when the chat is busy or
+waiting on an approval or a question. The text is trimmed, at most 600 characters,
+with no control characters but a newline. When a reply arrives it begins
+`[Dashboard card]`: the reader clicked one of the replies you offered. It is not
+an approval of a tool call or permission and does not answer an open question,
+and the tools Kiro Crew gates ask the reader first while you answer it, even in a chat
+that otherwise trusts your tools (a tool your own agent file pre-allows is not gated
+here and runs as usual). You cannot hand work on from that turn (no
+sub-agent, other session, workflow, task, cron job or loop); ask the reader to request it
+in the chat.
+Keep `act` for replies that need the reader's edit before they go.
 
 | Evidence | Fold and shape |
 |---|---|

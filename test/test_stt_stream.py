@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
-from aiohttp import WSMsgType
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 from stt_stream_helpers import transcribe_consented_fixture  # noqa: F401
 from stt_stream_helpers import (
@@ -30,6 +30,7 @@ from stt_stream_helpers import (
 
 from kiro_crew import stt
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.testing.wait import await_until, default_timeout
 
 
@@ -315,6 +316,32 @@ class TestAppleStreamingSession:
             assert ready["max_duration_ms"] == 7000
             await ws.send_json({"type": "stop"})
             await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_the_session_socket_tolerates_a_loop_stall(self, monkeypatch):
+        """A loop stall must not end dictation whose client answered the PING in time.
+
+        The stall itself is driven in ``test_ws_heartbeat_loop_lag.py``; this pins
+        that the socket a session streams over is the lag-tolerant one.
+        """
+        self._install(monkeypatch)
+        prepared: list[type] = []
+        real_prepare = web.WebSocketResponse.prepare
+
+        async def _recording_prepare(ws, request):
+            prepared.append(type(ws))
+            return await real_prepare(ws, request)
+
+        monkeypatch.setattr(web.WebSocketResponse, "prepare", _recording_prepare)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+
+        # aiohttp prepares the returned response again; both calls are this socket.
+        assert prepared, "the session socket was never prepared"
+        assert all(issubclass(t, LagTolerantWebSocketResponse) for t in prepared), prepared
 
     @pytest.mark.asyncio
     async def test_the_cap_finishes_the_helper_before_its_error_frame(self, monkeypatch):

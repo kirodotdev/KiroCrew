@@ -324,6 +324,17 @@ describe('every filter dimension answers the three consumers together', () => {
     expect(keys(buildSidebarRows(inputs([titled, linked], { filters: { search: { text: '#70' } } })).filteredSlots)).toEqual(['l'])
   })
 
+  it('says whether a filter other than the search box narrows the list', () => {
+    const rows = [local('a', { tags: ['t1'] }), local('b')]
+    expect(buildSidebarRows(inputs(rows, { filters: { search: { text: 'Title' } } })).filtersNarrowing).toBe(false)
+    expect(buildSidebarRows(inputs(rows, {
+      filters: { search: { text: 'Title' }, tags: { resolved: new Set(['t1']), raw: new Set(['t1']) } },
+    })).filtersNarrowing).toBe(true)
+    expect(buildSidebarRows(inputs(rows, { filters: { status: { hidden: new Set(['running']) } } })).filtersNarrowing).toBe(true)
+    // A paused chip set narrows nothing, so there is nothing to clear.
+    expect(buildSidebarRows(inputs(rows, { filters: { status: { active: new Set(['unread']), paused: true } } })).filtersNarrowing).toBe(false)
+  })
+
   it('keeps every row filed in a folder whose NAME the query matched', () => {
     const rows = buildSidebarRows(inputs([local('in', { title: 'q' }), local('out', { title: 'q' })], {
       local: { folderOf: { in: 'F1' } }, filters: { search: { text: 'alpha', folderMatches: new Set(['F1']) } },
@@ -407,6 +418,18 @@ describe('the lane order', () => {
     }))
     expect(keys(rows.filteredSlots).slice(0, 2)).toEqual(['c', 'b'])
     expect(rows.laneOrder(p, c)).toBeGreaterThan(0)
+  })
+
+  it('orders the rows the server did not rank by the browsing order, after the ranked ones', () => {
+    // `a` (pinned) and `p` are unranked: they must not tie at NaN, which leaves their
+    // order to the sort algorithm. They take the pinned section, then the date sort.
+    const titledPeer = peer('c', { title: 'Title on a crew', last_turn_ts: iso(30 * MINUTE) })
+    const rows = buildSidebarRows(inputs([titledPeer, b, a, c], {
+      local: { pinned: new Set(['a']), searchRanks: new Map([['c', 0]]) },
+      filters: { search: { text: 'Title' } },
+    }))
+    expect(keys(rows.filteredSlots)).toEqual(['c', 'a', 'b', 'inst-a:c'])
+    expect(rows.laneOrder(b, titledPeer)).toBeLessThan(0)
   })
 
   it('follows the sort key outside the pinned section', () => {

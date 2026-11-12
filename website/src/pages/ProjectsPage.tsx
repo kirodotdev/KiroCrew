@@ -23,6 +23,7 @@ import { i18nT } from '../i18n/t'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import StatusNotice from '../components/StatusNotice'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 type Mode = 'compose' | 'spec' | 'yaml'
 
@@ -140,6 +141,7 @@ export default function ProjectsPage() {
   // drop its rejection or its `{ ok: false }` body on the floor, so a refused
   // action was indistinguishable from a slow one.
   const [actionError, setActionError] = useState('')
+  const [statusNotice, setStatusNotice] = useState<{ message: string; tone: 'warn' | 'info'; runId: string | null } | null>(null)
   const mountedRef = useRef(true)
   const loadingRef = useRef(false)
   const appliedRef = useRef<string | null>(null)
@@ -234,6 +236,7 @@ export default function ProjectsPage() {
       setBusyRuns(new Set(busyRunsRef.current))
     }
     setActionError('')
+    setStatusNotice(null)
     try {
       const r = await request()
       if (r && r.ok === false) { setActionError(r.error || i18nT('pages.projectsPage.action_failed')); return }
@@ -400,7 +403,8 @@ export default function ProjectsPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml')); e.target.value = ''; return }
+    setStatusNotice(null)
+    if (/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml'), tone: 'warn', runId: null }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setSpecText(reader.result as string)
     reader.readAsText(file)
@@ -410,7 +414,8 @@ export default function ProjectsPage() {
   const handleYamlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr')); e.target.value = ''; return }
+    setStatusNotice(null)
+    if (!/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr'), tone: 'warn', runId: null }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setYamlText(reader.result as string)
     reader.readAsText(file)
@@ -502,7 +507,10 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} disabled={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none disabled:opacity-50 disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            {/* `aria-disabled` while the request runs, not `disabled`: the press
+                that started it holds focus here, and a native disabled button
+                would drop it to <body>. `runAction` ignores a second press. */}
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} aria-disabled={busyRuns.has(r.task_id)} aria-busy={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none aria-disabled:opacity-50 aria-disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
@@ -673,6 +681,7 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        <StatusNotice message={statusNotice?.runId === (selectedRun?.task_id ?? null) ? statusNotice?.message : undefined} tone={statusNotice?.tone} onDismiss={() => setStatusNotice(null)} className="mx-4 mt-2 shrink-0" testId="projects-status-notice" />
         {/* Project rename announcement — always mounted so it is present before any run is selected. */}
         <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
@@ -788,10 +797,15 @@ export default function ProjectsPage() {
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
-                  if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
+                  const runId = selectedRun.task_id
+                  if (!spec) { setStatusNotice({ message: i18nT('pages.projectsPage.no_spec_idea_to_schedule'), tone: 'warn', runId }); return }
                   void runAction(
                     () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
-                    () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
+                    () => {
+                      if (mountedRef.current && selectedRunIdRef.current === runId) {
+                        setStatusNotice({ message: i18nT('pages.projectsPage.scheduled_as_daily_cron_job'), tone: 'info', runId })
+                      }
+                    },
                   )
                 }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}

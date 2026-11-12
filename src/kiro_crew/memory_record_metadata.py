@@ -469,6 +469,7 @@ def sync_record(
     operation: str = "update",
     force_revision: bool = False,
     limit_v1_history: bool = False,
+    new_value: bool = False,
 ) -> dict:
     """Record an accepted mutation atomically with the caller's physical write.
 
@@ -477,7 +478,9 @@ def sync_record(
     An identical retry does not advance revision unless the caller explicitly
     resolves proposals with ``force_revision=True``. Each retained revision has
     prior provenance even when the current source changes. V1 callers bound
-    accepted history; V2 callers retain every revision.
+    accepted history; V2 callers retain every revision. ``new_value`` is set
+    only by a fact write that asserts a different value; it alone drops an
+    inherited validity window that has already closed.
     """
     record_id = record_id_for(kind, record_id)
     now = _timestamp(now or datetime.now(timezone.utc).isoformat(), "now")
@@ -492,6 +495,10 @@ def sync_record(
     current["source_ref"] = old.get("source_ref") or str(
         (after or before or {}).get("source") or source
     )
+    if new_value and old.get("valid_until") and old["valid_until"] <= now:
+        # A window that closed before this write cannot bound the new value it
+        # writes; inheriting it would hide that value from every recall.
+        current["valid_from"] = current["valid_until"] = ""
     current.update(patch)
     if after is None or after.get("is_deleted"):
         current["status"] = patch.get(

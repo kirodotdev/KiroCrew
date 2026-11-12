@@ -371,6 +371,51 @@ class TestUsernsReattach:
         unit.write_text("[Service]\nAppArmorProfile=kirocrew-userns\n", encoding="utf-8")
         assert apparmor.service_profile_attachment(str(launcher), unit, profile) is None
 
+    @pytest.mark.skipif(not wheel_engine.IS_POSIX, reason="the managed venv is POSIX-only")
+    def test_a_profile_attached_to_every_tree_survives_the_promotion(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``crew-venv-*/bin/kirocrew``, the attachment ``service install`` renders
+        for a managed install, covers the tree an update promotes: the unattended
+        apply does not wait for the operator, and after the real promotion flips
+        the stable link the doctor predicate still reports the profile applying."""
+        from kiro_crew.service import apparmor
+        from kiro_crew.service import linux as service_linux
+
+        layout = wheel_engine.ManagedVenvLayout(
+            legacy=tmp_path / "crew-venv", stable_link=tmp_path / "crew-venv-current"
+        )
+        for version in ("1.0.0", "9.9.9"):
+            bin_dir = layout.versioned_tree(version) / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "kirocrew").write_text("", encoding="utf-8")
+        layout.stable_link.symlink_to(layout.versioned_tree("1.0.0"))
+        launcher = layout.stable_link / "bin" / "kirocrew"
+        profile = tmp_path / apparmor.PROFILE_NAME
+        profile.write_text(
+            apparmor.render_profile(None, f"{tmp_path.resolve()}/crew-venv-*/bin/kirocrew"),
+            encoding="utf-8",
+        )
+        unit = tmp_path / "kirocrew.service"
+        unit.write_text(f"[Service]\nExecStart={launcher} gateway\n", encoding="utf-8")
+        monkeypatch.setattr(wheel_engine, "managed_venv_layout", lambda: layout)
+        monkeypatch.setattr(wheel_apply.sys, "platform", "linux")
+        monkeypatch.setattr(apparmor, "apparmor_is_active", lambda: True)
+        monkeypatch.setattr(apparmor, "userns_restricted", lambda: True)
+        monkeypatch.setattr(apparmor, "PROFILE_PATH", profile)
+        monkeypatch.setattr(service_linux, "UNIT_PATH", unit)
+        monkeypatch.setattr(service_linux, "kirocrew_bin", lambda: str(launcher))
+
+        assert apparmor.service_profile_attachment(str(launcher), unit) is not None
+        assert wheel_apply.userns_reattach_needed("9.9.9") is False
+
+        wheel_engine.promote(layout.versioned_tree("9.9.9"), layout.stable_link)
+
+        assert os.path.realpath(launcher) == os.path.realpath(
+            layout.versioned_tree("9.9.9") / "bin" / "kirocrew"
+        )
+        assert apparmor.service_profile_attachment(str(launcher), unit) is not None
+
 
 @pytest.mark.skipif(not wheel_engine.IS_POSIX, reason="the managed venv is POSIX-only")
 class TestRestartReaches:

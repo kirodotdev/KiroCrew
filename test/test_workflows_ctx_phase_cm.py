@@ -171,11 +171,9 @@ HELLO_WORLD_SCRIPT = (
 @pytest.mark.asyncio
 async def test_hello_world_e2e_through_runner() -> None:
     """Full e2e: validate + exec a hello-world workflow with ctx.phase CM."""
-    # Validate first
     vr = validate(HELLO_WORLD_SCRIPT)
     assert vr.ok, f"validation failed: {vr.errors}"
 
-    # Run through the runner
     res = await _runner().run(HELLO_WORLD_SCRIPT, run_id="hello_e2e", now=NOW)
     assert res.ok, f"run failed: {res.error}"
     assert res.result == {"greeting": "echo:say hello"}

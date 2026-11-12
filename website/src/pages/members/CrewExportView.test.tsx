@@ -37,6 +37,7 @@ const view = (over: Partial<CrewmateExportPreview> = {}): CrewmateExportPreview 
   filename: 'Scout.kirobot',
   description: 'Watches release branches.',
   model: 'claude-sonnet',
+  reasoning_effort: 'high',
   dashboard: '',
   avatar: 'ghost',
   avatar_digest: 'avatar-shown',
@@ -100,6 +101,14 @@ describe('CrewExportView', () => {
     expect(screen.getByTestId('crew-export-not-included').textContent).toBe(
       'Not included: memory, history, credentials and approval settings.',
     )
+  })
+
+  it('shows the reasoning effort by its catalog label, not the raw token', async () => {
+    servePlan(view())
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    const row = await screen.findByTestId('crew-export-reasoning-effort')
+    expect(row.textContent).toContain(i18nT('lib.effort.high'))
+    expect(row.textContent).not.toContain('high')
   })
 
   it('sends the toggles and only the lessons text left in the editor', async () => {
@@ -216,6 +225,21 @@ describe('CrewExportView', () => {
   it.each(['image', 'ghost'] as const)('stops the press when the %s avatar content changed', async avatar => {
     const base = view({ avatar })
     const edited = { ...base, avatar_digest: 'avatar-edited', fingerprint: 'fp-edited' }
+    memberExportPreview.mockImplementation(async (_s: string, _m: string, c?: CrewmateExportChoices) => (c ? edited : base))
+    memberExportFile.mockResolvedValue(new Blob(['PK']))
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    await screen.findByTestId('crew-export-view')
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    expect(await screen.findByTestId('crew-export-plan-changed')).toBeInTheDocument()
+    expect(memberExportFile).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    await waitFor(() => expect(memberExportFile).toHaveBeenCalledTimes(1))
+    expect(memberExportFile.mock.calls[0][2].confirm).toBe('fp-edited')
+  })
+
+  it('stops the press when the reasoning effort changed', async () => {
+    const base = view({ reasoning_effort: 'high' })
+    const edited = { ...base, reasoning_effort: 'low', fingerprint: 'fp-edited' }
     memberExportPreview.mockImplementation(async (_s: string, _m: string, c?: CrewmateExportChoices) => (c ? edited : base))
     memberExportFile.mockResolvedValue(new Blob(['PK']))
     renderWithProviders(<CrewExportView slug="scout" member="scout" />)

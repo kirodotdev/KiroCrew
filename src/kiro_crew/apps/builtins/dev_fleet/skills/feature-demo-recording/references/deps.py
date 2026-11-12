@@ -82,7 +82,7 @@ def _candidate_pw_pythons() -> list[pathlib.Path]:
     env = os.environ.get("KC_VIDEO_PW_PYTHON")
     if env:
         out.append(pathlib.Path(env))
-    on_path = shutil.which("python3")
+    on_path = which_any("python3", [])
     if on_path and pathlib.Path(on_path).resolve() != pathlib.Path(sys.executable).resolve():
         out.append(pathlib.Path(on_path))
     for pattern in (

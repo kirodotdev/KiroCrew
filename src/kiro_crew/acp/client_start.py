@@ -534,7 +534,8 @@ async def _spawn(self: AcpClient) -> None:
             if adopt_outcome != "recorded":
                 logger.warning(
                     "agent-scratch: could not join the owner marker of %r (%s); the tree's "
-                    "work directory is left unowned and will not be swept",
+                    "work directory is left unowned and is moved into the quarantine only "
+                    "after a week with no write",
                     self._shared_scratch.name,
                     adopt_outcome,
                 )
@@ -566,10 +567,15 @@ async def _spawn(self: AcpClient) -> None:
         await _loop.run_in_executor(
             subprocess_executor(), _track_session_pid, self._pid, self._spawn_start_token
         )
-        await asyncio.sleep(0.3)
-        early_descendants = await _loop.run_in_executor(
-            subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
-        )
+        # The child was created a moment ago: it gets a moment to fork before
+        # its tree is read, where a walk can then see what it forked.
+        early_descendants: list[int] = []
+        if await runtime_process_tree.wait_for_descendants(
+            runtime_process_tree.EARLY_WALK_SETTLE_DELAY
+        ):
+            early_descendants = await _loop.run_in_executor(
+                subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
+            )
         if early_descendants:
             self._child_pids = await _loop.run_in_executor(
                 subprocess_executor(),

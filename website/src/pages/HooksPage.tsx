@@ -1,7 +1,7 @@
-import { compareText } from '../i18n/format'
+import { compareText, fmtList, fmtNumber } from '../i18n/format'
 import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
+import { AlertTriangle, Anchor, ChevronDown, Link2, Loader2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
 import SkillsMultiSelect from '../components/HookSkillsSelect'
@@ -10,7 +10,6 @@ import ErrorNotice from '../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import InfoTip from '../components/InfoTip'
 import SimpleSelect from '../components/SimpleSelect'
-import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -144,6 +143,17 @@ const unsentReason = (code: string): string => {
 const rowCell = (enabled: boolean, extra = ''): string =>
   `${BASE_CELL}${extra ? ' ' + extra : ''}${enabled ? '' : ' opacity-50'}`
 
+/** The gloss for an event whose wire name reads as its own opposite, PARENTHESISED.
+ *
+ *  Bare, the two words read as a second label rather than an explanation -- `board
+ *  column` beside `SessionLaneChanged` could be part of the name. The brackets are
+ *  what make it an aside, and they are the same shape on all three surfaces (the
+ *  open list, the native label, the saved row) so the reader learns it once. */
+const eventGloss = (event: string): string | undefined =>
+  event === 'SessionLaneChanged'
+    ? `(${i18nT('pages.hooksPage.matcher_lane_pill_gloss')})`
+    : undefined
+
 const normalizeEvent = (e: string) => e.charAt(0).toUpperCase() + e.slice(1)
 
 function timeAgo(ts: number): string {
@@ -193,8 +203,23 @@ function HookForm({ hook, onSave, onCancel }: {
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
             // short value like `Stop` — so `PostTaskExecution` plus its mark clipped
-            // to "waiti". Wide enough for the longest option and badge together.
-            contentClassName="min-w-[19rem]"
+            // to "waiti". Wide enough for the longest option with its badge, and for
+            // `SessionLaneChanged` with its gloss in the longest locale.
+            //
+            // The floor itself is CLAMPED, inside `min()`. A floor alone is a pinned
+            // width: `SelectContent` sets no max-width of its own, and the touch
+            // diversion is `(pointer: coarse)`, not a width query — so a 320px desktop
+            // window or 400% zoom takes this same panel and a bare 26rem floor hangs
+            // 96px off-screen, clipping the badge and the check indicator.
+            //
+            // It has to be `min-w-[min(...)]` and NOT a sibling `max-w-*`: where the two
+            // conflict CSS resolves min-width LAST, so a 26rem floor beats any cap and
+            // the panel still overflows. Captured at 320px to confirm — the `max-w`
+            // spelling left the mark reading "not fired ye". The other floating panels
+            // here pair a floor with a cap safely only because their floors already fit
+            // (`RejectDropdown` 240px, `AgentTemplateDetail` 300px); this is the first
+            // floor above 320px, so it is the first that has to clamp itself.
+            contentClassName="min-w-[min(26rem,calc(100vw-2rem))]"
             // The mark rides the OPTION, which is where the choice is made; the
             // option's value and accessible name stay the bare wire value, and the
             // touch path spells the same fact as `name -- mark`.
@@ -203,9 +228,13 @@ function HookForm({ hook, onSave, onCancel }: {
               // The hint rides the badge, not just the table's copy of it:
               // the moment of choice is here, and a reader who has never
               // seen the table cannot tell `waiting` from `stored`.
-              return mark
-                ? { label: mark, source: 'kirocrew', hint: dormantHint(e) }
-                : undefined
+              //
+              // `note` carries the gloss for the same reason: this row renders the
+              // bare wire value, so a label-borne gloss reached the native list and
+              // the typeahead only, never the open list.
+              const note = eventGloss(e)
+              if (mark) return { label: mark, source: 'kirocrew', hint: dormantHint(e), note }
+              return note ? { note } : undefined
             })}
             // Choosing a dormant trigger does NOT clear `matcher`, it only hides
             // the field and drops the value AT SAVE. Clearing it on selection let
@@ -214,6 +243,12 @@ function HookForm({ hook, onSave, onCancel }: {
             // restore path and nothing on screen saying so. Nothing is discarded
             // invisibly either, which was the original objection: while the field is
             // gone the line in its place says the trigger takes no matcher.
+            // The native list and the typeahead take TEXT and nothing else, so one
+            // label carries both facts there. Parenthesised gloss, dashed mark: two
+            // kinds of suffix in one list need two shapes, or a reader cannot tell
+            // which they are reading. The label carries the gloss only: `SimpleSelect`
+            // appends the badge's mark after it.
+            optionLabels={EVENTS.map(e => (eventGloss(e) ? `${e} ${eventGloss(e)}` : e))}
             onChange={setEvent}
             value={event}
             // A hook stored with an event this picker no longer offers (legacy
@@ -291,7 +326,7 @@ function HookForm({ hook, onSave, onCancel }: {
           <div className="flex items-start gap-2 text-[13px] text-warn-text bg-warn-subtle border border-warn/30 rounded-lg px-3 py-2">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
-              {i18nT('pages.hooksPage.skills_inert_warning', { skills: skills.join(', ') })}
+              {i18nT('pages.hooksPage.skills_inert_warning', { skills: fmtList(skills, { style: 'narrow' }) })}
             </span>
           </div>
         )}
@@ -485,7 +520,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           { label: i18nT('pages.hooksPage.total_runs'), value: totalRuns },
           { label: i18nT('pages.hooksPage.errors'), value: lastErr },
         ].map((s, i) => (
-          <StatCard key={s.label} label={s.label} value={s.value} delay={i * 60} accent={s.accent} />
+          <StatCard key={s.label} label={s.label} value={fmtNumber(s.value)} delay={i * 60} accent={s.accent} />
         ))}
         </div>
 
@@ -605,10 +640,18 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
                       </td>
-                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{esc(h.name)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm')}><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span></td>
-                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{esc(h.command)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
+                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{h.name}</td>
+                      {/* The gloss STACKS under the pill rather than sitting beside it.
+                          This table is auto-layout inside an overflow-x scroller whose
+                          ACTIONS column is `sticky right-0`, so a cell's min-content is
+                          width the sticky column can take from a neighbour: side by side,
+                          pill + gloss on one unbreakable line makes this column's
+                          min-content their SUM and the sticky cell lands on LAST RUN.
+                          Stacked, it is max(pill, gloss) instead. Same idiom the Status
+                          cell already uses for its mark and result. */}
+                      <td className={rowCell(h.enabled, 'text-sm')}><span className="inline-flex flex-col items-start gap-0.5"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{eventGloss(h.event) && <span className="text-[11px] text-text/80 whitespace-nowrap" data-testid="lane-pill-gloss">{eventGloss(h.event)}</span>}</span></td>
+                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{h.command}</td>
+                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? h.matcher : <span className="italic">—</span>}</td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono')}>{h.run_count}</td>
                       <td className={rowCell(h.enabled, 'text-sm')}>
                         {/* The persisted last_error is not tooltip-only: the
@@ -734,12 +777,17 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                               it holds focus here (as Rescan does), and handleTest's
                               in-flight claim keeps a second press inert. */}
                           <Btn aria-disabled={testMut.isPending} aria-busy={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-accent/10 aria-disabled:active:scale-100">{i18nT('pages.hooksPage.test')}</Btn>
+                          {/* While the delete runs: `aria-disabled`, not `disabled`, so the
+                              confirming press keeps focus (useArmedDelete ignores a press
+                              on a pending row), and a spinner over the hidden label. */}
                           <Btn
                             danger
-                            disabled={isDeleting(h.id)}
+                            aria-disabled={isDeleting(h.id) || undefined}
+                            aria-busy={isDeleting(h.id) || undefined}
+                            className="relative aria-disabled:cursor-progress"
                             title={confirmDeleteId === h.id ? i18nT('pages.hooksPage.click_again_to_confirm') : i18nT('pages.hooksPage.delete_hook', { name: h.name })}
                             onClick={() => { if (confirmDeleteId === h.id) void confirmDelete(h.id); else armDelete(h.id) }}
-                          >{isDeleting(h.id) ? '...' : confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</Btn>
+                          >{isDeleting(h.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(h.id) ? 'opacity-0' : undefined}>{confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</span></Btn>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Btn

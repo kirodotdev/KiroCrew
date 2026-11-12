@@ -514,23 +514,23 @@ class TestManagedToolsInProcessNamesOnly:
     def test_core_names_are_correct_and_complete(self, monkeypatch) -> None:
         """The names returned match a full ``_list_tools`` build exactly, in order.
 
-        Every app is held enabled for the comparison: the full build omits a
-        disabled app's tools (``mcp_tools.apps.advertised``), while the names-only
-        build takes the declaration and names them all without reading enablement.
-        Every shipped app is held installed too: the full build lists the tools of
+        The code-channel tools are held listed too: the full build omits them while
+        ``slack.code_channels`` is off (``mcp_tools.code_channels.advertised``), and the
+        names-only build names them without reading that gate.
+        Every shipped app is held installed and enabled: the full build lists the tools of
         the installed apps' manifests (``mcp_tools.app_tools.advertised``), while the
         names-only build names every tool a shipped manifest declares, the deny
         universe. Those are the states in which the two legitimately differ.
         """
         import kiro_crew.mcp_core as core
         import kiro_crew.mcp_tools.app_tools as app_tools
-        import kiro_crew.mcp_tools.apps as apps_tools
+        import kiro_crew.mcp_tools.code_channels as code_channel_tools
         from kiro_crew.apps import app_agent_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
 
-        monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
         monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
         monkeypatch.setattr(app_agent_tools, "declared_tools", app_agent_tools.shipped_tools)
+        monkeypatch.setattr(code_channel_tools, "_toggle_on", lambda: True)
         full = [t["name"] for t in core._list_tools()]
         got = _managed_tools_in_process("kirocrew-core")
         assert got == full

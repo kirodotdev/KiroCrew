@@ -84,6 +84,15 @@ def test_the_gateway_lists_only_what_the_worker_lacks(monkeypatch):
     assert lacks["skills"] == ["triage"]
 
 
+def test_a_server_declared_but_not_mounted_is_one_the_worker_lacks(monkeypatch):
+    """No ``@github`` in ``tools``: the worker cannot call it, so a card may still add it."""
+    monkeypatch.setattr("kiro_crew.mcp_discovery.list_servers", lambda: GATEWAY_ROWS)
+    spec = json.loads(json.dumps(WORKER))
+    spec["mcpServers"]["github"] = {"command": "gh-mcp"}
+    assert "github" not in [s["name"] for s in cat.worker_has(spec, SKILLS)["servers"]]
+    assert "github" in [s["name"] for s in cat.gateway_lacks(spec, SKILLS)["servers"]]
+
+
 # ── the route: find_capabilities ──
 
 
@@ -321,21 +330,61 @@ def test_a_gateway_server_the_user_switched_off_is_not_added(crewmate, proposed,
     assert proposed == []
 
 
-def test_a_gateway_server_with_env_or_headers_is_not_copied_onto_a_card(
+def test_a_gateway_server_with_env_or_headers_reaches_the_card_masked(
     crewmate, proposed, monkeypatch
 ):
-    """A card's params reach the crewmate, so a credential must never ride in them."""
+    """A card's params reach the crewmate: the setting keys ride on it, never their values."""
     for extra in ({"env": {"GITHUB_TOKEN": "ghp_x"}}, {"headers": {"Authorization": "Basic eA=="}}):
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.mcp._find_server_spec_anywhere",
             lambda name, extra=extra: {**GITHUB_ENTRY, **extra} if name == "github" else None,
         )
+        proposed.clear()
         state = FakeState()
         _thread(state)
         status, body = _ask(state, {"additions": [{"server": "github", "source": "gateway"}]})
-        assert (status, body["code"]) == (400, "carries_settings"), extra
-        assert "ghp_x" not in json.dumps(body) and "eA==" not in json.dumps(body)
-    assert proposed == []
+        assert status == 200, (extra, body)
+        (card,) = proposed
+        ((key, values),) = extra.items()
+        assert card["params"]["draft"]["operations"][0]["value"] == {
+            "command": "gh-mcp",
+            "args": ["--stdio"],
+            key: {name: "[REDACTED]" for name in values},
+        }
+        assert "ghp_x" not in json.dumps(card) and "eA==" not in json.dumps(card)
+        # The masked entry still reads on the card as this gateway's own server.
+        assert routes.gateway_matches(card["params"]) == {"github"}
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [None, {"github": {"source": "registry", "registry_id": "io/github"}}],
+    ids=["raw_draft", "registry_origin"],
+)
+def test_a_masked_entry_the_gateway_did_not_resolve_raises_no_card(origins):
+    """Its apply fills a masked entry in from the gateway, so only a gateway addition carries one."""
+    import asyncio
+
+    from kiro_crew.dashboard import change_cards_readers as readers
+
+    value = {"command": "gh-mcp", "args": ["--stdio"], "env": {"GITHUB_TOKEN": "[REDACTED]"}}
+    params: dict[str, Any] = {
+        "member": MEMBER,
+        "draft": {
+            "operations": [
+                {"section": "mcpServers", "id": "github", "action": "set", "value": value}
+            ]
+        },
+    }
+    if origins is not None:
+        params["origins"] = origins
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        asyncio.run(
+            readers.read_context(
+                "crewmate.capabilities", params, {"revision": "r1"}, state=None, app=None
+            )
+        )
+    assert exc.value.code == "redacted_value_not_writable"
 
 
 @pytest.mark.parametrize(

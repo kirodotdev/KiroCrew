@@ -2,9 +2,10 @@
  * Registered UI locations under Customize (the Capabilities page). One area of
  * `UI_LOCATIONS`; see `../descriptors.ts` for the two-step contract.
  *
- * Customize > Connections opens on its Services sub-tab (local state, not the
- * URL), so the MCP server controls hang under the MCP Servers sub-tab: the path
- * names the click that reveals them.
+ * Customize > Connections opens on its Services sub-tab and Customize >
+ * Knowledge on its List view (local state, not the URL), so the MCP server
+ * controls hang under the MCP Servers sub-tab and Add Source under the Sources
+ * view: the path names the click that reveals them.
  */
 import type { UiLocationArea } from '../types'
 
@@ -76,6 +77,25 @@ export const LOCATIONS = {
       'zh-CN': ['安装技能', '浏览技能', '下载技能', '技能市场'],
     },
     placements: [{ surface: 'capabilities', parent: 'tab.capabilities.skills', entry: 'toolbar' }],
+  },
+  'knowledge.sources-tab': {
+    kind: 'tab',
+    terms: {
+      en: ['knowledge sources', 'my knowledge folders', 'indexed folders', 'watched folders'],
+      'zh-CN': ['知识来源', '知识库文件夹', '已索引的文件夹'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'tab.capabilities.knowledge', entry: 'tab' }],
+  },
+  'knowledge.add-source': {
+    kind: 'button',
+    terms: {
+      en: [
+        'add a folder to the knowledge base', 'add files to knowledge', 'upload a document to knowledge',
+        'index a folder', 'watch a folder', 'add knowledge',
+      ],
+      'zh-CN': ['添加文件夹到知识库', '上传文档到知识库', '索引文件夹', '添加知识'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'knowledge.sources-tab', entry: 'toolbar' }],
   },
   'skills.refresh': {
     kind: 'button',

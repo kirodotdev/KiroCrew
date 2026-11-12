@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup, within } from '@testing-library/react'
 import AssistantMessage, { fmtTurnElapsed, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { fmtCredits } from '../i18n/format'
 import { i18next } from '../i18n/all'
@@ -213,6 +213,24 @@ describe('AssistantMessage', () => {
     render(<AssistantMessage content="v1" isStreaming={false} slotRunning={false} variants={variants} variantIdx={0} onSwitchVariant={() => {}} />)
     expect(screen.queryByTitle('Previous version')).not.toBeInTheDocument()
     expect(screen.queryByTitle('Next version')).not.toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on the version arrows when Previous or Next goes disabled', () => {
+    const variants = [{ content: 'v1' }, { content: 'v2' }]
+    render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} />)
+    const prev = screen.getByTitle('Previous version')
+    const next = screen.getByTitle('Next version')
+    // Previous onto the first version disables it, so focus moves to Next.
+    act(() => { prev.focus() })
+    fireEvent.click(prev)
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(prev).toBeDisabled()
+    expect(document.activeElement).toBe(next)
+    // Next back onto the last version disables it, so focus moves to Previous.
+    fireEvent.click(next)
+    expect(screen.getByText('2/2')).toBeInTheDocument()
+    expect(next).toBeDisabled()
+    expect(document.activeElement).toBe(prev)
   })
 
   it('disables variant arrows when slotRunning', () => {
@@ -1331,6 +1349,37 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(screen.getByTestId('turn-model')).toHaveTextContent('claude-opus-4-8[1m]')
     expect(screen.getByTestId('turn-model')).not.toHaveTextContent('global.anthropic')
     expect(screen.getByTestId('turn-stats').title).toContain('global.anthropic.claude-opus-4-8[1m]')
+  })
+
+  it('shows a "Cache rebuilt" marker with its reason only on a turn the gateway marked', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'rewrite' }} />)
+    const chip = screen.getByTestId('turn-cache-rewrite')
+    const hint = 'This reply had to store the whole conversation again, so it cost more than usual.'
+    expect(chip).toHaveTextContent('Cache rebuilt')
+    // The reason sits on the app's info tip, which a keyboard can reach: closed,
+    // the hint is its title; focus opens it and attaches the hint as its
+    // description.
+    const tip = within(chip).getByRole('button', { name: 'More information' })
+    expect(tip).toHaveAttribute('title', hint)
+    act(() => { tip.focus() })
+    expect(tip).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('tooltip')).toHaveTextContent(hint)
+    // Open, the glyph's own title is gone, so the nearest title at or above it
+    // is what a hovering browser shows. It must be empty, or the footer's
+    // summary appears as a second tooltip beside the bubble.
+    expect(tip.closest('[title]')).toHaveAttribute('title', '')
+    // Footer text, not a pill.
+    expect(chip.className).not.toMatch(/\bborder\b|\brounded-full\b/)
+    // The marker trails the elapsed time after the footer's own separator, and
+    // leaves the billed amount where it was.
+    expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache rebuilt$/)
+  })
+
+  it('draws no cache chip when the key is absent or holds another value', () => {
+    const { rerender } = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+    rerender(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'warm' as never }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
   })
 
   it('omits the model chip when the backend did not resolve one', () => {

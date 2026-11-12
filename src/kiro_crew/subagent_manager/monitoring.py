@@ -827,7 +827,9 @@ class OrphanStallMonitor(ManagerComponent):
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        # Off the loop: the display path resolves the run directory (a realpath).
+        run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+        result_path = str(run_dir / "result.txt")
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:

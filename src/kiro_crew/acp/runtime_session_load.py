@@ -164,8 +164,12 @@ async def load_session(
             session_key=session_key,
             channel_id=channel_id,
         )
+    # The Connection bridge snapshots the array below wrote, for shutdown.
+    crew_bridged: list[str] = []
     if mirrored is not None:
         mcp_servers = mirrored.servers
+        # Mirrors create_session: a resumed session re-declares its bridges.
+        crew_bridged = list(mirrored.crew_bridged)
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
@@ -347,7 +351,19 @@ async def load_session(
             )
         )
         load_params["mcpServers"] = wire_servers
-        kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+        # Same as create_session: a sub-agent the workspace cannot bind is named.
+        remote_notices: list[str] = []
+        registered = len(kas_agents or ())
+        kas_agents = self._remote_workspace_agents(
+            kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+        )
+        if len(kas_agents or ()) < registered:
+            # Same re-prune as create_session, rebinding the request with the array.
+            wire_servers = self._remote_session_servers(
+                without_excluded_stubs(wire_servers, kas_agents)
+            )
+            load_params["mcpServers"] = wire_servers
+        withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
         attach_kas_custom_agents(load_params, kas_agents)
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
@@ -440,7 +456,9 @@ async def load_session(
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
-    handle.kas_launch_snapshots.extend(launch_snapshots)
+    # shortcut: a load that fails before this line leaves its bridge snapshots to the
+    # boot sweep, as a failed KAS load leaves its batch; track them earlier if that bites.
+    handle.kas_launch_snapshots.extend([*launch_snapshots, *crew_bridged])
     handle.kas_withheld_credentials_notice = withheld_notice
     if self._kas_telemetry_sent is not None:
         handle.kas_telemetry_notice = await asyncio.to_thread(

@@ -78,6 +78,8 @@ import { readPersistedString, usePersistedString } from '../../hooks/usePersiste
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { RemoteCrewWindowsNotice } from './RemoteCrewWindowsNotice'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
@@ -467,6 +469,9 @@ export function RemoteCrewPanel() {
     ? undefined
     : getRemoteProvisionerRenderer(selectedProvisioner.kind)
 
+  // The built-in launcher is POSIX-only and the server refuses it on Windows
+  // before any AWS call, so a known-Windows gateway runs no check at all.
+  const windowsGateway = useGatewayPlatform() === 'windows'
   const preflightQuery = useQuery({
     queryKey: ['cloud', 'preflight', checkedProfile, checkedRegion],
     queryFn: () => api.cloudPreflight(checkedProfile || undefined, checkedRegion || undefined),
@@ -474,7 +479,7 @@ export function RemoteCrewPanel() {
     // says, so the probe fires at once, as it always did. Only a remembered
     // choice waits for the list: it may resolve to a lane whose form must not
     // trigger an AWS probe at all.
-    enabled: tab === 'setup' && !disabled && !noDrawableLane
+    enabled: tab === 'setup' && !disabled && !noDrawableLane && !windowsGateway
       && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
@@ -885,19 +890,35 @@ export function RemoteCrewPanel() {
   const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
     ? parseErrorField(preflightQuery.error.body, 'kind')
     : undefined
+  // The platform signal can be missing (still loading, or an older gateway), so
+  // the server's own refusal also counts.
+  const launcherNeedsPosix = windowsGateway || (preflightQuery.error instanceof ApiError
+    && parseErrorCode(preflightQuery.error.body) === 'posix_host_required')
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
   // The same for an `aws` CLI the gateway found and refused: the credentials row
   // says why, instead of the CLI's "not found" error and its install link.
   const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
-  const blockingOk = !!preflight
-    && preflight.reachable
-    && !!preflight.account
-    && preflight.ec2_reachable
-    && preflight.cloudformation_reachable
-    && preflight.ssm_reachable
-    && preflight.session_manager_plugin
+  // The first row, in checklist order, that keeps Launch off: the hint under
+  // Launch names it instead of sending the reader through every row.
+  const blockingCheck = !preflight
+    ? undefined
+    : !(preflight.reachable && preflight.account)
+      ? i18nT('pages.settings.remoteCrewPanel.prereq_credentials')
+      : !preflight.ec2_reachable
+        ? i18nT('pages.settings.remoteCrewPanel.prereq_ec2')
+        : !preflight.cloudformation_reachable
+          ? i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')
+          : !preflight.ssm_reachable
+            ? i18nT('pages.settings.remoteCrewPanel.prereq_ssm')
+            : !preflight.session_manager_plugin
+              ? i18nT('pages.settings.remoteCrewPanel.plugin')
+              : undefined
+  const blockingOk = !!preflight && blockingCheck === undefined
+  // A check runs on blur, so while the typed profile or Region differs from
+  // the one checked, the rows below answer for the old values.
+  const checkStale = profile !== checkedProfile || region !== checkedRegion
 
   // Prefer the polled detail, but fall back to the list's copy so the card (and its
   // device code) is present on the very first render after a remount, before the
@@ -1303,6 +1324,8 @@ export function RemoteCrewPanel() {
             <Card>
               <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
             </Card>
+          ) : builtinProvisioner && launcherNeedsPosix ? (
+            <RemoteCrewWindowsNotice error={windowsGateway ? undefined : preflightQuery.error} />
           ) : builtinProvisioner ? (
           <>
           {/* AWS prerequisites — the account inputs live HERE, above the rows they
@@ -1350,14 +1373,14 @@ export function RemoteCrewPanel() {
               </label>
             </div>
             <p className="mb-3 text-[12px] text-muted">
-              {checkedRegion
-                ? i18nT('pages.settings.remoteCrewPanel.checking_against', {
-                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                  region: checkedRegion,
-                })
-                : i18nT('pages.settings.remoteCrewPanel.checking_against_no_region', {
-                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                })}
+              {checkedProfile
+                ? checkedRegion
+                  ? i18nT('pages.settings.remoteCrewPanel.checking_against', { profile: checkedProfile, region: checkedRegion })
+                  : i18nT('pages.settings.remoteCrewPanel.checking_against_no_region', { profile: checkedProfile })
+                : checkedRegion
+                  ? i18nT('pages.settings.remoteCrewPanel.checking_against_default', { region: checkedRegion })
+                  : i18nT('pages.settings.remoteCrewPanel.checking_against_default_no_region')}
+              {checkStale ? <span className="block text-warn-text">{i18nT('pages.settings.remoteCrewPanel.results_stale')}</span> : null}
             </p>
             {/* Rendered independently of `preflight`: a failed RE-check keeps the
                 previous result in cache, and the rows below would otherwise paint
@@ -1388,9 +1411,12 @@ export function RemoteCrewPanel() {
               <ul className="m-0 p-0 list-none">
                 <PrereqRow
                   ok={preflight.reachable && !!preflight.account}
+                  stale={checkStale}
                   title={i18nT('pages.settings.remoteCrewPanel.prereq_credentials')}
                   detail={preflight.reachable && preflight.account
-                    ? i18nT('pages.settings.remoteCrewPanel.credentials_ok', { profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'), account: preflight.account })
+                    ? checkedProfile
+                      ? i18nT('pages.settings.remoteCrewPanel.credentials_ok', { profile: checkedProfile, account: preflight.account })
+                      : i18nT('pages.settings.remoteCrewPanel.credentials_ok_default', { account: preflight.account })
                     : ''}
                   failure={preflight.reachable && preflight.account
                     ? undefined
@@ -1412,11 +1438,12 @@ export function RemoteCrewPanel() {
                   onRecheck={runCheck}
                   rechecking={preflightQuery.isFetching}
                 />
-                <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
-                <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
+                <PrereqRow ok={preflight.ec2_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
+                <PrereqRow ok={preflight.cloudformation_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
+                <PrereqRow ok={preflight.ssm_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
+                  stale={checkStale}
                   title={i18nT('pages.settings.remoteCrewPanel.plugin')}
                   detail={preflight.session_manager_plugin
                     ? i18nT('pages.settings.remoteCrewPanel.plugin_ok')
@@ -1653,7 +1680,11 @@ export function RemoteCrewPanel() {
                     ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
                     : !regionOk
                       ? i18nT('pages.settings.remoteCrewPanel.region_required')
-                      : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+                      : blockingOk
+                        ? i18nT('pages.settings.remoteCrewPanel.ready_in_6')
+                        : blockingCheck
+                          ? i18nT('pages.settings.remoteCrewPanel.finish_prereq_named', { check: blockingCheck })
+                          : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
               </span>
             </div>
           </Card>

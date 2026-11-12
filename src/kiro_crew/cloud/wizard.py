@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import secrets
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -79,6 +80,7 @@ def _deploy_with_progress(
                 extra_packages=extra_packages,
                 ssm_kms_key_arn=ssm_kms_key_arn,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
+                on_network_fallback=ui.info,
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
             box["error"] = exc
@@ -268,7 +270,9 @@ def _verify_operational(
             ui.warn(
                 f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}."
             )
-            ui.detail(f"Sign the wrong account out first, then re-run: {target.recovery_command()}")
+            ui.detail(
+                f"Sign the wrong account out and the right one in: {target.recovery_command()}"
+            )
             return "mismatch"
     except AWSError as exc:
         # Transient SSM/API failure — we could not *check*, which is not the
@@ -520,6 +524,14 @@ def launch(
             f"~${tier.approx_usd_per_hr:.2f}/hr · "
             f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
         )
+        # An image of the other architecture fails only at the Instance resource,
+        # after the role exists; refuse it before anything is asked or created.
+        if ami_id:
+            try:
+                ec2.assert_ami_matches_tier(ami_id, tier, profile, region)
+            except AWSError as exc:
+                ui.fail(str(exc))
+                return 1
 
         # The stack is created in whatever account the aws CLI resolves, which
         # can be a different account than the user expects (a shell left
@@ -533,6 +545,11 @@ def launch(
                 default=True,
             ):
                 ui.info("Aborted — nothing was created.")
+                if not sys.stdin.isatty():
+                    ui.detail(
+                        "Not run from a terminal: re-run the same command with --yes "
+                        "to accept the defaults."
+                    )
                 return 0
     else:
         ui.detail("Keeping the existing stack; instance size is unchanged.")
@@ -616,9 +633,10 @@ def launch(
                 )
                 if not keep_on_failure:
                     ui.detail(
-                        "Re-run with --keep-on-failure to keep the instance for "
-                        "inspection (`kirocrew cloud launch --keep-on-failure`)."
+                        "To keep a failed instance for inspection instead of rolling it back, "
+                        "re-run with --keep-on-failure (`kirocrew cloud launch --keep-on-failure`)."
                     )
+            _name_stack_left_behind(tag, profile, region)
             return 1
         # Deploy succeeded (WaitCondition confirmed the gateway healthy) — NOW it
         # is safe to persist the tag as the saved deployment.
@@ -870,6 +888,30 @@ def _clear_prior_pointer(previous_tag: str) -> bool:
     return True
 
 
+def _name_stack_left_behind(tag: str, profile: str, region: str) -> None:
+    """After a failed deploy, name the stack it left in the account and how to remove it.
+
+    A failed launch is not recorded (see :func:`_record_launch`), so a bare ``cloud
+    destroy`` has no target: the command names the tag, Region and profile. Prints
+    nothing when the stack is absent or cannot be read.
+    """
+    try:
+        stack = ec2.find_stack(tag, profile, region)
+    except AWSError:
+        return
+    if not stack:
+        return
+    status = str(stack.get("StackStatus", ""))
+    bills = (
+        "It holds no instance, so it does not bill."
+        if status == "ROLLBACK_COMPLETE"
+        else "It may still be billing until you remove it."
+    )
+    where = f" --region {region}" + (f" --profile {profile}" if profile else "")
+    ui.detail(f"The stack {ec2.stack_name(tag)} is still in your account ({status}). {bills}")
+    ui.detail(f"Remove it with: kirocrew cloud destroy --tag {tag}{where}")
+
+
 def _record_launch(*, profile: str, region: str, tag: str) -> None:
     """Write the launch record, and never fail the command over it.
 
@@ -905,7 +947,7 @@ def _select_existing_launch(
         return None
 
     launches = _discover_existing_launches(cfg, profile, region)
-    selected = _choose_existing_launch(launches, cfg, assume_yes=assume_yes)
+    selected = _choose_existing_launch(launches, assume_yes=assume_yes)
     if selected is None:
         return None
 
@@ -951,31 +993,59 @@ def _discover_existing_launches(
     if launches:
         return launches
 
-    for row in ec2.list_stacks(profile, region):
+    rows = ec2.list_stacks(profile, region)
+    live = ec2.live_instance_tags(profile, region) if rows else set()
+    where = f" --region {region}" + (f" --profile {profile}" if profile else "")
+    for row in rows:
         tag = str(row.get("tag", ""))
         if not tag or tag in seen:
             continue
-        launches.append(
-            _ExistingLaunch(
-                tag=tag,
-                stack_name=str(row.get("stack_name", ec2.stack_name(tag))),
-                stack_status=str(row.get("stack_status", "")),
-            )
-        )
         seen.add(tag)
+        stack_name = str(row.get("stack_name", ec2.stack_name(tag)))
+        stack_status = str(row.get("stack_status", ""))
+        why = _not_resumable_because(tag, stack_status, live)
+        if why:
+            # Named, not offered: it may still be billing, and it may be this
+            # installation's own stack whose launch was interrupted.
+            ui.detail(
+                f"Not offered: {stack_name} ({why}). "
+                f"Check it with `kirocrew cloud status --tag {tag}{where}`."
+            )
+            continue
+        launches.append(_ExistingLaunch(tag=tag, stack_name=stack_name, stack_status=stack_status))
     return launches
 
 
+def _not_resumable_because(tag: str, stack_status: str, live: set[str]) -> str:
+    """Why a discovered stack cannot be resumed, or "" when it can.
+
+    Resumable means neither failed nor in progress, with a live managed instance
+    carrying the tag: nothing on this machine vouches for a discovered stack.
+    """
+    if stack_status in ec2._FAILED_STATES or stack_status.endswith("_IN_PROGRESS"):
+        return stack_status
+    if tag not in live:
+        return "no live Kiro Crew instance"
+    return ""
+
+
 def _choose_existing_launch(
-    launches: list[_ExistingLaunch], cfg: LaunchState, *, assume_yes: bool = False
+    launches: list[_ExistingLaunch], *, assume_yes: bool = False
 ) -> _ExistingLaunch | None:
-    """Return the stack the user chose to keep, or None to create a new one."""
+    """Return the stack the user chose to keep, or None to create a new one.
+
+    Only the saved launch is kept by default; it is always alone (see
+    :func:`_discover_existing_launches`). A discovered stack is one this installation
+    has no record of, possibly another person's, and keeping it makes it the stack
+    ``destroy`` acts on, so it is never the default and ``--yes`` keeps none.
+    """
     if not launches:
         return None
+    saved = launches[0].saved
 
     if assume_yes:
-        if len(launches) == 1 or cfg.last_tag:
-            chosen = _preferred_existing_launch(launches, cfg)
+        if saved:
+            chosen = launches[0]
             ui.info(
                 f"Existing KiroCrew cloud stack found: {chosen.stack_name}. "
                 "Keeping it by default."
@@ -984,15 +1054,15 @@ def _choose_existing_launch(
             return chosen
         tags = ", ".join(launch.tag for launch in launches)
         raise AWSError(
-            "multiple existing KiroCrew cloud stacks found; rerun interactively "
-            f"to choose one ({tags}), or pass `kirocrew cloud launch --new` "
+            f"found Kiro Crew cloud stacks this installation has no record of ({tags}); "
+            "rerun interactively to choose one, or pass `kirocrew cloud launch --new` "
             "to create a separate instance"
         )
 
     if len(launches) == 1:
         launch = launches[0]
         idx = ui.choose(
-            "Existing KiroCrew cloud deployment",
+            "Existing Kiro Crew cloud deployment",
             [
                 ("Keep and resume existing", _launch_summary(launch)),
                 (
@@ -1000,7 +1070,7 @@ def _choose_existing_launch(
                     "Leaves the existing AWS stack untouched.",
                 ),
             ],
-            default_index=0,
+            default_index=0 if saved else 1,
         )
         if idx == 0:
             return launch
@@ -1009,22 +1079,11 @@ def _choose_existing_launch(
 
     options = [(f"Keep {launch.tag}", _launch_summary(launch)) for launch in launches]
     options.append(("Create a new installation", "Leaves existing AWS stacks untouched."))
-    idx = ui.choose("Existing KiroCrew cloud deployments", options, default_index=0)
+    idx = ui.choose("Existing Kiro Crew cloud deployments", options, default_index=len(launches))
     if idx < len(launches):
         return launches[idx]
     ui.info("Creating a new installation; existing stacks are unchanged.")
     return None
-
-
-def _preferred_existing_launch(
-    launches: list[_ExistingLaunch], cfg: LaunchState
-) -> _ExistingLaunch:
-    """Prefer the saved launch when non-interactive defaults are accepted."""
-    if cfg.last_tag:
-        for launch in launches:
-            if launch.tag == cfg.last_tag:
-                return launch
-    return launches[0]
 
 
 def _launch_summary(launch: _ExistingLaunch) -> str:

@@ -19,8 +19,8 @@ and a second copy would release nothing.
 Why a budget at all: two worktrees each running ``pytest -n auto`` on the same
 10-core host took 10 workers EACH, swapped the machine to a load average of ~590,
 and completed zero tests in 21 minutes. Memory, not cores, is the binding
-constraint -- a worker costs ~1.5 GiB, most of it collecting the suite before it
-runs anything -- so a machine that cannot back one worker per core must be told.
+constraint -- a worker costs ~1.5 GiB collecting the suite before it runs
+anything, and grows to ~4.5 GiB over a long run -- so a machine that cannot back one worker per core must be told.
 """
 
 from __future__ import annotations
@@ -34,6 +34,10 @@ from kiro_crew import platform_compat
 
 _MAX_WORKERS_ENV = "KIROCREW_MAX_TEST_WORKERS"
 _SLOT_DIR_ENV = "KIROCREW_TEST_SLOT_DIR"
+#: Set to ``1`` to run an explicit ``-n N`` WITHOUT claiming host slots. The one
+#: documented way past the shared pool, for someone who owns the whole host and
+#: knows it; everything else that asks for N workers waits its turn in the pool.
+_EXPLICIT_BYPASS_ENV = "KIROCREW_TEST_SLOTS_BYPASS"
 #: xdist's own ceiling for ``-n auto``. Read here because this hook replaces
 #: xdist's default implementation rather than running alongside it.
 _XDIST_ENV_CAP = "PYTEST_XDIST_AUTO_NUM_WORKERS"
@@ -85,30 +89,37 @@ _MIB = 1024**2
 # want ~9 GiB between them and swap the machine -- which is the incident this
 # budget exists to prevent, reintroduced by "optimizing" it.
 #
-# Known limit, stated rather than hidden: at low N the projection exceeds even 3
-# GiB, so the single-worker floor can outgrow its own reservation. Nothing here
+# The constant is 5, not 3, because a later host OOM measured the real thing. On a
+# 184 GiB / 48-core Linux host with no swap, ~40 workers filled RAM and the kernel
+# OOM killer fired eight times. Its process table showed each worker at ~4.5 GiB of
+# anonymous RSS -- well past the 2,771 MiB peak above, because those workers ran
+# long suites and grew the way the formula predicts. At 3 GiB the budget granted
+# ~60 workers on that host; 5 GiB grants ~36, which those workers fit in.
+#
+# Known limit, stated rather than hidden: at low N the projection can still exceed
+# 5 GiB, so the single-worker floor can outgrow its own reservation. Nothing here
 # can fix that -- one worker is already the minimum -- and it is the case where
 # the run is slow but survivable rather than parallel and fatal.
 #
 # This sizes for EXPECTED footprint: it cannot save a host from a genuinely
-# leaking worker (one orphaned run was observed at 4.3 GiB RSS), a separate bug.
-_GIB_PER_WORKER = 3
+# leaking worker, a separate bug.
+_GIB_PER_WORKER = 5
 # Headroom to reserve per worker against the LIVE availability reading.
 #
 # Deliberately the same as the static divisor above, because both describe the
 # same worker. The two readings differ in KIND -- total RAM is a worst-case bound
 # that never moves, availability is already the current headroom -- but that
-# argues about how much margin to add on top, and at 3 GiB there is none: it is
-# ~1.1x the measured worst-case per-worker peak (2,771 MiB). Anything less admits
+# argues about how much margin to add on top, and at 5 GiB there is little: it is
+# ~1.1x the ~4.5 GiB per-worker RSS the host OOM measured. Anything less admits
 # more workers than the host has memory for at the moment it is asked.
-_GIB_PER_WORKER_AVAILABLE = 3
+_GIB_PER_WORKER_AVAILABLE = 5
 
 # The two reservations above are REMEASURED for Linux (the host this suite's
 # agents run on), but a worker's footprint is PLATFORM-DEPENDENT and the Linux
-# number is fatally low elsewhere. A full-suite worker was measured at ~1.5 GiB
+# number is fatally low elsewhere. A long-suite worker was measured at ~4.5 GiB
 # on Linux but 14.9-16.1 GiB on macOS (issue #10061), where four workers granted
 # by ``-n auto`` reserved 62 GiB on a 36 GiB host and the kernel jetsam-killed
-# it. A single constant cannot be right for both: 3 GiB is fatally low for a
+# it. A single constant cannot be right for both: 5 GiB is fatally low for a
 # macOS worker, and 16 would clamp a healthy Linux host to a handful of workers
 # for no reason. So the reservation is PLATFORM-AWARE -- macOS uses 16 GiB, every
 # other platform keeps the remeasured Linux/Windows number above. Still a
@@ -352,8 +363,12 @@ def _live_memory_bounded_cap(cap: int) -> int:
     return _bounded_by(cap, ((_host_available_mib(), _gib_per_worker_available()),))
 
 
-def _claim_worker_slots(capacity: int, cap: int) -> int:
+def _claim_worker_slots(capacity: int, cap: int, shared: int | None = None) -> int:
     """Take up to ``cap`` of the host's ``capacity`` worker slots and HOLD them.
+
+    With ``shared``, slots from index ``shared`` on are taken only when this run got
+    every slot below it, so a range wider than the shared one never adds workers
+    beside another run.
 
     ``capacity`` is how many slots the HOST has -- its core count, a constant, never a
     transient memory reading -- and is the range probed; ``cap`` is the most any single
@@ -401,7 +416,7 @@ def _claim_worker_slots(capacity: int, cap: int) -> int:
 
     taken = 0
     for index in range(capacity):
-        if taken >= cap:
+        if taken >= cap or (index == shared and taken < index):
             break
         try:
             fd = os.open(str(_slot_path(slot_dir, index)), os.O_CREAT | os.O_RDWR, 0o600)
@@ -461,9 +476,8 @@ def _warn_if_clamped(resolved: int, cap: int, unbudgeted: int) -> None:
             f"xdist worker budget: {cap} of {unbudgeted} workers ({free}, "
             f"{_host_total_gib()} GiB installed). Each worker needs about "
             f"{_gib_per_worker_available()} GiB, mostly to collect the suite. A run this "
-            "narrow is slow, not stuck -- free some memory, run a subset "
-            "(pytest test/test_thing.py), or pass an explicit -n <N> to bypass "
-            "this budget.",
+            "narrow is slow, not stuck -- free some memory, or run a subset "
+            "(pytest test/test_thing.py).",
             stacklevel=1,
         )
     if resolved < cap:  # slots were held by another run on this host
@@ -526,8 +540,8 @@ def resolve_workers() -> int:
     way the incident did. While free capacity remains, a later run gets its full
     share.
 
-    An explicit ``-n <N>`` on the command line always wins; this hook only fires
-    for ``auto`` / ``logical``.
+    An explicit ``-n <N>`` does not come through here; it claims slots from the
+    same pool through :func:`claim_explicit_workers`.
     """
     # The two memory bounds go to different places, and which one goes where is the
     # whole correctness argument. The STATIC bound shapes the shared slot range, so the
@@ -549,6 +563,63 @@ def resolve_workers() -> int:
     resolved = _claim_worker_slots(capacity, cap)
     _warn_if_clamped(resolved, cap, unbudgeted)
     return resolved
+
+
+def claim_explicit_workers(requested: int) -> int:
+    """Hold host slots for an explicit ``-n N`` too, and clamp N to what was free.
+
+    An explicit count used to skip the pool entirely. That is how one ``pytest -n 16``
+    ran beside a dozen ``-n auto`` runs on a 184 GiB host, none of them counting the
+    others' workers, until ~40 workers at ~4.5 GiB each filled RAM and the kernel OOM
+    killer fired eight times. A slot pool that some runs ignore protects nothing.
+
+    The slots are the same files ``-n auto`` locks, from index 0, so both spellings
+    share one namespace. The range probed is the static memory-bounded capacity, or
+    N when that is smaller (up to the core count), but slots past the memory-bounded
+    capacity are taken only by a run that got every slot below it, i.e. a run alone.
+    No memory reading lowers a lone run's N: the caller chose it. Floors at one
+    worker, like every other path here.
+
+    ``KIROCREW_TEST_SLOTS_BYPASS=1`` skips the claim and returns N unchanged.
+    """
+    if requested < 1 or os.environ.get(_EXPLICIT_BYPASS_ENV) == "1":
+        return requested
+    cores = os.cpu_count() or 1
+    # The caller chose N, so the range reaches N (up to the core count) even where
+    # the memory-bounded capacity is smaller: a CI shard that runs -n 2 on a 16 GiB
+    # macOS runner keeps its 2 workers when it is alone. Beside another run it stays
+    # inside the memory-bounded range, so the two never exceed it together.
+    static = _static_memory_bounded_capacity(cores)
+    capacity = max(static, min(requested, cores))
+    granted = _claim_worker_slots(capacity, requested, shared=static)
+    if granted < requested:
+        why = (
+            "other runs on this host hold the rest"
+            if granted < capacity
+            else f"this host has {cores} cores"
+        )
+        warnings.warn(
+            f"xdist worker budget: -n {requested} clamped to {granted} worker(s): {why}. "
+            "Slow, not stuck.",
+            stacklevel=1,
+        )
+    return granted
+
+
+def budget_explicit_workers(config: object) -> None:
+    """Apply :func:`claim_explicit_workers` to a pytest config's explicit ``-n N``.
+
+    The body of the rootdir ``pytest_cmdline_main`` hook, kept here so tests reach it
+    (``import conftest`` from ``test/`` binds the wrong conftest). ``auto``/``logical``
+    are still strings at this point and are left to :func:`resolve_workers`; ``bool``
+    is excluded because it is an ``int``. An xdist worker (``workerinput``) holds no
+    slots: its controller already claimed them.
+    """
+    option = getattr(config, "option", None)
+    requested = getattr(option, "numprocesses", None)
+    if type(requested) is not int or requested < 1 or hasattr(config, "workerinput"):
+        return
+    setattr(option, "numprocesses", claim_explicit_workers(requested))
 
 
 def release_worker_slots() -> None:

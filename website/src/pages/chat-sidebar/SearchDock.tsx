@@ -38,6 +38,7 @@ import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
+import RemoveMergedCrChips from './RemoveMergedCrChips'
 
 /**
  * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
@@ -1007,6 +1008,13 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     )}
                     </FoldersSection>
                 )}
+                {/* Opt-in cross-session action: clear the chips for changes that
+                    have merged, in one step, re-reading each change's provider
+                    status rather than trusting the chip's own cached state.
+                    Renders nothing (the component self-hides, its own separator
+                    included) when no session carries an unlinkable change chip,
+                    so the menu is unchanged for a list with none. */}
+                <RemoveMergedCrChips />
               </FilterMenuContent>
             </DropdownMenu>
           </>
@@ -1380,15 +1388,18 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         className="mx-2 mt-2 shrink-0"
         testId="pr-status-refresh-error"
       />
-      {/* A refused rename: the editor is already closed and the title has been
-       *  reverted to the server value by the recovery refetch, so there is no
-       *  unsaved draft left to lose and the hand-off is safe. Dismissable: the
-       *  failure is a moment, not a state. */}
+      {/* A refused rename: the editor is already closed, so there is no unsaved
+       *  draft left to lose and the hand-off is safe. The lead names the refused
+       *  title and nothing else: when the recovery re-read fails too, the row
+       *  keeps that title, so "the previous title stays" would be false here.
+       *  Dismissable: the failure is a moment, not a state. */}
       <ErrorNotice
-        title={i18nT('pages.chatPage.could_not_rename_session')}
-        message={renameError}
+        title={renameError ? i18nT('pages.chatPage.could_not_rename_session', { title: renameError.refused }) : undefined}
+        message={renameError?.reason}
         askAgent
-        onDismiss={() => setRenameError('')}
+        // Below, not beside: the lead carries a title of any length.
+        actionPlacement="below"
+        onDismiss={() => setRenameError(null)}
         className="mx-2 mt-2 shrink-0"
         testId="rename-error"
       />

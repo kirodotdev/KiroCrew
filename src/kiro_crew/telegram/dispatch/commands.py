@@ -527,9 +527,9 @@ async def _handle_compact(
                 logger.debug("Telegram: discard after compact failure failed", exc_info=True)
 
         final = result_text or "✅ Context compacted."
-        if status_id:
-            await self.client.edit_message(chat_id, status_id, final)
-        else:
+        # The status line is only a placeholder: when it cannot be edited (deleted
+        # during the wait, or the edit failed) the result goes out as a new message.
+        if not (status_id and await self.client.edit_message(chat_id, status_id, final)):
             await self._reply(chat_id, final, thread=thread)
     finally:
         # Always release the semaphore we took. No-op if the except path

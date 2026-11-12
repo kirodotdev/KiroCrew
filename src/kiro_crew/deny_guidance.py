@@ -49,6 +49,12 @@ injected content: it names the sanctioned path, never a way around the rule. The
 one interpolated value anywhere in the module is the server id
 :func:`credential_tool_hint` names, which comes from the host's own MCP
 configuration rather than from the refused call.
+
+A rule may carry its own ``note`` (``DeniedCommandRule.note``), and a refusal by
+that rule is answered with the note instead of its class's prose. That is how an
+edition names its own sanctioned route for a rule it contributes, which the core
+must not name. A note is written by the rule's author and never taken from the
+refused call, so it is as static as the prose here.
 """
 
 from __future__ import annotations
@@ -266,6 +272,11 @@ _rule_class_state: "dict[str, str] | None" = None
 #: :data:`_rule_class_state` and cached under the same rule. See :func:`rule_id_for`.
 _rule_id_state: "dict[str, str] | None" = None
 
+#: ``{rule identity: the rule's own refusal note}`` over the same catalog, built
+#: and cached with the two above. "" for a rule with no usable note. See
+#: :func:`_rule_note`.
+_rule_note_state: "dict[str, str] | None" = None
+
 
 def _rule_class_index() -> "Mapping[str, str]":
     """``{rule identity: deny class}``, built once from the effective catalog.
@@ -313,16 +324,21 @@ def _rule_class_index() -> "Mapping[str, str]":
     return _rule_indexes()[0]
 
 
-def _rule_indexes() -> "tuple[Mapping[str, str], Mapping[str, str]]":
-    """``({identity: deny class}, {identity: rule id})``, built and cached together.
+def _rule_indexes() -> "tuple[Mapping[str, str], Mapping[str, str], Mapping[str, str]]":
+    """``({identity: deny class}, {identity: rule id}, {identity: note})``, cached together.
 
-    One pass over one rule list, so the class a refusal is answered with and the id
-    it is labelled with can never come from two different readings of the catalog.
-    Caching follows :func:`_rule_class_index`: a failed edition lookup is not cached.
+    One pass over one rule list, so the class a refusal is answered with, the id it
+    is labelled with and the note that replaces the class prose can never come from
+    two different readings of the catalog. Caching follows
+    :func:`_rule_class_index`: a failed edition lookup is not cached.
     """
-    global _rule_class_state, _rule_id_state
-    if _rule_class_state is not None and _rule_id_state is not None:
-        return _rule_class_state, _rule_id_state
+    global _rule_class_state, _rule_id_state, _rule_note_state
+    if (
+        _rule_class_state is not None
+        and _rule_id_state is not None
+        and _rule_note_state is not None
+    ):
+        return _rule_class_state, _rule_id_state, _rule_note_state
     rules = list(security.BUILTIN_DENIED_RULES)
     edition_resolved = True
     try:
@@ -332,22 +348,62 @@ def _rule_indexes() -> "tuple[Mapping[str, str], Mapping[str, str]]":
         logger.debug("edition denied rules unavailable; indexing built-ins only", exc_info=True)
     index: dict[str, str] = {}
     ids: dict[str, str] = {}
+    notes: dict[str, str] = {}
     for rule in rules:
         deny_class = _RULE_CLASSES.get(rule.id) or _CATEGORY_CLASSES.get(rule.category, "")
+        note = _usable_note(rule.note)
         for identity in (rule.pattern, rule.id):
             index.setdefault(identity, deny_class)
             ids.setdefault(identity, rule.id)
+            notes.setdefault(identity, note)
     if edition_resolved:
         _rule_class_state = index
         _rule_id_state = ids
-    return index, ids
+        _rule_note_state = notes
+    return index, ids, notes
+
+
+def _usable_note(note: str) -> str:
+    """*note* as one line of prose, or "" when it cannot be shown safely.
+
+    Whitespace is collapsed because both sinks render remediation as a single
+    paragraph, and the recovery prompt's ``RecoveryCard`` counts every
+    bullet-shaped LINE of its body as one blocked call, so a note that kept its
+    line breaks could add rows to that count. A leading ``- `` is dropped for the
+    same reason: the note is rendered as its own indented line, so a note that
+    opened with a bullet would make that line one. A note carrying
+    :data:`security.DENY_REASON_MATCH_PREFIX` is dropped, on the same grounds as
+    ``resolve_denied_notes`` drops an operator's: ``RecoveryCard`` collects deny
+    patterns with a per-line regex, so the note would be read as a second,
+    fabricated refusal. Losing the note keeps the class prose, which is the safe
+    direction.
+    """
+    text = " ".join(str(note or "").split())
+    if security.DENY_REASON_MATCH_PREFIX in text:
+        return ""
+    while text.startswith("- "):
+        text = text[2:]
+    return text
 
 
 def reset_rule_class_index() -> None:
     """Drop the cached index so a re-composed edition is picked up. For tests."""
-    global _rule_class_state, _rule_id_state
+    global _rule_class_state, _rule_id_state, _rule_note_state
     _rule_class_state = None
     _rule_id_state = None
+    _rule_note_state = None
+
+
+def _named_identity(reason: str) -> "str | None":
+    """The rule identity *reason* leads with, or ``None`` when it names none.
+
+    That is the rest of the FIRST line after the deny prefix: a rule's pattern for
+    the regex tier and the argv-structural floor, its id for the git-publish floor.
+    """
+    head = (reason or "").split("\n", 1)[0].strip()
+    if not head.startswith(security.DENY_REASON_PREFIX):
+        return None
+    return head[len(security.DENY_REASON_PREFIX) :].strip()
 
 
 def rule_id_for(reason: str) -> "str | None":
@@ -362,10 +418,24 @@ def rule_id_for(reason: str) -> "str | None":
     Display only: the id labels a refusal that already happened, so a wrong or
     missing answer costs a less helpful notice, never a decision.
     """
-    head = (reason or "").split("\n", 1)[0].strip()
-    if not head.startswith(security.DENY_REASON_PREFIX):
+    identity = _named_identity(reason)
+    if identity is None:
         return None
-    return _rule_indexes()[1].get(head[len(security.DENY_REASON_PREFIX) :].strip())
+    return _rule_indexes()[1].get(identity)
+
+
+def _rule_note(reason: str) -> str:
+    """The refusal note of the rule *reason* names, or "" when it has none.
+
+    Read from the same identity as :func:`rule_id_for`, so an operator's note on
+    the second line of *reason* is never taken for a rule's own. A rule's note is
+    written by whoever authored the rule (the built-in catalog, or the edition
+    that contributed it), never by the refused call.
+    """
+    identity = _named_identity(reason)
+    if identity is None:
+        return ""
+    return _rule_indexes()[2].get(identity, "")
 
 
 def _rule_class(reason: str) -> "str | None":
@@ -386,10 +456,10 @@ def _rule_class(reason: str) -> "str | None":
     regex). An operator note lives on the second line and is skipped here, so a
     note can never be mistaken for a rule identity.
     """
-    head = (reason or "").split("\n", 1)[0].strip()
-    if not head.startswith(security.DENY_REASON_PREFIX):
+    identity = _named_identity(reason)
+    if identity is None:
         return None
-    return _rule_class_index().get(head[len(security.DENY_REASON_PREFIX) :].strip())
+    return _rule_class_index().get(identity)
 
 
 #: agent, in the present tense, naming the sanctioned path concretely enough to
@@ -636,14 +706,22 @@ def classify_deny(reason: str, subject: str = "") -> str:
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:
     """Guidance for *reason*, with the host's credential-vendor hint folded in.
 
+    When *reason* names a catalog or edition rule that carries a ``note``, that
+    note is the guidance and replaces the class prose: the rule's author knows
+    the sanctioned route for what it blocks, where the class can only describe
+    its category. An edition rule in ``credential-exfil`` that blocks a
+    credential-MINTING command is the case this exists for, since its category
+    prose is about moving a file off the host. A rule with no note gets the class
+    prose as before.
+
     *credential_tool_hint* is appended only for the two credential classes that
     a vending tool can actually resolve. Appending it to, say, a trust-root
     refusal would suggest a credential tool could reach the security ceiling.
     """
     deny_class = classify_deny(reason, subject)
-    if not deny_class:
+    text = _rule_note(reason) or REMEDIATION.get(deny_class, "")
+    if not text:
         return ""
-    text = REMEDIATION.get(deny_class, "")
     hint = (credential_tool_hint or "").strip()
     if hint and deny_class in (DENY_CLASS_AWS_CREDENTIAL, DENY_CLASS_SSO_CREDENTIAL):
         text = f"{text} {hint}"

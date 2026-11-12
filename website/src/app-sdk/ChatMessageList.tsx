@@ -27,6 +27,7 @@ import TurnBlock from '../pages/chat/TurnBlock'
 import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { injectOpensTurn } from '../pages/chat/RecoveryCard'
+import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
 import {
   type MessageRenderer,
   type MessageRenderContext,
@@ -64,7 +65,7 @@ export interface ChatMessageListProps {
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
-   *  through the one-shot `resolveApproval` endpoint must leave it unset — that
+   *  through the one-shot `/api/approvals/{id}/{action}` endpoint must leave it unset — that
    *  path has no trust verb, so a Trust offer there overstates the grant
    *  (#5400, #5434). */
   canTrust?: boolean
@@ -79,6 +80,9 @@ export interface ChatMessageListProps {
    *  Renderers read it as `ctx.toolDetails`; a `renderTool` row ignores it. */
   toolDetails?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a directory in the host's side panel; see
+   *  `MessageRenderContext.onFolderOpen`. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
   onArtifactOpen?: (slug: string) => void
@@ -214,6 +218,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   handOff = true,
   toolDetails = true,
   onFileOpen,
+  onFolderOpen,
   onArtifactOpen,
   onQuote,
   onAsk,
@@ -249,6 +254,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       // A sub-agent completion the card cannot parse stays internal — the model
       // sees it, the reader does not.
       if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+      if (isHiddenSupersededSteer(messages, i)) continue
       if (GROUPED_ROLES.includes(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
@@ -376,6 +382,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       running,
       key,
       onFileOpen,
+      onFolderOpen,
       onArtifactOpen,
       onQuote,
       onAsk,
@@ -390,7 +397,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return withDivider(entry.render(m, ctx))
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
+  }, [versioned, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)

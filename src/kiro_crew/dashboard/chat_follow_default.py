@@ -254,7 +254,7 @@ def _closed_lines(
         if not readable or not _persons_line(meta):
             withheld.add(stem)
     found: list[tuple[str, str, object, str]] = []
-    for row in conversation_log.list_sessions():
+    for row in conversation_log.list_sessions_indexed():
         stem = str(row.get("key") or "")
         if not stem.startswith("dashboard_") or stem in loaded_stems:
             continue

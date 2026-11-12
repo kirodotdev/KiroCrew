@@ -208,6 +208,32 @@ async def test_fetch_stats_raises_on_server_error() -> None:
         await client.fetch_stats("last_7_days")
 
 
+@pytest.mark.parametrize("status", [401, 403])
+async def test_fetch_stats_raises_rejected_on_refused_credential(status: int) -> None:
+    # WakaTime refuses a read with an API key since 1 November 2026.
+    session = _FakeSession([_FakeResp(status)])
+    client = _client_with(session)
+    with pytest.raises(WakaTimeAuthError):
+        await client.fetch_stats("last_7_days")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_fetch_summaries_raises_rejected_on_refused_credential(status: int) -> None:
+    session = _FakeSession([_FakeResp(status)])
+    client = _client_with(session)
+    with pytest.raises(WakaTimeAuthError):
+        await client.fetch_summaries("2026-09-01", "2026-09-03")
+
+
+async def test_fetch_stats_server_error_is_not_a_rejection() -> None:
+    # A 500 is an outage: plain unavailable, never "reconnect".
+    session = _FakeSession([_FakeResp(500)])
+    client = _client_with(session)
+    with pytest.raises(WakaTimeUnavailableError) as info:
+        await client.fetch_stats("last_7_days")
+    assert not isinstance(info.value, WakaTimeAuthError)
+
+
 async def test_fetch_stats_raises_when_response_has_no_data_dict() -> None:
     # A non-JSON 200 coerces to {} in _api; no data dict means failure, not a
     # false-empty stats payload.

@@ -727,13 +727,81 @@ def test_a_new_report_on_an_already_woken_item_still_wakes(monkeypatch):
     first, clock = _ticks_across(monkeypatch, hours=hours, every_secs=1800, stall_after=None)
     assert len(first) == 1
 
-    _report(item, "blocked", summary="stuck again, on something else")
+    _report(item, "question", summary="stuck again, on something else")
     from kiro_crew.cron_script import Report
 
     clock.advance(1800)
     with pytest.raises(Report) as again:
         irq.run(_ctx(), _probe())
-    assert f"item={item} status=blocked" in str(again.value)
+    assert f"item={item} status=question" in str(again.value)
+
+
+def _waking(item: str) -> list[str]:
+    tick = _observe(_probe(), _ctx())
+    return [o.brief for o in tick.observations if item in o.brief and "reason=stall" not in o.brief]
+
+
+def test_a_repeated_status_does_not_wake_again():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1, "the first report wakes"
+    for n in range(4):
+        _report(item, "blocked", summary=f"still stuck {n}")
+        assert _waking(item) == [], "the same status again is no news"
+
+
+@pytest.mark.parametrize("status", ["question", "reply"])
+def test_a_second_question_or_reply_in_a_row_still_wakes(monkeypatch, status):
+    monkeypatch.setattr("kiro_crew.work_preview.remote_dispatch", lambda: True)
+    _open_ledger()
+    item = _create()
+    _report(item, status, summary="first")
+    assert len(_waking(item)) == 1
+    _report(item, status, summary="second")
+    assert len(_waking(item)) == 1, "each question or reply is a new ask"
+
+
+def test_a_repeat_rolling_into_the_oldest_tail_slot_does_not_wake():
+    from kiro_crew.probes import work_ledger as probe_module
+
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    for n in range(probe_module._EVENT_TAIL + 3):
+        _report(item, "blocked", summary=f"still stuck {n}")
+        assert _waking(item) == [], f"repeat {n} past the tail woke"
+
+
+@pytest.mark.parametrize("then", ["question", "done"])
+def test_a_changed_status_after_blocked_wakes(then):
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    _report(item, then, summary="moved")
+    assert [b for b in _waking(item) if f"status={then}" in b], then
+
+
+def test_the_same_status_after_the_conductors_decision_wakes():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="retry once")
+    _report(item, "blocked", summary="retried, still stuck")
+    assert len(_waking(item)) == 1
+
+
+def test_a_progress_between_two_blocked_reports_makes_the_second_news():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    _report(item, "progress", summary="unstuck")
+    _report(item, "blocked", summary="stuck on the next step")
+    assert len(_waking(item)) == 1
 
 
 def test_many_stalls_cannot_evict_a_report_still_in_the_tail(monkeypatch):
@@ -844,6 +912,7 @@ def test_a_parked_items_seen_set_outlives_closed_items_under_the_tracked_cap(mon
         finished = _create(title=f"finished {index}")
         _report(finished, "done", summary="shipped")
         briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+        work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=finished, verdict="pass")
         work_ledger.apply_conductor_action(
             CONDUCTOR, "close", item_id=finished, state="accepted", decision="verified"
         )
@@ -871,6 +940,7 @@ def test_a_closed_items_seen_tokens_are_dropped(monkeypatch):
         _run_once()
     assert done in lw._read_rate(CONDUCTOR)
 
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=done, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=done, state="accepted", decision="verified"
     )
@@ -973,6 +1043,64 @@ def test_a_quiet_progress_item_whose_worker_is_looping_raises_no_stall(monkeypat
     assert "reason=stall" not in _briefs(looping)
     assert "reason=stall" in _briefs(idle)
     assert item in _briefs(idle)
+
+
+def test_a_wake_at_on_a_held_loop_does_not_hide_a_stall(monkeypatch):
+    """A worker reports ``progress`` with a ``wake_at`` hours out, counting on its own
+    loop, but that loop is held on an unanswered approval and never fires. A
+    held loop voids the ``wake_at``, so the normal window flags the item; a loop that
+    can fire, or no loop at all, keeps the declared wait."""
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    wake = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="progress", summary="my loop checks every 20 min", wake_at=wake
+    )
+    real_list = work_ledger.list_work_items
+    reported = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    def _aged(key):
+        rows = real_list(key)
+        for row in rows:
+            row.last_report_at = reported
+        return rows
+
+    monkeypatch.setattr(work_ledger, "list_work_items", _aged)
+    held = _observe(WorkLedgerProbe(worker_loop_held=lambda _k: True), _ctx())
+    alive = _observe(WorkLedgerProbe(worker_looping=lambda _k: True), _ctx())
+    no_loop = _observe(WorkLedgerProbe(), _ctx())
+    assert "reason=stall" in _briefs(held) and item in _briefs(held)
+    assert "reason=stall" not in _briefs(alive)
+    assert "reason=stall" not in _briefs(no_loop)
+
+
+class TestWorkerLoopHeld:
+    """``ledger_wake.worker_loop_held``: an ACTIVE loop that cannot fire."""
+
+    def test_a_loop_held_on_an_approval_is_held(self):
+        held = _Loop("chat-1", approval_stalled=True)
+        assert lw.worker_loop_held(_Service(held), "dashboard_chat-1") is True
+
+    def test_a_loop_past_its_bound_is_held(self):
+        import time
+
+        spent = _Loop("chat-1", max_runtime_secs=60, created_ts=time.time() - 3600)
+        assert lw.worker_loop_held(_Service(spent), "chat-1") is True
+        capped = _Loop("chat-1", max_cycles=5, cycle_count=5)
+        assert lw.worker_loop_held(_Service(capped), "chat-1") is True
+
+    def test_a_loop_that_can_fire_a_stopped_loop_or_none_is_not_held(self):
+        assert lw.worker_loop_held(_Service(_Loop("chat-1")), "chat-1") is False
+        unbounded = _Loop("chat-1", max_cycles=0, max_runtime_secs=0)
+        assert lw.worker_loop_held(_Service(unbounded), "chat-1") is False
+        stopped = _Loop("chat-1", active=False, approval_stalled=True)
+        assert lw.worker_loop_held(_Service(stopped), "chat-1") is False
+        assert lw.worker_loop_held(_Service(), "chat-1") is False
+        assert lw.worker_loop_held(None, "chat-1") is False
 
 
 class _Loop:
@@ -1097,31 +1225,32 @@ class TestWorkerLooping:
         assert lw.worker_looping(_Broken(), "chat-1") is False
 
 
-def test_every_item_closed_is_terminal_but_an_empty_ledger_is_not():
+def test_every_item_closed_wakes_once_and_is_never_terminal():
+    """Closing every item does not end the goal, so it must not end the watch.
+
+    One WAKE says the board is closed; re-reading the same board says nothing; and
+    an empty ledger (a watch armed before the first item) says nothing at all.
+    """
     from kiro_crew import irq
     from kiro_crew.probes import work_ledger as probe_module
 
     _open_ledger()
-    empty = _observe(_probe(), _ctx())
-    assert [o for o in empty.observations if o.severity is irq.Severity.TERMINAL] == []
+    assert _observe(_probe(), _ctx()).observations == []
     item = _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=item, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item, state="accepted", decision="verified"
     )
     closed = _observe(_probe(), _ctx())
-    assert [o.severity for o in closed.observations] == [irq.Severity.TERMINAL]
-    # All accepted, so the key the driver records success from.
-    assert [o.key for o in closed.observations] == [probe_module.ACCEPTED_KEY]
+    assert [o.severity for o in closed.observations] == [irq.Severity.WAKE]
+    assert closed.observations[0].key.startswith(f"{probe_module.ACCEPTED_KEY}:")
+    assert "every item is closed and accepted (1 total)" in closed.observations[0].brief
+    assert _observe(_probe(), _ctx()).observations == [], "the same closed board is not news"
 
 
-def test_a_rejected_goal_is_terminal_but_is_not_recorded_as_a_success():
-    """A closed item ended accepted, rejected or abandoned; only the first met its bar.
-
-    The watch must still end -- a rejected goal leaves nothing to observe either --
-    so the distinction cannot live in whether the observation is TERMINAL. It lives
-    in the key, because the key is what the driver turns into the persisted outcome.
-    """
-    from kiro_crew import irq, probes
+def test_a_rejected_or_abandoned_board_says_it_did_not_finish_well():
+    """A closed item ended accepted, rejected or abandoned; only the first met its bar."""
+    from kiro_crew import irq
     from kiro_crew.probes import work_ledger as probe_module
 
     for state in ("rejected", "abandoned"):
@@ -1131,16 +1260,16 @@ def test_a_rejected_goal_is_terminal_but_is_not_recorded_as_a_success():
             CONDUCTOR, "close", item_id=item, state=state, decision="not met"
         )
         tick = _observe(_probe(), _ctx())
-        assert [o.severity for o in tick.observations] == [irq.Severity.TERMINAL], state
-        assert [o.key for o in tick.observations] == [probe_module.CLOSED_KEY], state
-        assert probes.terminal_succeeded(tuple(o.key for o in tick.observations)) is False
+        assert [o.severity for o in tick.observations] == [irq.Severity.WAKE], state
+        assert tick.observations[0].key.startswith(f"{probe_module.CLOSED_KEY}:"), state
 
 
-def test_one_unaccepted_item_decides_the_whole_ledger_is_not_a_success():
+def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
     from kiro_crew.probes import work_ledger as probe_module
 
     _open_ledger()
     good, bad = _create(), _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=good, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=good, state="accepted", decision="verified"
     )
@@ -1148,7 +1277,7 @@ def test_one_unaccepted_item_decides_the_whole_ledger_is_not_a_success():
         CONDUCTOR, "close", item_id=bad, state="rejected", decision="not met"
     )
     tick = _observe(_probe(), _ctx())
-    assert [o.key for o in tick.observations] == [probe_module.CLOSED_KEY]
+    assert [o.key.split(":")[0] for o in tick.observations] == [probe_module.CLOSED_KEY]
     # The count is in the text, so a wake says which way it ended without a re-read.
     assert "1 accepted of 2" in tick.observations[0].brief
 
@@ -1256,18 +1385,14 @@ class TestWorkerRunning:
         assert lw.worker_running(self._Table({"chat-9": object()}), "chat-9") is False
 
 
-def test_a_finished_goal_is_success_not_a_blocked_pull_request():
-    # The driver records success or blocked from the probe's own terminal keys. Read
-    # through the pull-request vocabulary alone, a conductor whose every item is
-    # closed has no "merged" key and is persisted as BLOCKED -- a succeeded goal
-    # filed as a failure.
+def test_only_a_merged_pull_request_is_a_terminal_success():
+    # The driver records success or blocked from the probe's own terminal keys. The
+    # work-ledger probe raises none: every item closed is a wake, so its
+    # "all closed" key prefixes are not success keys either.
     from kiro_crew import probes
     from kiro_crew.probes import work_ledger as probe_module
 
-    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is True
-    # A ledger whose items are all closed with at least one rejected or abandoned is
-    # equally terminal and is NOT a success. Recording it as one would claim an
-    # outcome its conductor never reached.
+    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is False
     assert probes.terminal_succeeded((probe_module.CLOSED_KEY,)) is False
     assert probes.terminal_succeeded(("merged",)) is True
     assert probes.terminal_succeeded(("closed",)) is False
@@ -1293,6 +1418,7 @@ def test_an_unreadable_item_cannot_terminate_the_watch():
     _open_ledger()
     closed = _create(title="finished")
     torn = _create(title="still open, and unreadable")
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=closed, state="accepted", decision="verified"
     )

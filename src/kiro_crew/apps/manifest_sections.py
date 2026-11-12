@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from kiro_crew.apps.manifest_names import KEBAB_RE
+from kiro_crew.apps.user_session_reach import declared_verbs
 
 logger = logging.getLogger(__name__)
 
@@ -596,6 +597,11 @@ class Permissions:
     #: Shown at the trust prompt and held back on a widening update like a new
     #: API path; never above the approval ceiling.
     workerAutoApprove: bool = False  # noqa: N815
+    #: The session-tool verbs (``"read"``, ``"send"``) the owner's own chats may use
+    #: on the sessions this app owns (``apps/user_session_reach.py``). Empty = none,
+    #: which is the default. Shown at the trust prompt and held back on a widening
+    #: update like a new API path.
+    reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -631,6 +637,8 @@ class Permissions:
             d["agentTurns"] = True
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
+        if self.reachableByUserSessions:
+            d["reachableByUserSessions"] = self.reachableByUserSessions
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -663,6 +671,7 @@ class Permissions:
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
+            reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
@@ -758,10 +767,11 @@ class SetupConfig:
     onInstall: str = ""  # shell command, registry install + every registry update  # noqa: N815
     # `onUpdate` is declared and round-trips but NOTHING dispatches it (see the
     # declared-not-wired paragraph in docs/system-specs/modules/app-kit-platform.md
-    # and test/test_setup_hooks_contract.py). Put update-time work in `onInstall`.
+    # and test/test_setup_hooks_contract.py). Put update-time work in `onEnable`,
+    # which an update of an enabled app re-runs, or in `onInstall`.
     onUpdate: str = ""  # declared, not executed: no code path dispatches it  # noqa: N815
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
-    onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
+    onEnable: str = ""  # run on enable, and after an enabled app's update  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
     # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
     # on native Windows (no `/bin/bash`): the runner refuses them with an

@@ -6,7 +6,7 @@ in the shared system temp dir, where nothing ties it to the session that made
 it and the OS tmp reaper deletes by AGE, killing long-lived in-flight work
 while leaving everything younger to accumulate.
 
-Each spawned agent process gets ``<data home>/scratch/<label>-<token8>/`` and
+Each spawned agent process gets ``<data home>/scratch/<token8>/`` and
 the ``TMPDIR``/``TMP``/``TEMP`` triple plus ``KIROCREW_SCRATCH`` pointing at
 it, so ``tempfile`` users, pytest basetemps, shell ``mktemp``, and
 prompt-guided work products all land somewhere OWNED. On real disk (the data
@@ -23,14 +23,17 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   below covers every death path by construction.
 * The gateway sweeps hourly (first pass an hour after start -- never on the
   boot path). A directory is reclaimed only when its recorded owner's process
-  GROUP is dead AND the whole tree has been idle past the grace window; a
-  directory with a live owner is never touched (agent processes can outlive
-  a gateway restart), an ownerless directory is never deleted, and a garbled
-  owner file is left for a human. A reclaimed directory that holds a git
-  repository is moved into the quarantine (:data:`QUARANTINE_DIRNAME`) rather
-  than deleted, stripped there of what tools rebuild (package installs,
-  virtual environments, caches, pytest basetemps), and deleted from there only
-  after :data:`QUARANTINE_TTL_SECONDS`.
+  GROUP is dead AND the whole tree has been idle past the grace window AND,
+  on Linux, no live process outside those groups still uses it
+  (:mod:`kiro_crew.agent_scratch_users`); a directory with a live owner is
+  never touched (agent processes can outlive a gateway restart), an ownerless
+  directory is never deleted in place, and a garbled owner file is left for a
+  human. A reclaimed directory that holds a git repository, and an ownerless
+  one with an allocator's name under the default root that nothing has
+  written to for :data:`_UNOWNED_IDLE_SECONDS`, is moved into the quarantine
+  (:data:`QUARANTINE_DIRNAME`) rather than deleted, stripped there of what
+  tools rebuild (package installs, virtual environments, caches, pytest
+  basetemps), and deleted from there only after :data:`QUARANTINE_TTL_SECONDS`.
 
 The WORK directory follows the session tree, not the process. The scratch
 root is masked for every sandboxed process and each spawn is handed back only
@@ -94,7 +97,7 @@ from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Literal
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch_users, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -104,6 +107,7 @@ from kiro_crew.config.loader import (
     valid_scratch_root_override,
 )
 from kiro_crew.owner_only_files import mkdirs_owner_only
+from kiro_crew.work_root import _activity_time
 
 logger = logging.getLogger(__name__)
 
@@ -124,14 +128,21 @@ OwnerOutcome = Literal["recorded", "unwritable", "refused", "stale", "garbled"]
 #: orphan: allocation happens before the child pid exists. Anything older
 #: with no owner belongs to a spawn that never completed.
 _UNOWNED_GRACE_SECONDS = 3600.0
+#: How long nothing may write to a tree with no ``.owner`` before the sweep
+#: moves it into the quarantine. With no owner there is no liveness to read,
+#: and a failed owner update leaves a live process's tree unowned on purpose
+#: (:func:`adopt_owner`), so only a quiet spell far past a session's ends it.
+_UNOWNED_IDLE_SECONDS = 7 * 24 * 3600.0
 
 #: The sweep's holding area, a directory of the managed root. A dead, idle tree
 #: that holds a git repository is moved here instead of being deleted: a dead
 #: owner says the PROCESS ended, not that the work in a clone is saved, and no
-#: check of a repository the agent wrote can prove that it is. Inside the root,
-#: the move is a rename on one filesystem (no copy that can fail halfway), and
-#: the quarantined tree stays as masked from sandboxed processes as the root is.
-#: No allocated name can collide with it: those all end in ``-<token>``.
+#: check of a repository the agent wrote can prove that it is. An ownerless tree
+#: with an allocator's name (:data:`_ALLOCATED_NAME`) comes here too, after
+#: :data:`_UNOWNED_IDLE_SECONDS` with no write. Inside the
+#: root, the move is a rename on one filesystem (no copy that can fail halfway),
+#: and the quarantined tree stays as masked from sandboxed processes as the root
+#: is. No allocated name can collide with it: those are eight hex characters.
 QUARANTINE_DIRNAME = ".quarantine"
 #: How long a quarantined tree is kept, counted from its move. Long enough for a
 #: user to notice the log line and recover the work; bounded so that kept trees
@@ -141,6 +152,11 @@ QUARANTINE_TTL_SECONDS = 14 * 24 * 3600.0
 #: is what the expiry reads, and stripping it gives back the original name.
 _QUARANTINE_STAMP = "%Y%m%dT%H%M%SZ"
 _QUARANTINED_NAME = re.compile(r"(\d{8}T\d{6}Z)-(.+)")
+#: A name :func:`allocate_scratch` gives (eight hex characters) or gave in older
+#: releases (``<label>-<8 hex>``). Only such an ownerless tree is the sweep's to move.
+#: In the older form the token must hold a letter, so a dated folder
+#: (``backup-20261105``) never reads as one.
+_ALLOCATED_NAME = re.compile(r"[0-9a-f]{8}|[A-Za-z0-9._-]{1,40}-(?=[0-9]*[a-f])[0-9a-f]{8}")
 #: The entries git looks for in a git directory, plus the one a linked
 #: worktree's directory carries. Any two of them in one directory make it a
 #: repository for the sweep (:func:`holds_git_repository`).
@@ -158,8 +174,6 @@ _VENV_MARKER = "pyvenv.cfg"
 #: the hundred, so it is judged only at the top of a scratch tree, where pytest
 #: puts it, and never as a name deeper down.
 _BASETEMP_PREFIX = "pytest-of-"
-
-_LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: kiro-cli's log directory INSIDE a scratch dir, and the files it writes there.
 #: The chat log MUST keep its default name: kiro-cli places ``mcp.log`` and
@@ -266,7 +280,7 @@ def _refuse_linked(path: Path, what: str) -> None:
     the other two refuse.
 
     *what* is the path SHAPE for the log -- a managed-root or marker name plus
-    the allocation's own ``<label>-<token8>`` basename. Never the target: which
+    the allocation's own ``<token8>`` basename. Never the target: which
     file a planted link names is the attacker's input, and nothing an operator
     can act on.
     """
@@ -404,8 +418,9 @@ def _discard_owner_marker(directory: Path) -> bool:
     and a stale owner is worse than none: the gateway exits, its pgroup goes
     dead, and the next boot sweep reads dead-owner-plus-idle on a directory
     whose real owner -- the child, spawned ``start_new_session=True`` -- is
-    still alive holding it. An UNOWNED dir is never swept, so removing the
-    marker is what keeps that child's temp dir.
+    still alive holding it. An UNOWNED dir is kept until nothing has written
+    to it for :data:`_UNOWNED_IDLE_SECONDS`, so removing the marker is what
+    keeps that child's temp dir.
 
     ``os.unlink`` removes a link itself and never follows one, but the marker
     is still lstat-refused first, matching :func:`_refuse_linked`'s rule that
@@ -440,9 +455,12 @@ def _discard_owner_marker(directory: Path) -> bool:
 def allocate_scratch(label: str) -> Path:
     """Create and return a fresh scratch dir for ONE agent process.
 
-    *label* is a human attribution hint (a session key or ``runtime``); it is
-    sanitized to a filename-safe token and truncated -- the random suffix is
-    what makes the directory unique and its sweep single-owner.
+    *label* is a human attribution hint (a session key or ``runtime``), written
+    to the debug log and never into the name: the directory is named by its
+    random token alone, which makes it unique and its sweep single-owner. The
+    name stays short because the MCP servers an agent starts inherit it as their
+    temp dir, and one that binds a Unix socket below it needs the room
+    (``sun_path`` is 104 bytes on macOS, 108 on Linux and Windows).
 
     A PROVISIONAL owner (the spawning process) is recorded inside the same
     allocation step: deletion is permitted only for owned-and-dead-and-idle
@@ -540,8 +558,7 @@ def allocate_scratch(label: str) -> Path:
                 writer_refusal = scratch_root_writer_refusal(root)
                 if writer_refusal is not None:
                     root = _fall_back_to_default(writer_refusal)
-    safe = _LABEL_SAFE.sub("-", label)[:40].strip("-") or "agent"
-    path = root / f"{safe}-{secrets.token_hex(4)}"
+    path = root / secrets.token_hex(4)
     # No ``exist_ok``: ``mkdir`` never follows the final component, so this
     # already fails on anything sitting at the name, a link included.
     path.mkdir(mode=0o700)
@@ -550,6 +567,7 @@ def allocate_scratch(label: str) -> Path:
     except (OSError, ScratchBoundaryError):
         shutil.rmtree(path, ignore_errors=True)
         raise
+    logger.debug("agent-scratch: allocated %r for %r", path.name, label)
     return path
 
 
@@ -589,8 +607,9 @@ def record_owner(path: Path, pid: int) -> OwnerOutcome:
     except ScratchBoundaryError:
         return "refused"  # already logged at warning by _refuse_linked
     except OSError:
-        # Fail-open: the sweep never deletes an UNOWNED dir, so a failed write
-        # leaves one that is kept, not reclaimed -- but only once the
+        # Fail-open: the sweep never deletes an UNOWNED dir in place, so a
+        # failed write leaves one that is kept until a week passes with no
+        # write, and then only moved into the quarantine -- but only once the
         # provisional marker is gone, because a failed atomic write leaves the
         # gateway's pid in place and a STALE owner reads as dead to the sweep
         # while the child it names is still running.
@@ -633,11 +652,12 @@ def adopt_owner(path: Path, pid: int) -> OwnerOutcome:
     The marker is read through :func:`_read_owner_pids` -- lstat-refused when
     linked, opened without following, bounded -- because it sits in a
     directory the agent process writes. An ABSENT marker is left absent and
-    reported ``"recorded"``: an unowned tree is never swept, so "kept while
-    *pid* lives" already holds, and a marker naming only *pid* would make the
-    allocator's tree reclaimable the hour after *pid* exits. A marker that is
-    not one this module wrote (garbled, oversized, not a regular file) is
-    ``"garbled"`` without a write: the sweep skips such a tree for good, so
+    reported ``"recorded"``: an unowned tree leaves the root only after
+    :data:`_UNOWNED_IDLE_SECONDS` with no write, and then for the quarantine,
+    while a marker naming only *pid* would make the allocator's tree
+    reclaimable the hour after *pid* exits. A marker that is not one this
+    module wrote (garbled, oversized, not a regular file) is ``"garbled"``
+    without a write: the sweep skips such a tree for good, so
     mounting it risks a leak and never a deletion, and the spawner proceeds
     with a warning -- a fatal answer here would let anything that can write
     the tree (every agent process it is mounted into) veto every later spawn
@@ -647,10 +667,10 @@ def adopt_owner(path: Path, pid: int) -> OwnerOutcome:
     Other outcomes as for :func:`record_owner`, with one deliberate asymmetry on
     the failure side. ``"unwritable"`` still discards the marker first: a tree whose
     marker names only the predecessor would be swept the hour after that process
-    exits while the successor is using it, and an UNOWNED tree is never swept --
-    a leak a human can see beats a deletion nobody can undo. ``"stale"`` (the
-    discard failed too) is then the don't-continue case the spawner reaps on,
-    exactly as it does for its own directory.
+    exits while the successor is using it, and an UNOWNED tree is never deleted
+    in place -- a move a human can undo beats a deletion nobody can.
+    ``"stale"`` (the discard failed too) is then the don't-continue case the
+    spawner reaps on, exactly as it does for its own directory.
     """
     marker = path / OWNER_FILENAME
     try:
@@ -658,11 +678,10 @@ def adopt_owner(path: Path, pid: int) -> OwnerOutcome:
             try:
                 existing = _read_owner_pids(marker)
             except FileNotFoundError:
-                # UNOWNED: the sweep never touches it, so the guarantee this
-                # adoption exists for -- kept while *pid* lives -- already
-                # holds, and writing a marker naming only *pid* would make the
-                # tree reclaimable the hour after *pid* exits while the
-                # process that allocated it may still be using it.
+                # UNOWNED: the sweep leaves it in place until a week passes
+                # with no write, and writing a marker naming only *pid* would
+                # make the tree reclaimable the hour after *pid* exits while
+                # the process that allocated it may still be using it.
                 logger.debug("agent-scratch: %r is unowned; nothing to join", path.name)
                 return "recorded"
             except ValueError:
@@ -741,17 +760,17 @@ def shared_scratch_window(path: Path | None) -> Path | None:
                 os.utime(path, None)  # lstat above already refused a link
         except OSError:
             # No refresh means no hold. That only matters for a tree the sweep
-            # could take: a readable marker naming only dead pids. A tree with a
-            # live owner is never swept whatever its mtime, and an unowned or
+            # could take: a readable marker naming only dead pids, or none. A
+            # tree with a live owner is never swept whatever its mtime, and a
             # garbled marker is never swept either, so those are handed out as
-            # before. The dead-owner tree is exactly what the hold protects --
-            # without it the sweep may remove the tree under the mount, so the
-            # window is refused and the spawn falls back to its own directory:
-            # visibility lost, not files.
+            # before. The dead-owner and unowned trees are exactly what the hold
+            # protects -- without it the sweep may take the tree from under the
+            # mount, so the window is refused and the spawn falls back to its
+            # own directory: visibility lost, not files.
             if _sweep_could_reclaim(path):
                 logger.warning(
-                    "agent-scratch: could not refresh shared window %r and its owners are "
-                    "dead; not mounting a tree the sweep may reclaim",
+                    "agent-scratch: could not refresh shared window %r, which has no live "
+                    "owner; not mounting a tree the sweep may reclaim",
                     path.name,
                     exc_info=True,
                 )
@@ -765,12 +784,16 @@ def shared_scratch_window(path: Path | None) -> Path | None:
 def _sweep_could_reclaim(path: Path) -> bool:
     """Would :func:`sweep_dead_scratch` judge *path* reclaimable on its owner alone?
 
-    True only for a readable marker naming no live process group. Absent,
-    linked, garbled or oversized markers are the cases the sweep skips for good
-    (never delete on evidence the subject controls), so they read as False.
+    True for a readable marker naming no live process group, and for an absent
+    one, since under the default root the sweep moves an unowned allocated tree
+    into the quarantine after :data:`_UNOWNED_IDLE_SECONDS` with no write. Linked,
+    garbled or oversized markers are the cases the sweep skips for good (never
+    delete on evidence the subject controls), so they read as False.
     """
     try:
         pids = _read_owner_pids(path / OWNER_FILENAME)
+    except FileNotFoundError:
+        return True
     except (OSError, ValueError, ScratchBoundaryError):
         return False
     return not any(_pgroup_alive(pid) for pid in pids)
@@ -1044,9 +1067,12 @@ def _pgroup_alive(pid: int) -> bool:
     tree-faithful liveness signal: a live child holding an open file
     descriptor produces no directory-mtime evidence at all, while the group
     probe still sees it. A descendant that setsid()s OUT of the group evades
-    this probe -- and equally evades ``kill_process_tree`` -- so it is owned
-    by the escaped-children reaper, not by this sweep; the sweep's liveness
-    boundary deliberately matches the kill path's tree boundary.
+    this probe -- and equally evades ``kill_process_tree`` -- and the
+    escaped-children reaper reaches it only when it was recorded or walked
+    before it was reparented. One that outlives its runtime that way can still
+    hold the runtime's own directory as its ``TMPDIR``, so the sweep asks the
+    process table as well (:func:`agent_scratch_users.scratch_users`) before
+    it reclaims a tree this probe calls dead.
     """
     if pid <= 0:
         return False
@@ -1061,7 +1087,9 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     own mtime -- so tree-newest is the faithful idle signal on every
     platform, and the only one available on Windows (no process groups).
     Fail-safe: an unreadable entry returns *fallback* (reads as active, the
-    sweep keeps the dir).
+    sweep keeps the dir). *fallback* is the sweep's clock, and each entry is
+    read through :func:`~kiro_crew.work_root._activity_time` against it, so off
+    Windows an mtime ``utime`` set far ahead does not count as a write.
 
     Deliberately UNCAPPED: an entry cap that bails to *fallback* turns every
     tree larger than the cap into a permanently active-looking one, so a
@@ -1080,14 +1108,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = os.lstat(root).st_mtime
+        newest = _activity_time(os.lstat(root), fallback)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                if info.st_mtime > newest:
-                    newest = info.st_mtime
+                newest = max(newest, _activity_time(info, fallback))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))
@@ -1101,11 +1128,12 @@ def _restore_owner_after_partial_delete(child: Path, pids: tuple[int, ...]) -> N
 
     ``rmtree`` reaches the marker long before a file it cannot delete (a name
     that sorts first, beside a file still held open), so a partial delete leaves
-    a tree with no marker -- and an ownerless tree is never deleted, so the
-    leftover would stay on disk for good. Writing back the same dead pids
-    restores exactly the evidence the sweep already judged. The rewrite and the
-    deletions refresh the tree's mtime, so the retry comes once the grace window
-    has passed again. Best effort: a failure here is logged, never raised.
+    a tree with no marker -- and an ownerless tree waits
+    :data:`_UNOWNED_IDLE_SECONDS` for the quarantine, so the leftover would stay
+    on disk that long. Writing back the same dead pids restores exactly the
+    evidence the sweep already judged. The rewrite and the deletions refresh the
+    tree's mtime, so the retry comes once the grace window has passed again.
+    Best effort: a failure here is logged, never raised.
     """
     logger.warning("agent-scratch: could not fully remove %r; will retry", child.name)
     try:
@@ -1279,7 +1307,7 @@ def _strip_regenerable(tree: Path) -> None:
     logger.info("agent-scratch: removed %d rebuildable dir(s) from %s", stripped, tree)
 
 
-def _quarantine(child: Path, now: float) -> bool:
+def _quarantine(child: Path, now: float, why: str) -> bool:
     """Move *child* into the quarantine instead of deleting it; False keeps it in place.
 
     Called under :data:`_SWEEP_LOCK`, after the sweep's final look. The move is
@@ -1288,12 +1316,13 @@ def _quarantine(child: Path, now: float) -> bool:
     contents, modes and times. Anything that stops the move -- a quarantine
     that cannot be made, one that is not a plain directory, a name already
     taken, a rename that fails (a quarantine on another filesystem included) --
-    leaves the tree where it is, logged, for the next sweep: a tree with a git
-    repository is never deleted from the root.
+    leaves the tree where it is, logged, for the next sweep: a tree sent here is
+    never deleted from the root.
 
-    Each move logs one INFO line naming where the tree went and when it is
-    deleted from there. The same sweep's quarantine pass
-    (:func:`_expire_quarantine`) then strips the moved tree, outside the lock.
+    Each move logs one INFO line naming where the tree went, *why* (the reason
+    clause, such as ``"it holds a git repository"``) and when it is deleted
+    from there. The same sweep's quarantine pass (:func:`_expire_quarantine`)
+    then strips the moved tree, outside the lock.
     """
     holding = quarantine_dir()
     target = holding / f"{time.strftime(_QUARANTINE_STAMP, time.gmtime(now))}-{child.name}"
@@ -1303,18 +1332,18 @@ def _quarantine(child: Path, now: float) -> bool:
         pass
     except OSError:
         logger.warning(
-            "agent-scratch: keeping %s in place: it holds a git repository and the "
-            "quarantine %s could not be created",
+            "agent-scratch: keeping %s in place: %s and the quarantine %s could not be created",
             child,
+            why,
             holding,
             exc_info=True,
         )
         return False
     if not _is_plain_dir(holding) or os.path.lexists(target):
         logger.warning(
-            "agent-scratch: keeping %s in place: it holds a git repository and %s "
-            "cannot receive it",
+            "agent-scratch: keeping %s in place: %s and %s cannot receive it",
             child,
+            why,
             target,
         )
         return False
@@ -1322,20 +1351,20 @@ def _quarantine(child: Path, now: float) -> bool:
         os.rename(child, target)
     except OSError:
         logger.warning(
-            "agent-scratch: keeping %s in place: it holds a git repository and could "
-            "not be moved to %s",
+            "agent-scratch: keeping %s in place: %s and could not be moved to %s",
             child,
+            why,
             target,
             exc_info=True,
         )
         return False
     expires = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now + QUARANTINE_TTL_SECONDS))
     logger.info(
-        "agent-scratch: moved %s to %s instead of deleting it, because it holds a git "
-        "repository; it is deleted after %s, so move it out of the quarantine before "
-        "then to keep it",
+        "agent-scratch: moved %s to %s instead of deleting it, because %s; it is "
+        "deleted after %s, so move it out of the quarantine before then to keep it",
         child.name,
         target,
+        why,
         expires,
     )
     return True
@@ -1412,10 +1441,25 @@ def sweep_dead_scratch(now: float | None = None) -> int:
       the recorded owner is the launcher pid, and descendants can outlive
       it while still writing (``tempfile`` creates entries directly under
       ``$TMPDIR``, keeping the dir mtime fresh).
-    * A dir with NO owner record is NEVER deleted. Allocation writes a
-      provisional owner atomically-with-creation and fails otherwise, so an
-      ownerless dir indicates a state this code did not produce -- deleting
-      on absence of evidence is how live work gets lost.
+    * A dead owner over a LIVE USER the marker does not name is kept, however
+      idle: a process outside every named group whose exec-time scratch
+      exports, working directory or an open descriptor name a path inside the
+      tree (:func:`agent_scratch_users.scratch_users`, Linux only). A tool
+      that daemonized out of a runtime and outlived it is such a user, and a
+      runtime swap leaves one holding the dead runtime's own directory as its
+      ``TMPDIR``. Each such tree logs a WARNING naming it and the pid, on every
+      sweep that keeps it.
+    * A dir with NO owner record is never deleted in place. Allocation writes
+      a provisional owner atomically-with-creation and fails otherwise, so an
+      ownerless dir is one a failed owner update left (:func:`adopt_owner`),
+      or a state this code did not produce -- deleting on absence of evidence
+      is how live work gets lost. With no liveness to read, only
+      :data:`_UNOWNED_IDLE_SECONDS` with no write ends it: it is moved into
+      the quarantine, like a repository below. That holds only for a name
+      :func:`allocate_scratch` gives (:data:`_ALLOCATED_NAME`) under the
+      default root: any other name, and any dir under a
+      ``KIROCREW_SCRATCH_ROOT`` override, can be the operator's own folder or
+      clone, so an ownerless one there is never touched.
     * A garbled owner file is left for a human.
     * A dead, idle dir that holds a git repository is never deleted here: it
       is moved into the quarantine (:func:`_quarantine`) and deleted from
@@ -1448,7 +1492,9 @@ def sweep_dead_scratch(now: float | None = None) -> int:
         logger.debug("agent-scratch: could not list %s; skipping sweep", root, exc_info=True)
         return 0
     reference = time.time() if now is None else now
+    relocated = root != config_dir() / _SUBDIR
     removed = 0
+    users: dict[str, int] | None = None
     for entry in entries:
         if entry.name == QUARANTINE_DIRNAME:
             continue  # the sweep's own holding area: expired below, never swept
@@ -1467,8 +1513,8 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             # DELETES. ``read_text`` follows it, so an owner planted by the very
             # process being judged would name whatever pid those bytes hold --
             # pick a dead one and the sweep destroys a live agent's own tree.
-            # Joins the unowned-or-garbled rule below: never delete on evidence
-            # the subject controls. The dir is then unreclaimable while the link
+            # Joins the garbled rule below: never delete on evidence the
+            # subject controls. The dir is then unreclaimable while the link
             # stands, which is the safe direction to fail.
             logger.warning(
                 "agent-scratch: %r has a linked %s; not judging its owner",
@@ -1478,29 +1524,54 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             continue
         try:
             pids = _read_owner_pids(marker)
+        except FileNotFoundError:
+            if relocated:
+                continue  # an override root can hold the operator's own folders
+            if not _ALLOCATED_NAME.fullmatch(entry.name):
+                continue  # not an allocator's name: made by hand or by another tool
+            pids = ()  # unowned: no liveness to read, so only a long idle ends it
         except (OSError, ValueError, ScratchBoundaryError):
-            # Unowned, garbled, oversized or linked: never delete on absence
-            # of evidence.
+            # Garbled, oversized or linked: never delete on evidence the
+            # subject controls.
+            continue
+        quiet_for = _UNOWNED_IDLE_SECONDS if not pids else _UNOWNED_GRACE_SECONDS
+        if idle < quiet_for:
             continue
         if any(_pgroup_alive(pid) for pid in pids):
             # A tree adopted by a successor names its predecessor too; either
             # one alive is a live user.
             continue
+        if users is None:
+            # One read of the process table per sweep, taken only once some
+            # tree is otherwise reclaimable.
+            users = agent_scratch_users.scratch_users(root, SCRATCH_ENV_KEYS)
+        user = users.get(entry.name)
+        if user is not None:
+            logger.warning(
+                "agent-scratch: keeping %r: %s, but live pid %d still uses it",
+                entry.name,
+                "its owners are dead" if pids else "it has no owner record",
+                user,
+            )
+            continue
         # Walked before the sweep lock is taken, because a large checkout
         # takes a while to list; a spawn that marks the tree active meanwhile
         # still wins at the final look under the lock.
-        holds_git = holds_git_repository(child)
+        holds_git = bool(pids) and holds_git_repository(child)
         with _SWEEP_LOCK:
             # Final look under the lock a spawn's validate-and-touch also
             # takes: a spawn that marked this tree active since the idle
             # reading above wins, and the tree is left for the next sweep.
             try:
-                if reference - os.lstat(child).st_mtime < _UNOWNED_GRACE_SECONDS:
+                if reference - _activity_time(os.lstat(child), reference) < quiet_for:
                     continue
             except OSError:
                 continue
+            if not pids:
+                _quarantine(child, reference, "it has no owner record")
+                continue
             if holds_git:
-                _quarantine(child, reference)
+                _quarantine(child, reference, "it holds a git repository")
                 continue
             if not platform_compat.rmtree_force(child):
                 _restore_owner_after_partial_delete(child, pids)

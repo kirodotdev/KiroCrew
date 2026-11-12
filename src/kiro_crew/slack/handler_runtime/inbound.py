@@ -483,6 +483,44 @@ def _get_agent_for_session(session_key: str) -> str:
     return _thread_agents.get(session_key) or _get_default_agent()
 
 
+def adopt_dashboard_thread_agent(session_key: str, agent: str | None) -> None:
+    """Make an agent the dashboard switched a channel-born tab to the thread's live agent.
+
+    Native dispatch reads the thread's agent from ``_thread_agents``, which hydration
+    fills once per thread. The dashboard switch writes the agent to the thread's
+    transcript metadata before it calls this, so a thread that is not hydrated (or
+    is evicted later) reads the new agent back; only a thread already hydrated, or
+    pinned by ``!ta``, needs its entry replaced here. No pin is taken: the transcript carries the
+    choice. ``""`` drops the thread's entry, so the channel's or the default agent
+    applies, as for ``!ta off``. Synchronous, so the caller runs it with no await
+    between its last re-check and this write.
+
+    ``None`` is a refused switch that restored the transcript: a message that hydrated
+    the thread between the switch's write and its restore cached the refused agent, so
+    the thread is marked unhydrated and its next message reads the restored metadata.
+    A ``!ta`` pin is left as it is, since hydration never published over it.
+    """
+    from kiro_crew.slack import thread_override_slots
+
+    # A hydration whose read began before the metadata write reads again.
+    thread_override_slots.note_command_write()
+    if agent is None:
+        if not thread_override_slots.kind_is_pinned(session_key, "agent"):
+            _hydrated_sessions.discard(session_key)
+            _thread_agents.pop(session_key, None)
+        return
+    if session_key not in _hydrated_sessions and not thread_override_slots.kind_is_pinned(
+        session_key, "agent"
+    ):
+        return
+    value = thread_override_slots.bounded_override(session_key, "agent", agent)
+    if value:
+        _thread_agents[session_key] = value
+    else:
+        _thread_agents.pop(session_key, None)
+    thread_override_slots.touch(session_key)
+
+
 def _set_default_agent(name: str) -> None:
     """Persist default agent to config (shared with dashboard)."""
     global _cached_default_agent

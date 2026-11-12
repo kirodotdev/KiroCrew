@@ -122,6 +122,11 @@ export default [
       // stays fully covered. Stated as a false-negative class: copy added to this
       // module will not be reported. Keep it stylesheet-only.
       'src/components/library/artifactThumbSvgCss.ts',
+      // Keeps the rules of an SVG artifact's own stylesheet that select inside the
+      // drawing, for SvgShadow: CSSOM rule class names and CSS patterns handed to
+      // the browser's parser, no copy. Stated as a false-negative class: copy
+      // added to this module will not be reported. Keep it stylesheet-only.
+      'src/components/svgStylesheet.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
@@ -199,6 +204,17 @@ export default [
       // false positive it fixes. A path this narrow cannot exempt a future file
       // that does hold copy.
       'src/apps/meetings/lib/sketchSrcdoc.ts',
+      // The Meetings "export all outputs" bundle builder (#32982). Same
+      // parser-only category as `sketchSrcdoc.ts` directly above and listed the
+      // same way, by exact path: every literal in it is HTML/CSS handed to a
+      // parser — a DOCTYPE, `<section>`/`<pre>`/`<iframe>` markup, the bundle's
+      // own CSS. It imports no `i18nT`/`useTranslation` and renders no text node;
+      // its ONE user-facing string, the "no output" marker, is passed in already
+      // translated from the gated call site in `ExportMenuItems.tsx`, so the
+      // module itself holds no copy. Stated as this file's false-negative class:
+      // any user-visible copy ever added here will not be reported — keep it
+      // parser-facing and resolve copy at the call site.
+      'src/apps/meetings/lib/meetingBundle.ts',
       // The widget and MCP-app srcdoc builders — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to
@@ -769,7 +785,7 @@ export default [
               // The install command the Decisions card's SageMaker option shows
               // when the gateway has no boto3: typed into a terminal, so the
               // same wire-string class, and enumerated for the same reason.
-              "^pip install 'boto3>=1\\.34,<2'$",
+              '^pip install "boto3>=1\\.34,<2"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such

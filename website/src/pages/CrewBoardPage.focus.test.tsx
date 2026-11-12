@@ -3,8 +3,10 @@
 // A native `disabled` on a focused button blurs it to `<body>`, so a keyboard user
 // who pressed Stop lost their place on the board before the failure notice even
 // rendered. The button stays focusable and announces itself as unavailable instead.
+// When a re-read finds the item no longer orphaned the button unmounts, and focus
+// moves to the row's title rather than falling to `<body>`.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -89,6 +91,33 @@ describe('CrewBoardPage Stop focus', () => {
     cleanup()
     crewBoard.mockReset()
     crewBoardAction.mockReset()
+  })
+
+  it('moves focus to the row title when the re-read after Stop clears orphaned', async () => {
+    crewBoardAction.mockResolvedValue({ ok: true, action: 'stop', item_id: ORPHAN.item_id })
+    const stop = await mount()
+    // The conductor came back: the row stays, and its orphan-only actions go.
+    crewBoard.mockResolvedValue({ ...BOARD, conductor_alive: 'idle', items: [{ ...ORPHAN, orphaned: false }] })
+
+    stop.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop current turn' })).toBeNull())
+    expect(document.activeElement).toBe(screen.getByText('keep my place'))
+  })
+
+  it('does not throw when the re-read moves the whole row into the collapsed Finished band', async () => {
+    crewBoardAction.mockResolvedValue({ ok: true, action: 'stop', item_id: ORPHAN.item_id })
+    const stop = await mount()
+    // The title unmounts with its row, so there is nothing to move focus to.
+    crewBoard.mockResolvedValue({
+      ...BOARD,
+      items: [{ ...ORPHAN, orphaned: false, terminal: true, state: 'abandoned' }],
+    })
+
+    stop.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(await screen.findByRole('button', { name: /Finished/ })).toBeTruthy()
+    expect(screen.queryByText('keep my place')).toBeNull()
   })
 
   it('keeps focus on Stop while the request is out, and refuses a second press', async () => {

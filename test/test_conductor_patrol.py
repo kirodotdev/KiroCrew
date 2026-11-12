@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -26,7 +25,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from skill_script_helpers import load_skill_script
 
 from kiro_crew import autonudge, autonudge_authz, conductor_patrol
 from kiro_crew import work_ledger as wl
@@ -41,16 +39,6 @@ from kiro_crew.monitoring.models import MonitorActionCompletion, MonitorActionDi
 CONDUCTOR = "chat-p-conductor"
 WORKER = "chat-p-worker"
 WORKER_2 = "chat-p-worker-2"
-
-PATROL_BUDGET = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "kiro_crew"
-    / "builtin_skills"
-    / "goal-conductor"
-    / "scripts"
-    / "patrol_budget.py"
-)
 
 
 class _Svc:
@@ -225,9 +213,9 @@ async def test_first_bind_arms_one_work_ledger_patrol(svc, audits):
     assert armed["slot_key"] == CONDUCTOR
     assert armed["watch"] == "work-ledger"
     assert armed["gate"] is True
-    assert armed["idle_secs"] == 600
-    assert armed["max_cycles"] == 300
-    assert armed["max_runtime_secs"] == 86400
+    assert armed["idle_secs"] == 300
+    assert armed["max_cycles"] == 0
+    assert armed["max_runtime_secs"] == conductor_patrol.patrol_max_runtime_secs()
     assert armed["replace_existing"] is False
     assert "replace_stopped" not in armed  # the authorizer forwards it only when True
     assert armed["message"] == conductor_patrol.PATROL_MESSAGE
@@ -403,18 +391,20 @@ async def test_closed_item_is_never_unpatrolled(svc):
     assert rows[item_id]["unpatrolled"] is False
 
 
-# ── the defaults pass the conductor's own budget check ────────────────────
+# ── the default patrol is permanent ───────────────────────────────────────
 
 
-def test_defaults_pass_patrol_budget_check():
-    pb = load_skill_script("patrol_budget_for_conductor_patrol", PATROL_BUDGET)
-    _doc, code = pb.check(
-        conductor_patrol.PATROL_INTERVAL_SECS,
-        conductor_patrol.PATROL_MAX_CYCLES,
-        conductor_patrol.PATROL_MAX_RUNTIME_SECS,
-    )
-    assert code == 0
-    assert 300 <= conductor_patrol.PATROL_INTERVAL_SECS <= 900
+def test_the_default_patrol_has_no_cycle_cap_and_the_ceiling_as_its_runtime():
+    """No cycle cap; the operator's runtime ceiling (7 days as shipped) is the one
+    runaway backstop (rfc-permanent-patrol.md)."""
+    from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, runtime_ceiling_secs
+
+    assert conductor_patrol.PATROL_MAX_CYCLES == 0
+    assert conductor_patrol.patrol_max_runtime_secs() == runtime_ceiling_secs()
+    assert DEFAULT_RUNTIME_CEILING_SECS == 7 * 86400
+    assert conductor_patrol.PATROL_INTERVAL_SECS == 300
+    message = conductor_patrol.PATROL_MESSAGE
+    assert message.index("one final report") < message.index("call autonudge_stop")
 
 
 # ── the conductor's own monitor_start replaces the default ────────────────

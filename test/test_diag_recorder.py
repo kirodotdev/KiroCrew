@@ -172,6 +172,17 @@ def test_health_reports_the_documented_keys(tmp_path: Path) -> None:
         assert key in health, key
 
 
+def test_health_counts_rows_past_a_torn_utf8_tail(tmp_path: Path) -> None:
+    recorder = _make(tmp_path)
+    path = Path(recorder.health()["file"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A row written with ensure_ascii=False and cut short inside "é".
+    path.write_bytes(b'{"ts": 1700000000.0}\n{"ts": 1700000000.0, "x": "caf\xc3')
+    health = recorder.health()
+    assert health["rows_today"] == 2
+    assert "running" in health
+
+
 # ── sampling reads what was injected, and nulls what is missing ──────────────
 
 
@@ -1013,6 +1024,29 @@ def test_a_non_finite_window_value_is_refused_by_name(tmp_path: Path, field: str
     with pytest.raises(ValueError) as caught:
         recorder.query(**kwargs)
     assert field in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "kwargs, field",
+    [
+        ({"since": "nan"}, "since"),
+        ({"until": "inf"}, "until"),
+        ({"around": "nan"}, "around"),
+        ({"around": "1700000000", "radius": "nan"}, "radius"),
+        ({"around": "1700000000", "radius": "infm"}, "radius"),
+    ],
+)
+def test_a_non_finite_window_string_is_refused_by_name(
+    tmp_path: Path, kwargs: dict[str, str], field: str
+) -> None:
+    """A route passes query-string text, so "nan" and "inf" are refused as text too."""
+    recorder = _make(tmp_path)
+    try:
+        out = recorder.query(**kwargs)
+    except ValueError as exc:
+        assert field in str(exc)
+        return
+    raise AssertionError(f"query({kwargs}) was accepted, window={out['window']!r}")
 
 
 def test_a_json_line_that_is_not_a_record_is_skipped(tmp_path: Path) -> None:

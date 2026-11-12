@@ -163,12 +163,12 @@ class TestParentAllowlistResolution:
         with no session at all is parentless (allow all). The pump's re-check
         runs through this resolver, so the two must never collapse."""
         with patch.object(sa, "read_session_execution", side_effect=OSError("disk")):
-            assert sa.parent_spawn_policy("chat-parent") == ("", None)
+            assert sa.parent_spawn_policy("chat-parent") == ("", None, ())
         denial = sa._vet_parent_available_agents(("", None), "agent1")
         assert denial is not None and "execution record could not be read" in denial
         with patch.object(sa, "read_session_execution", return_value=None):
-            assert sa.parent_spawn_policy("chat-parent") == ("", ())
-        assert sa.parent_spawn_policy("") == ("", ())
+            assert sa.parent_spawn_policy("chat-parent") == ("", (), ())
+        assert sa.parent_spawn_policy("") == ("", (), ())
 
     def test_an_unscannable_agents_directory_is_unknown(
         self, triage_fixture: Path, monkeypatch: pytest.MonkeyPatch
@@ -570,14 +570,14 @@ class TestGateWiring:
         def resolver(parent_template: str, *_args: Any, **_kwargs: Any) -> Any:
             seen.append(threading.get_ident())
             assert parent_template == "orchestrator"
-            return (("agent1", "agent2", "agent3"),)
+            return (("agent1", "agent2", "agent3"),), ()
 
         with (
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch("kiro_crew.execution_context.read_session_execution", return_value=parent),
             patch("kiro_crew.subagent.read_session_execution", return_value=parent),
-            patch.object(sa, "parent_spawn_allowlists", side_effect=resolver),
+            patch.object(sa, "_resolve_parent_spawn_allowlists", side_effect=resolver),
             patch.object(sa, "parent_spawn_policy", side_effect=AssertionError("re-read parent")),
         ):
             info = await manager.spawn_async("t", parent_session_key="chat-parent", agent="rogue")
@@ -781,7 +781,7 @@ class TestProjectScopeParent:
             sa, "read_session_execution", return_value=_parent_execution("proj-lead")
         ):
             policy = sa.parent_spawn_policy("dashboard:repo")
-        assert policy == ("proj-lead", (("agent1",),))
+        assert policy == ("proj-lead", (("agent1",),), ())
         assert resolver == ["dashboard:repo"]
         denial = sa._vet_parent_available_agents(policy, "rogue")
         assert denial is not None and "availableAgents" in denial
@@ -895,6 +895,112 @@ class TestProjectScopeParent:
         lists = sa.parent_template_allowlists("dashboard:repo", "lead")
         assert lists == (("agent1",),)
         assert sa._vet_parent_available_agents(("lead", lists), "rogue") is not None
+
+
+class TestUnreadableSpecRefusalNamesTheFile:
+    """The parent's own spec is valid at user scope, and the only file that
+    fails is an unrelated project agent. The refusal must name that file, its
+    scope and the parse error, not only the parent."""
+
+    BAD = "---\ndescription: has a colon: here\n---\n"
+    QUOTED = '---\ndescription: "has a colon: here"\n---\n'
+
+    @pytest.fixture
+    def project(self, tmp_path: Path, agents_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        _write_spec(agents_dir, "kirocrew")
+        root = tmp_path / "repo"
+        (root / ".kiro" / "agents").mkdir(parents=True)
+        # The parent session names no project of its own: each test hands the gate
+        # the directories a queued row was accepted under.
+        monkeypatch.setattr(sa, "_parent_project_resolver", lambda key: [])
+        return root
+
+    @staticmethod
+    def _policy(project: Path) -> sa.ParentSpawnPolicy:
+        """The policy the spawn gate resolves for a parent session that runs ``kirocrew``."""
+        with patch.object(sa, "read_session_execution", return_value=_parent_execution("kirocrew")):
+            return sa.parent_spawn_policy("dashboard:issue", [str(project)])
+
+    def _refusal(self, project: Path) -> str | None:
+        return sa._vet_parent_available_agents(self._policy(project), "agent1")
+
+    def test_the_refusal_names_the_unreadable_project_file(self, project: Path) -> None:
+        (project / ".kiro" / "agents" / "bad.md").write_text(self.BAD, encoding="utf-8")
+        assert sa.parent_spawn_allowlists("kirocrew", project_dirs=(project,)) is None
+        denial = self._refusal(project)
+        assert denial is not None
+        assert "'bad.md'" in denial, denial
+        assert "project" in denial, denial
+        assert "mapping values are not allowed here" in denial, denial
+
+    def test_a_cached_second_call_still_names_the_file(self, project: Path) -> None:
+        (project / ".kiro" / "agents" / "bad.md").write_text(self.BAD, encoding="utf-8")
+        assert self._refusal(project) is not None
+        # The second answer comes from the memo, and the names must travel with it.
+        with patch.object(
+            sa, "_scan_parent_spawn_allowlists", side_effect=AssertionError("re-scanned")
+        ):
+            denial = self._refusal(project)
+        assert denial is not None and "'bad.md'" in denial, denial
+
+    def test_many_unreadable_files_are_bounded_before_the_memo_keeps_them(
+        self, project: Path
+    ) -> None:
+        """Seven broken project files: the answer the memo keeps holds five
+        descriptions, the last one counting the two left out, and only those
+        five files are read a second time."""
+        for index in range(7):
+            (project / ".kiro" / "agents" / f"bad-{index}.md").write_text(
+                self.BAD, encoding="utf-8"
+            )
+        with patch.object(sa, "read_agent_spec_strict", wraps=sa.read_agent_spec_strict) as strict:
+            policy = self._policy(project)
+        assert strict.call_count == sa._MAX_UNREADABLE_IN_ERROR
+        assert len(policy[2]) == sa._MAX_UNREADABLE_IN_ERROR
+        assert policy[2][-1].endswith(" (+2 more)"), policy[2]
+        denial = sa._vet_parent_available_agents(policy, "agent1")
+        assert denial is not None
+        for index in range(5):
+            assert f"'bad-{index}.md'" in denial, denial
+        assert "bad-5" not in denial and "bad-6" not in denial, denial
+        assert "(+2 more)" in denial, denial
+
+    def test_an_unreadable_user_file_is_named_with_the_user_scope(
+        self, project: Path, agents_dir: Path
+    ) -> None:
+        (agents_dir / "kirocrew.json").unlink()
+        (agents_dir / "broken.json").write_text("{not json", encoding="utf-8")
+        denial = self._refusal(project)
+        assert denial is not None
+        assert "'broken.json'" in denial and "user" in denial, denial
+
+    def test_each_project_refusal_names_only_its_own_file(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Two sessions in different projects resolve the same parent template.
+        Each refusal is built after the other project's resolution has run, and
+        each must still name only the file of its own project."""
+        roots = {}
+        for name in ("alpha", "beta"):
+            root = tmp_path / name
+            (root / ".kiro" / "agents").mkdir(parents=True)
+            (root / ".kiro" / "agents" / f"bad-{name}.md").write_text(self.BAD, encoding="utf-8")
+            roots[name] = root
+        policy_a = self._policy(roots["alpha"])
+        policy_b = self._policy(roots["beta"])
+        # A third resolution of the same template with a known answer comes last.
+        (tmp_path / "clean" / ".kiro" / "agents").mkdir(parents=True)
+        assert self._policy(tmp_path / "clean")[1] == ()
+        denial_a = sa._vet_parent_available_agents(policy_a, "agent1")
+        denial_b = sa._vet_parent_available_agents(policy_b, "agent1")
+        assert denial_a is not None and denial_b is not None
+        assert "'bad-alpha.md'" in denial_a and "bad-beta" not in denial_a, denial_a
+        assert "'bad-beta.md'" in denial_b and "bad-alpha" not in denial_b, denial_b
+
+    def test_a_quoted_value_is_not_refused(self, project: Path) -> None:
+        (project / ".kiro" / "agents" / "bad.md").write_text(self.QUOTED, encoding="utf-8")
+        assert sa.parent_spawn_allowlists("kirocrew", project_dirs=(project,)) == ()
+        assert self._refusal(project) is None
 
 
 @pytest.mark.usefixtures("healthy_host_memory")
@@ -1137,3 +1243,63 @@ class TestSessionProjectForSpawnGate:
         assert session_project_for_spawn_gate(state, "subagent:nocwd") == []
         assert session_project_for_spawn_gate(state, "subagent:missing") == []
         assert session_project_for_spawn_gate(state, "") == []
+
+
+class TestBotWorkerAllowlist:
+    """A Bot's worker runs its session's merged spec, kept in the Bot's folder, so
+    the gate reads that spec's ``availableAgents`` as well as ``~/.kiro/agents``."""
+
+    WORKER = "kirocrew-mate-worker"
+
+    def _merged(self, monkeypatch: pytest.MonkeyPatch, answer: Any) -> list[str]:
+        from kiro_crew import mate_worker
+
+        asked: list[str] = []
+
+        def _scope(agent: str, key: str) -> Any:
+            asked.append(key)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(mate_worker, "mate_service_scope_spec", _scope)
+        monkeypatch.setattr(sa, "_parent_project_resolver", lambda key: [])
+        return asked
+
+    def test_the_workers_carried_list_refuses_a_spawn_it_does_not_name(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spec = {"toolsSettings": {"subagent": {"availableAgents": ["agent1"]}}}
+        asked = self._merged(monkeypatch, (spec, agents_dir))
+        lists = sa.parent_template_allowlists("worker-1", self.WORKER)
+        assert asked == ["worker-1"]
+        assert lists == (("agent1",),)
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "rogue") is not None
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "agent1") is None
+
+    def test_a_worker_that_declares_nothing_admits_as_before(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._merged(monkeypatch, ({"name": self.WORKER}, agents_dir))
+        assert sa.parent_template_allowlists("worker-1", self.WORKER) == ()
+
+    @pytest.mark.parametrize("answer", ["unreadable", "raises"])
+    def test_an_unreadable_merged_spec_refuses(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, answer: str
+    ) -> None:
+        from kiro_crew.mate_worker import WorkerKitUnreadable
+
+        self._merged(
+            monkeypatch,
+            (None, agents_dir) if answer == "unreadable" else WorkerKitUnreadable("gone"),
+        )
+        lists = sa.parent_template_allowlists("worker-1", self.WORKER)
+        assert lists is None
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "agent1")
+
+    def test_another_template_never_reads_a_worker_spec(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._merged(monkeypatch, AssertionError("read a worker spec"))
+        assert sa.parent_template_allowlists("chat-1", "plain") == ()
+        assert asked == []

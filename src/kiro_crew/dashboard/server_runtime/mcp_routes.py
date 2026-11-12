@@ -286,10 +286,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
     )
-    app.router.add_post(
-        "/api/members/{slug}/dashboard/lock",
-        _deferred("member_dashboard", "api_member_dashboard_lock"),
-    )
     # The gap refetch: a page that cannot place a patch in order asks for the whole
     # read. A strict suffix of the ``/dashboard`` read path, separated by METHOD, so
     # the resolver needs no ordering between them.
@@ -548,6 +544,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_set_color"),
     )
     app.router.add_post(
+        "/api/session-control/set-note",
+        _deferred("session_control", "api_session_control_set_note"),
+    )
+    app.router.add_post(
         "/api/session-control/reload",
         _deferred("session_control", "api_session_control_reload"),
     )
@@ -654,8 +654,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_post("/api/slack-history", handlers.api_slack_history)
+    # Slack code channels: the gateway leg of the code_channel_* MCP tools. STRICT
+    # (``_STRICT_INTERNAL_API_PATHS``); the handler refuses unless the transport
+    # attests the caller's session, and acts only on that session's own channel.
+    app.router.add_post(
+        "/api/slack/code-channel/tool",
+        _deferred("slack_code_channel_tools", "api_code_channel_tool"),
+    )
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
+    # An app's own notes, for its backend (both entrypoints) and its page; the
+    # handlers scope every read and ack to the caller app's host-stamped source.
+    app.router.add_get("/api/notifications/own", handlers.api_own_notifications)
+    app.router.add_post("/api/notifications/own/ack", handlers.api_own_notification_ack)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)
 
     # Auto-nudge (feature-flagged — returns 503 when KIROCREW_AUTONUDGE unset)
@@ -731,6 +742,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.workflows import (
         api_workflow_author,
         api_workflow_definition_get,
+        api_workflow_definition_remove,
         api_workflow_definition_run,
         api_workflow_definition_update,
         api_workflow_definitions,
@@ -757,6 +769,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/workflows/definitions/{workflow_ref}", api_workflow_definition_get)
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
+    )
+    app.router.add_delete(
+        "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_remove
     )
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)

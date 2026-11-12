@@ -207,7 +207,17 @@ def register_gateway_pid_parser(sub: _Commands) -> None:
     # `stop --expect-pid`/`restart` use. The desktop supervisor calls this when
     # its listener snapshot cannot name a draining gateway (socket released, lock
     # still held) so recovery can wait for that pid instead of giving up.
-    cli_help.add_command(sub, "gateway-pid")
+    gateway_pid_parser = cli_help.add_command(sub, "gateway-pid")
+    gateway_pid_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "When the lock is held but its holder cannot be named (a Windows "
+            "mandatory lock), name it from the gateway's fresh run record for "
+            "this port."
+        ),
+    )
 
 
 def register_service_parser(sub: _Commands) -> None:
@@ -283,7 +293,8 @@ Examples:
   kirocrew kas logout
   kirocrew kas route                     # kas-bundle | kiro-cli: which program owns the sign-in here
 
-Then: kirocrew config set agent.kas_bundle true && kirocrew restart
+Then: kirocrew config set agent.kas_bundle true
+      kirocrew restart
 The engine signs in through Kiro Crew's own login (dashboard → Sign in, or `kas login`).
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,

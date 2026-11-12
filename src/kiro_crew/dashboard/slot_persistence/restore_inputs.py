@@ -303,6 +303,15 @@ def _restored_agent_name(session_key: str, meta: dict) -> str:
     if selected and isinstance(agent, str) and agent and agent != selected:
         if _member_record_runs_another_template(session_key, agent):
             return agent
+        # The record is canonical and the line is editable by the session's own
+        # file tools, so the record still wins; say so instead of choosing silently.
+        logger.warning(
+            "Session %s: saved agent %r disagrees with its recorded selection %r; "
+            "restoring the recorded selection",
+            session_key,
+            agent,
+            selected,
+        )
     return selected or (agent if isinstance(agent, str) else "")
 
 

@@ -818,7 +818,7 @@
       "title": "Worktrees",
       "user_story": "As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated.",
       "start_url": "/chat",
-      "entry_path": "Chat follow-up card → Start in new worktree",
+      "entry_path": "Chat follow-up card → Start in a separate copy",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -1589,7 +1589,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Preference is browser-local under mc-nav-pinned (useNavPinned); clear between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
+        "notes": "Preference is held under mc-nav-pinned (useNavPinned) and backed up in ui-prefs.json; clear both between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -1987,7 +1987,7 @@
       "title": "Reply in thread on a mate's bubble opens the thread panel and the bubble gains a replies footer",
       "user_story": "As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Mates > enable Reply threads on bot chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
+      "entry_path": "Settings > Developer > Feature Previews > Crew and bots > enable Reply threads on bot chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -4821,9 +4821,9 @@
       "id": "settings-channels-weixin-configure",
       "feature": "channels",
       "title": "Configure WeChat (Weixin) channel",
-      "user_story": "As an operator, I want to enable the WeChat channel and set who can message the bot, so that only allowed WeChat users reach the agent.",
+      "user_story": "As an operator, I want to enable the WeChat channel and set who can message the agent, so that only allowed WeChat users reach it.",
       "start_url": "/settings/channels/weixin",
-      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
+      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the agent > Allowed user IDs > Folder",
       "preconditions": {
         "seed": "minimal",
         "members": [],

@@ -15,14 +15,14 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
 import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
+import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE, isRefusedHostedDefault, isRefusedSageMaker } from './decisionsProviderQuery'
 
 /** Preset id for hosted Jev; the gateway's `local_models.PRESET_JEV`. */
 export const PRESET_JEV = 'jev'
 /** The picker's id for a SageMaker endpoint; the gateway's `PRESET_SAGEMAKER`. */
 export const PRESET_SAGEMAKER = 'sagemaker'
 /** What the SageMaker option asks to install when the gateway has no boto3. */
-const BOTO3_INSTALL = "pip install 'boto3>=1.34,<2'"
+const BOTO3_INSTALL = 'pip install "boto3>=1.34,<2"'
 const EMPTY_SAGEMAKER: DecisionsSageMakerTarget = { endpoint_name: '', region: '', profile: '' }
 
 const sameSageMaker = (a: DecisionsSageMakerTarget, b: DecisionsSageMakerTarget | null | undefined) =>
@@ -398,16 +398,21 @@ export function DecisionsProviderPicker({
   }
   if (!data) return null
 
-  // Policy decides which side may be chosen; an older gateway reports neither, which
-  // is the permissive answer it always had.
+  // Policy decides which options may be chosen; an older gateway reports none of it,
+  // which is the permissive answer it always had.
   const hostedBlocked = data.hosted_permitted === false
   const localBlocked = data.local_permitted === false
-  // "No model" sends and runs nothing, so no policy withholds it.
-  // A SageMaker endpoint leaves the machine, so the hosted side's policy covers it.
-  const blockedId = (id: string) =>
-    id === PRESET_NONE ? false : id === PRESET_JEV || id === PRESET_SAGEMAKER ? hostedBlocked : localBlocked
+  // An option that goes to another service is not offered when policy refuses it,
+  // not greyed out: hosted Jev, and SageMaker when no runtime host is permitted.
+  const jevHidden = hostedBlocked
   // An older gateway reports no SageMaker fields and would refuse the body.
-  const sageMakerOffered = typeof data.sagemaker_available === 'boolean'
+  // `sagemaker_permitted` has its own answer, because a ceiling can refuse the hosted
+  // default's host and permit a SageMaker runtime host; a gateway without it follows the hosted row.
+  const sageMakerOffered = typeof data.sagemaker_available === 'boolean' && (data.sagemaker_permitted ?? !hostedBlocked)
+  const hiddenId = (id: string) => (id === PRESET_JEV && jevHidden) || (id === PRESET_SAGEMAKER && !sageMakerOffered)
+  // "No model" sends and runs nothing, so no policy withholds it. A local model is
+  // shown, and greyed out while its own row refuses it.
+  const blockedId = (id: string) => (id === PRESET_NONE || id === PRESET_JEV || id === PRESET_SAGEMAKER ? false : localBlocked)
   const sageMakerAvailable = data.sagemaker_available === true
   const smValue = smDraft ?? data.sagemaker ?? EMPTY_SAGEMAKER
   // The polled status is newer than the provider read while that read still shows
@@ -421,7 +426,7 @@ export function DecisionsProviderPicker({
   const presets = live ? data.presets.map(p => ({ ...p, installed: live.installed.includes(p.id) })) : data.presets
   const totalGb = memQ.data
   const recommended = recommendedPreset(localBlocked ? [] : presets, totalGb)
-  const chosen = selected ?? (data.active === 'custom' ? '' : data.active)
+  const chosen = selected ?? (data.active === 'custom' || hiddenId(data.active) ? '' : data.active)
   const chosenPreset = presets.find(p => p.id === chosen)
   const runtime = live?.runtime ?? data.runtime
   // The runtime's report applies only to the preset it is running.
@@ -429,8 +434,14 @@ export function DecisionsProviderPicker({
     runtime && chosenPreset && runtime.preset === chosenPreset.id && runtime.state !== 'idle' ? runtime : undefined
   const sageMakerChosen = chosen === PRESET_SAGEMAKER
   // Another endpoint while one is in use is a change too, not only another option.
+  // A refused hosted default is reported as "No model" while the config still names
+  // it, so choosing "No model" over it is a change that has to be written.
+  const refusedDefault = isRefusedHostedDefault(data)
   const needsSave =
-    chosen !== '' && (chosen !== data.active || (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
+    chosen !== '' &&
+    (chosen !== data.active ||
+      (chosen === PRESET_NONE && refusedDefault) ||
+      (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
   const sageMakerReady = !sageMakerChosen || (sageMakerAvailable && smValue.endpoint_name !== '' && smValue.region !== '')
   const canSave = needsSave && sageMakerReady && !frozen && !saveMut.isPending && !blockedId(chosen)
   const save = () => saveMut.mutate(sageMakerChosen ? { preset: chosen, sagemaker: smValue } : { preset: chosen })
@@ -507,13 +518,23 @@ export function DecisionsProviderPicker({
           message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_memory_unavailable')}
         />
       )}
-      {option(
-        PRESET_JEV,
-        i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev'),
-        <span className="text-[12px] text-muted">
-          {i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev_detail')}
-        </span>,
+      {refusedDefault && (
+        <p className="text-[12px] text-warn m-0">
+          {i18nT(
+            isRefusedSageMaker(data)
+              ? 'pages.developer.featurePreviewsTab.decisions_provider_blocked'
+              : 'pages.developer.featurePreviewsTab.decisions_hosted_refused',
+          )}
+        </p>
       )}
+      {!jevHidden &&
+        option(
+          PRESET_JEV,
+          i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev'),
+          <span className="text-[12px] text-muted">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev_detail')}
+          </span>,
+        )}
       {presets.map(p =>
         option(
           p.id,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, replaceTokenAtCaret, splitPathToken } from '../components/composerTokens'
+import { matchFileToken, matchPathToken, matchSkillToken, matchSpecQuery, PATH_TOKEN_RE, replaceTokenAtCaret, splitPathToken } from '../components/composerTokens'
 
 // These matchers take the text BEFORE the caret. A returned string is the query
 // (the picker opens); null means the caret is not inside a token (picker closed).
@@ -41,6 +41,23 @@ describe('matchSkillToken (caret-relative $ detection)', () => {
     expect(matchSkillToken('$5')).toBe('5')
     expect(matchSkillToken('$3d-tool')).toBe('3d-tool')
     expect(matchSkillToken('it costs $5')).toBe('5')
+  })
+})
+
+describe('matchSpecQuery (spec-folder pick)', () => {
+  it('reads the spec-name prefix after .kiro/specs/', () => {
+    expect(matchSpecQuery('.kiro/specs/')).toBe('')
+    expect(matchSpecQuery('.kiro/specs/pod')).toBe('pod')
+    expect(matchSpecQuery('.kiro\\specs\\pod')).toBe('pod')
+  })
+
+  it('is null inside a spec, or for any other query', () => {
+    expect(matchSpecQuery('.kiro/specs/pod-cli/')).toBeNull()
+    expect(matchSpecQuery('.kiro/specs/pod-cli/tasks')).toBeNull()
+    expect(matchSpecQuery('.kiro/specs')).toBeNull()
+    expect(matchSpecQuery('.kiro/steering/')).toBeNull()
+    expect(matchSpecQuery('pkg/.kiro/specs/')).toBeNull()
+    expect(matchSpecQuery('tasks')).toBeNull()
   })
 })
 

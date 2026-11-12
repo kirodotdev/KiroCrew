@@ -12,9 +12,9 @@
  * split, so the invariant is pinned here at the source level: the raw
  * dispatches may appear only inside the two helpers.
  *
- * `sseStatus` also sets the store flag to true and leaves the seam alone, so
- * the two are not always equal. `hooks/websocket/gatewayConnectivity.test.tsx`
- * pins that at runtime (only files in that directory may import the helpers).
+ * `sseStatus` stores status only and never moves either flag;
+ * `hooks/websocket/gatewayConnectivity.test.tsx` pins that at runtime (only
+ * files in that directory may import the helpers).
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const HOOK = path.join(SRC, 'hooks', 'websocket', 'gatewayConnectivity.ts')
 
-const DISPATCH_RE = /dispatch\(\s*(sseConnected|sseDisconnected)\(\)\s*\)/g
+const DISPATCH_RE = /dispatch\(\s*(sseConnected|sseDisconnected)\([^)]*\)\s*\)/g
 
 function* sourceFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
@@ -60,7 +60,7 @@ describe('gateway connectivity pairing invariant', () => {
     // The helpers each hold exactly one raw dispatch, paired with the seam write.
     expect(connectedBody).toMatch(/dispatch\(sseConnected\(\)\)/)
     expect(connectedBody).toMatch(/setGatewayConnected\(true\)/)
-    expect(disconnectedBody).toMatch(/dispatch\(sseDisconnected\(\)\)/)
+    expect(disconnectedBody).toMatch(/dispatch\(sseDisconnected\(cause\)\)/)
     expect(disconnectedBody).toMatch(/setGatewayConnected\(false\)/)
 
     // And no raw dispatch exists anywhere outside them. Strip the helper bodies

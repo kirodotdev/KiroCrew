@@ -4,10 +4,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton, IconButton } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
-import { esc } from '../../api/helpers'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
@@ -107,8 +106,24 @@ function sourceCell(lesson: Lesson) {
     case 'user_explicit': return i18nT('pages.overview.memoryTab.source_user_explicit')
     case 'consolidation': return i18nT('pages.overview.memoryTab.source_consolidation')
     case 'taskrunner': return i18nT('pages.overview.memoryTab.source_taskrunner')
-    default: return <span className="font-mono">{esc(lesson.source ?? '')}</span>
+    default: return <span className="font-mono">{lesson.source}</span>
   }
+}
+
+/** The edit route's own refusals, each with the sentence that names its next step. */
+const EDIT_REFUSALS: Record<string, string> = {
+  replace_collision: 'pages.overview.memoryTab.edit_collision',
+  replace_ambiguous: 'pages.overview.memoryTab.edit_ambiguous',
+  replace_source_missing: 'pages.overview.memoryTab.edit_missing',
+  replace_vector_unsupported: 'pages.overview.memoryTab.edit_vector',
+}
+
+/** A lesson row's key. Scope is part of it: a scoped and a global row sharing
+ *  rule text are two lessons, and can share a timestamp. String() keeps the null
+ *  (unusable-scope) row distinct from the "" (global) one; the JSONL tier keeps a
+ *  workspace row distinct from a global one. */
+function lessonKey(lesson: Lesson) {
+  return `${lesson.rule}-${String(lesson.repo_scope)}-${lesson.workspace ?? ''}-${lesson.ts}`
 }
 
 /** `?focus=` value that lands the global Memory view on its lessons. */
@@ -204,6 +219,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const [recordDirty, setRecordDirty] = useState(false)
+  const [vectorDirty, setVectorDirty] = useState(false)
+  const [embedDirty, setEmbedDirty] = useState(false)
   const [recordsOpen, setRecordsOpen] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
   /** The memory store every store-aware card on this page reads, ON THE WIRE.
@@ -227,6 +244,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const storeReadable = selectedStore?.exists !== false
 
   const [lessons, setLessons] = useState<Lesson[]>([]); const [rule, setRule] = useState(''); const [cat, setCat] = useState('knowledge')
+  const [lessonQuery, setLessonQuery] = useState('')
+  // The one row being edited (by `lessonKey`), its draft, and whether its Save is in flight.
+  // `row` is the lesson as it was when Edit opened, kept with the draft so a
+  // refresh that no longer lists the row cannot take the draft with it.
+  const [editing, setEditing] = useState<{ key: string; row: Lesson; text: string; saving?: boolean } | null>(null)
+  const [editError, setEditError] = useState<{ step: 'save' | 'refresh'; message: string } | null>(null)
   const [lessonFeedback, setLessonFeedback] = useState<{
     tone: 'info' | 'warning' | 'error'
     text: string
@@ -245,8 +268,9 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const [settingsSaving, setSettingsSaving] = useState(false)
   // `settingsTouched` as render state: an edited box not yet saved.
   const [settingsUnsaved, setSettingsUnsaved] = useState(false)
-  // Typed but not yet added or saved: leaving drops these too.
-  const dirty = recordDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved
+  // Typed but not yet added or saved: leaving drops these too, and so does an
+  // open lesson edit.
+  const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   const [migrated, setMigrated] = useState(false)
@@ -347,7 +371,21 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     source: (a: Lesson, b: Lesson) => compareText(a.source ?? '', b.source ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
   }), [])
-  const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
+  // A search reads every lesson the list returned (its newest 50), not only
+  // the newest 20 shown without one.
+  // The row being edited stays shown whatever the search, the window or a
+  // refresh leaves out, so its draft and its Save and Cancel are never out of
+  // reach. A row a refresh no longer lists is shown as it was when Edit opened;
+  // if it is really gone, Save is refused with "changed or removed".
+  const editingRow = editing?.row ?? null
+  const recentLessons = useMemo(() => {
+    const query = lessonQuery.trim().toLowerCase()
+    const shown = query ? lessons.filter(l => l.rule.toLowerCase().includes(query)) : lessons.slice(-20)
+    if (editingRow === null) return shown
+    const key = lessonKey(editingRow)
+    if (shown.some(l => lessonKey(l) === key)) return shown
+    return [...shown, lessons.find(l => lessonKey(l) === key) ?? editingRow]
+  }, [lessons, lessonQuery, editingRow])
   const { sorted: sortedLessons, sort: lessonSort, toggle: toggleLessonSort } = useSortableTable(recentLessons, 'memory-lessons', lessonComparators, { key: 'ts', dir: 'desc' })
   useEffect(() => {
     api.memorySettings().then(d => {
@@ -481,7 +519,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
         ? i18nT('pages.overview.memoryTab.consolidated_sessions_skipped_mode', tally)
         : i18nT('pages.overview.memoryTab.consolidated_sessions_skipped', tally)}{skipTip}</>); setConsolidateOk(true)
     } else {
-      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true)
+      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated_count', { count: succeeded })}</>); setConsolidateOk(true)
     }
     setConsolidating(false)
     // Only the plain all-success tally clears itself. A tally with skips is a
@@ -528,6 +566,51 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     // An edit made while the request was in flight is still unsaved.
     setSettingsUnsaved(settingsTouched.current.idle || settingsTouched.current.days)
     setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000)
+  }
+  // The server rewrites the old row in place; on any other outcome the old row
+  // and the draft stay.
+  const saveEdit = async (l: Lesson) => {
+    const key = lessonKey(l)
+    const text = editing?.text.trim() ?? ''
+    if (text === l.rule.trim()) { setEditing(null); return }
+    setEditError(null)
+    setEditing({ key, row: l, text, saving: true })
+    let result: Awaited<ReturnType<typeof api.createLesson>>
+    try {
+      // `replaces` makes it one server-side rewrite of this row: the row count
+      // never changes, so a full store evicts nothing, and an outcome other than
+      // `replaced` leaves the old row as it was.
+      result = await api.createLesson(text, l.category, {
+        scope: l.scope, workspace: l.workspace, repo_scope: l.repo_scope ?? undefined,
+        replaces: { rule: l.rule, repo_scope: l.repo_scope ?? '' },
+      })
+    } catch (e) {
+      setEditing(old => old?.key === key ? { key, row: l, text } : old)
+      setEditError({ step: 'save', message: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (result.outcome !== 'replaced') {
+      setEditing(old => old?.key === key ? { key, row: l, text } : old)
+      // An edit refusal names its own next step; rewording fixes none of these.
+      const editReason = EDIT_REFUSALS[result.reason]
+      setEditError({ step: 'save', message: editReason
+        ? i18nT(editReason)
+        : result.outcome === 'refused'
+        ? i18nT('pages.overview.memoryTab.lesson_not_saved', { reason: result.reason })
+        : result.outcome === 'deduped'
+          ? i18nT('pages.overview.memoryTab.lesson_already_covered', { reason: result.reason })
+          : i18nT('pages.overview.memoryTab.lesson_already_stored') })
+      return
+    }
+    setEditing(old => old?.key === key ? null : old)
+    // The edit is stored, so the editor stays closed. A failed re-read gets the
+    // edit's own notice, titled as saved-but-not-reloaded, so the old wording
+    // still in the table does not read as a lost edit.
+    try {
+      await loadLessons()
+    } catch (e) {
+      setEditError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
+    }
   }
   const addLesson = async () => {
     const text = rule.trim()
@@ -679,9 +762,10 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       onActiveChange={setVectorActive}
       onMigratedChange={setMigrated}
       onSettledChange={setVectorSettled}
+      onDirtyChange={setVectorDirty}
       initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
     />
-    <EmbeddingModelCard />
+    <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
     <details onToggle={event => setRecordsOpen(event.currentTarget.open)}>
       <summary className="min-h-11 cursor-pointer rounded-lg border border-border p-3 text-[13px] text-muted">
         <SlidersHorizontal className="lucide-inline mr-2" aria-hidden="true" />
@@ -786,6 +870,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
           </span>
         )}
       </div>
+      <SearchInput
+        className="mb-3 max-w-sm"
+        aria-label={i18nT('pages.overview.memoryTab.search_lessons')}
+        placeholder={i18nT('pages.overview.memoryTab.search_lessons')}
+        value={lessonQuery}
+        onChange={e => setLessonQuery(e.target.value)}
+      />
       {/* No agent hand-off: it navigates away, and the Add row above may hold
           an unsaved rule draft. */}
       <ErrorNotice
@@ -795,17 +886,33 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
         askAgent={false}
         className="mb-2"
       />
+      {/* No hand-off: the row being edited holds an unsaved draft. */}
+      <ErrorNotice
+        title={i18nT(editError?.step === 'refresh' ? 'pages.overview.memoryTab.edit_saved_refresh_failed' : 'pages.overview.memoryTab.edit_failed')}
+        message={editError?.message}
+        onDismiss={() => setEditError(null)}
+        askAgent={false}
+        className="mb-2"
+      />
       {/* Scrolls sideways rather than clipping: five columns plus a long path
           fragment overrun a narrow viewport, and the card hides overflow. */}
       <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
-          // Scope is part of the key: a scoped and a global row sharing rule text
-          // are two lessons, and can share a timestamp. String() keeps the null
-          // (unusable-scope) row distinct from the "" (global) one; the JSONL tier
-          // keeps a workspace row distinct from a global one.
-          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
-        ))}</tbody></table></div></Card>
+        <tbody>{lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
+          const key = lessonKey(l)
+          // The rule cell holds the same text as a box while editing.
+          const draft = editing?.key === key ? editing.text : null
+          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? l.rule : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
+            <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1.5">{draft === null ? <>
+              {/* Edit only on a JSONL row (one that names its file tier); vector lessons
+                  are edited in the Semantic browser. No Edit where the scope cannot be
+                  sent back as stored, or the rule is listed redacted. */}
+              {l.scope !== undefined && l.repo_scope !== null && l.rule_editable !== false && <Btn disabled={editing !== null} onClick={() => { setEditError(null); setEditing({ key, row: l, text: l.rule }) }}>{i18nT('pages.overview.memoryTab.edit')}</Btn>}
+              <Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn>
+            </> : <>
+              <Btn primary disabled={!draft.trim() || editing?.saving} onClick={() => saveEdit(l)}>{i18nT('pages.overview.memoryTab.save')}</Btn>
+              <Btn disabled={editing?.saving} onClick={() => { setEditError(null); setEditing(null) }}>{i18nT('pages.overview.memoryTab.cancel')}</Btn>
+            </>}</div></td></tr>
+        })}</tbody></table></div></Card>
     )}
     {confirmDialog}
   </>)

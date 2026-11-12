@@ -32,12 +32,16 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _HOOKS_NEUTRALIZER_ARGV,
     _communicate_with_timeout,
     _git_fetch_branch,
+    _mkdtemp_settled,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _FETCH_CAUSE_AUTH,
+    _FETCH_CAUSE_OTHER,
+    _FETCH_CAUSE_TIMEOUT,
     _GIT_FAILURE_CLASS_LABELS,
+    _classify_registry_fetch_failure,
     _entry_git_url,
-    _git_output_is_auth_shaped,
     _git_target_is_unsupported,
     _loggable_git_transport_output,
     _looks_like_git_url,
@@ -208,17 +212,17 @@ async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
     return False
 
 
-# Registries whose latest index fetch failed because git refused the sign-in,
-# keyed by (public repo, branch). The fetch keeps returning ``None`` on failure
-# (callers and tests depend on that shape), so this travels beside it for the
-# refresh path to report. A refused sign-in is the one failure the user fixes
-# themselves, so it is the only one the dashboard names.
-_SIGN_IN_REFUSED: set[tuple[str, str]] = set()
+# Why the latest index fetch of each registry failed, one of
+# ``_REGISTRY_FETCH_CAUSES``, keyed by (public repo, branch); a fetch that
+# succeeded leaves no entry. The fetch keeps returning ``None`` on failure
+# (callers and tests depend on that shape), so the cause travels beside it for
+# the caller to write into the failed-fetch marker and for the refresh to report.
+_FETCH_FAILURE_CAUSES: dict[tuple[str, str], str] = {}
 
 
-def _registry_sign_in_refused(repo: str, branch: str) -> bool:
-    """Whether the last fetch of *repo*@*branch* failed on a refused sign-in."""
-    return (_strip_git_target_userinfo(repo), branch) in _SIGN_IN_REFUSED
+def _registry_fetch_failure(repo: str, branch: str) -> str:
+    """Why the latest fetch of *repo*@*branch* failed, or ``""`` when none is recorded."""
+    return _FETCH_FAILURE_CAUSES.get((_strip_git_target_userinfo(repo), branch), "")
 
 
 def _load_index_entries_sync(
@@ -276,9 +280,8 @@ async def _fetch_external_registry_index(
 ) -> list[dict[str, Any]] | None:
     """Fetch app-registry.json from an external repo via a shallow git clone.
 
-    When the clone fails because git refused the sign-in, that is recorded for
-    :func:`_registry_sign_in_refused`; any later fetch of the same registry
-    clears the record first.
+    Every failure records its cause for :func:`_registry_fetch_failure`; any
+    later fetch of the same registry clears the record first.
 
     *repo* is a git-cloneable URL (https/ssh/git/scp-style).  The repo is
     shallow-cloned into a throwaway temp directory.  If it contains an
@@ -302,19 +305,25 @@ async def _fetch_external_registry_index(
     - Read-only: only ``git clone`` (no write operations to the remote).
     - SEL audit (best-effort): start/outcome events logged when SEL is present.
     """
-    sign_in_key = (_strip_git_target_userinfo(repo), branch)
-    _SIGN_IN_REFUSED.discard(sign_in_key)
+    failure_key = (_strip_git_target_userinfo(repo), branch)
+    _FETCH_FAILURE_CAUSES.pop(failure_key, None)
+
+    def _failed(cause: str) -> list[dict[str, Any]] | None:
+        """Record *cause* and give the fetch's failure answer, ``None``."""
+        _FETCH_FAILURE_CAUSES[failure_key] = cause
+        return None
+
     # Input validation — reject values that could be used for command injection.
     if not _looks_like_git_url(repo):
         logger.warning("Rejecting non-cloneable external registry repo")
-        return None
+        return _failed(_FETCH_CAUSE_OTHER)
     if not _SAFE_BRANCH_RE.match(branch) or ".." in branch:
         logger.warning("Rejecting invalid branch name: %r", branch)
-        return None
+        return _failed(_FETCH_CAUSE_OTHER)
 
     if _git_target_is_unsupported(repo):
         logger.warning("external registry fetch refused an unsupported clone target")
-        return None
+        return _failed(_FETCH_CAUSE_OTHER)
     credential_target = repo
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
@@ -338,11 +347,9 @@ async def _fetch_external_registry_index(
 
     _sel_outcome("started")
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-registry-")
+        tmp_root = await _mkdtemp_settled("kirocrew-registry-")
         clone_path = Path(tmp_root)
         if isolate_transport:
             # See `_git_fetch_branch`: a combined credentialed clone would let
@@ -361,9 +368,9 @@ async def _fetch_external_registry_index(
             if err is not None:
                 _sel_outcome("failed")
                 fetch_text = "\n".join(fetch_log)
-                sign_in_refused = _git_output_is_auth_shaped(fetch_text)
                 # The credentialed fetch already replaced git's output with a fixed
-                # label, so match the labels, not git's raw markers.
+                # label, which the classifier and this lookup both match.
+                cause = _classify_registry_fetch_failure(fetch_text)
                 failure_class = next(
                     (label for _, label in _GIT_FAILURE_CLASS_LABELS if label in fetch_text), ""
                 )
@@ -372,13 +379,11 @@ async def _fetch_external_registry_index(
                     "external registry clone failed: %s",
                     (
                         "git refused the sign-in"
-                        if sign_in_refused
+                        if cause == _FETCH_CAUSE_AUTH
                         else failure_class or "unclassified git failure"
                     ),
                 )
-                if sign_in_refused:
-                    _SIGN_IN_REFUSED.add(sign_in_key)
-                return None
+                return _failed(cause)
         else:
             clone_cmd = [
                 "git",
@@ -411,11 +416,13 @@ async def _fetch_external_registry_index(
             if proc.returncode != 0:
                 text = stderr.decode(errors="replace")
                 tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
-                logger.warning("external registry clone failed: %r", tail)
+                # When ssh fails silently the tail is only git's generic fatal
+                # line, so the exit code is logged beside it.
+                logger.warning(
+                    "external registry clone failed (git exit %s): %r", proc.returncode, tail
+                )
                 _sel_outcome("failed")
-                if _git_output_is_auth_shaped(text):
-                    _SIGN_IN_REFUSED.add(sign_in_key)
-                return None
+                return _failed(_classify_registry_fetch_failure(text))
 
         # Prefer an explicit app-registry.json index, then the apps/*/app.json
         # fallback. Both walk the clone's disk, so they run in ONE
@@ -427,14 +434,21 @@ async def _fetch_external_registry_index(
         if index_entries is not None:
             _sel_outcome("success")
             return _credential_free_external_registry_entries(index_entries)
-        result = fallback_entries or None
-        _sel_outcome("success" if result else "failed")
-        return _credential_free_external_registry_entries(result) if result else None
+        if not fallback_entries:
+            _sel_outcome("failed")
+            return _failed(_FETCH_CAUSE_OTHER)
+        _sel_outcome("success")
+        return _credential_free_external_registry_entries(fallback_entries)
 
-    except (asyncio.TimeoutError, OSError):
+    # First: on Python 3.11 and later ``asyncio.TimeoutError`` is an ``OSError``.
+    except asyncio.TimeoutError:
+        logger.debug("Fetching an external registry timed out")
+        _sel_outcome("failed")
+        return _failed(_FETCH_CAUSE_TIMEOUT)
+    except OSError:
         logger.debug("Failed to fetch external registry")
         _sel_outcome("failed")
-        return None
+        return _failed(_FETCH_CAUSE_OTHER)
     finally:
         if tmp_root:
             await _rmtree_force_settled(tmp_root)
@@ -495,9 +509,10 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     missing"): this is the fetch-then-swap contract the refresh path relies on.
 
     Every call fetches, and its outcome sets or clears the registry's
-    failed-fetch marker (``_EXTERNAL_REGISTRY_FAILURE_TTL``). Only the listing's
-    ``_load_external_registries`` reads that marker, so a refresh is never held
-    back by it.
+    failed-fetch marker (``_EXTERNAL_REGISTRY_FAILURE_TTL``), which a failure
+    writes with its cause. Only the listing's ``_load_external_registries`` is
+    held back by that marker, so a refresh never is; the dashboard reads the
+    cause off it (``_external_registry_fetch_status``).
     """
     # An unnamed legacy registry used its raw URL as the old cache identity,
     # which exposed HTTP userinfo in the filename. Remove that exact artifact
@@ -512,7 +527,8 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     cache_identity = _external_registry_cache_identity(reg)
     entries = await _fetch_external_registry_index(reg.repo, reg.branch)
     if entries is None:
-        await asyncio.to_thread(_write_external_registry_failure, cache_identity)
+        cause = _registry_fetch_failure(reg.repo, reg.branch) or _FETCH_CAUSE_OTHER
+        await asyncio.to_thread(_write_external_registry_failure, cache_identity, cause)
         return None
     # Defensively drop malformed (non-dict) index items before normalization:
     # a configured repo can return a valid JSON array containing a non-object
@@ -546,7 +562,10 @@ async def _load_external_registries() -> list[dict[str, Any]]:
 
     Reads the ``registries`` config field and fetches each repo's index.
     Results are cached for 1 hour. Each entry is tagged with its registry
-    source for UI grouping.
+    source for UI grouping. Before this returns, a freshly fetched index is
+    handed to the owner-tier store-art prewarm and to ``installed_app_tips``,
+    which reads the branch tips of the apps installed from an index-tier
+    registry's versionless rows.
     """
     registries = await asyncio.to_thread(_effective_registries)
     if not registries:
@@ -623,18 +642,26 @@ async def _load_external_registries() -> list[dict[str, Any]]:
             )
 
     if fresh:
-        # One bounded batch per fresh owner-tier registry, run together so the
-        # listing waits at most one batch budget (plus its cancellation cleanup)
-        # for art, however many registries were fresh. A failing prewarm is
-        # logged and never fails the listing: the rows are already in hand.
-        outcomes = await asyncio.gather(
-            *[_prewarm_owner_tier_store_assets(reg, entries) for reg, entries in fresh],
-            return_exceptions=True,
-        )
-        for (reg, _entries), outcome in zip(fresh, outcomes, strict=True):
+        from kiro_crew.apps.installed_app_tips import refresh_installed_tips
+
+        # Two bounded batches per fresh registry, all run together so the
+        # listing waits at most the longer batch budget (plus its cancellation
+        # cleanup), however many registries were fresh: the owner-tier
+        # prewarm, and for an index-tier registry, which has no prewarm, the
+        # branch tips of the apps installed from its versionless rows. Each
+        # returns at once for the other tier. Both finish before the caller
+        # resolves the rows, so a tip read here is what the row's ``version``
+        # and ``update_status`` report. A failing batch is logged and never
+        # fails the listing: the rows are already in hand.
+        prewarms = [_prewarm_owner_tier_store_assets(reg, entries) for reg, entries in fresh]
+        tips = [refresh_installed_tips(reg, entries) for reg, entries in fresh]
+        outcomes = await asyncio.gather(*prewarms, *tips, return_exceptions=True)
+        labels = ["store art prewarm"] * len(fresh) + ["installed app tips"] * len(fresh)
+        for label, (reg, _entries), outcome in zip(labels, fresh + fresh, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 logger.warning(
-                    "store art prewarm for registry %s failed: %s",
+                    "%s for registry %s failed: %s",
+                    label,
                     _public_registry_name(reg),
                     _loggable_git_transport_output(
                         str(outcome),

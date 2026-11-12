@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
@@ -122,6 +123,51 @@ async def test_a_repeated_endpoint_keeps_the_first_and_odd_presence_is_unknown(
     (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert crew.name == "Build team Crew"
     assert (crew.presence, crew.relay_connection_status) == ("UNKNOWN", "UNKNOWN")
+
+
+async def test_last_seen_is_read_from_the_list(fake: FakeCps) -> None:
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.last_seen_at for c in crews] == [1762470000.0, None]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "missing",
+        None,
+        [1762470000],
+        {"at": 1762470000},
+        True,
+        "not a time",
+        "2026-11-08T10:00:00",  # no zone
+        -1,
+        1_000_000_000,  # 2001, before any Crew existed
+        4_102_444_800,  # 2100
+        1e400,  # inf once parsed
+    ],
+)
+async def test_a_bad_last_seen_is_dropped_and_keeps_the_entry(fake: FakeCps, value: Any) -> None:
+    body = page(0)
+    del body["nextToken"]
+    if value == "missing":
+        del body["crewEndpoints"][0]["lastSeenAt"]
+    else:
+        body["crewEndpoints"][0]["lastSeenAt"] = value
+    fake.answer(200, body)
+    (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert crew.endpoint_id == TEAM and crew.last_seen_at is None
+
+
+async def test_last_seen_a_little_ahead_of_this_clock_is_kept(fake: FakeCps) -> None:
+    ahead = int(time.time()) + 120
+    body = page(0)
+    del body["nextToken"]
+    body["crewEndpoints"][0]["lastSeenAt"] = ahead
+    fake.answer(200, body)
+    (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert crew.last_seen_at == float(ahead)
 
 
 async def test_remote_access_off_in_the_list_is_typed(fake: FakeCps) -> None:
@@ -253,6 +299,72 @@ async def test_a_service_it_cannot_reach_is_unreachable() -> None:
     with pytest.raises(CpsRefused) as refused:
         await list_crew_endpoints("http://127.0.0.1:9/", BEARER, crew_domain=DOMAIN)
     assert refused.value.code == cps.UNREACHABLE
+    assert refused.value.request_id is None
+
+
+REQUEST_ID = "3f1c2b9e-0d4a-4c7e-9b51-6a2f8e7d1c00"
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        (REQUEST_ID, REQUEST_ID),
+        ("ABC-123", "ABC-123"),
+        ("a" * 64, "a" * 64),
+        ("a" * 65, None),
+        ("", None),
+        (None, None),
+        ("id with space", None),
+        ("id\x00nul", None),
+        ("id\ttab", None),
+        ("id\x7fdel", None),
+        ("id;semi", None),
+        ("id\u00e9", None),
+    ],
+)
+def test_a_request_id_is_kept_only_when_short_and_plain(
+    value: Optional[str], kept: Optional[str]
+) -> None:
+    assert cps._request_id(value) == kept
+
+
+async def test_a_refusal_carries_the_request_id_and_logs_it(
+    fake: FakeCps, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING)
+    fake.answer(503, b"", {"x-amzn-RequestId": REQUEST_ID})
+    with pytest.raises(CpsRefused) as refused:
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert (refused.value.code, refused.value.request_id) == (cps.SERVICE_ERROR, REQUEST_ID)
+    assert f"request {REQUEST_ID}" in caplog.text
+
+
+async def test_a_refusal_with_no_request_id_header_has_none(
+    fake: FakeCps, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING)
+    fake.answer(429, b"", {"Retry-After": "5"})
+    with pytest.raises(CpsRefused) as refused:
+        await create_crew_access_token(fake.url, BEARER, TEAM)
+    assert (refused.value.code, refused.value.request_id) == (cps.THROTTLED, None)
+    assert "request -)" in caplog.text
+
+
+async def test_a_request_id_over_the_cap_is_dropped(fake: FakeCps) -> None:
+    fake.answer(503, b"", {"x-amzn-RequestId": "a" * 65})
+    with pytest.raises(CpsRefused) as refused:
+        await create_crew_access_token(fake.url, BEARER, TEAM)
+    assert refused.value.request_id is None
+
+
+async def test_a_refusal_in_a_200_answer_carries_the_request_id(fake: FakeCps) -> None:
+    fake.answer(200, page(2), {"x-amzn-RequestId": REQUEST_ID})
+    with pytest.raises(CpsRefused) as refused:
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert (refused.value.code, refused.value.request_id) == (
+        cps.REMOTE_ACCESS_DISABLED,
+        REQUEST_ID,
+    )
 
 
 async def test_no_sign_in_or_token_reaches_the_log(

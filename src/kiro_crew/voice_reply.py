@@ -51,6 +51,13 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_with_findings,
 )
+from kiro_crew.speech_providers import (  # noqa: F401
+    DEFAULT_PROVIDER,
+    PROVIDER_POLLY,
+    PROVIDER_SYSTEM,
+    REMOVED_PROVIDERS,
+    VALID_PROVIDERS,
+)
 from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
     _synthesize_registered,
     iter_registered_chunks,
@@ -85,22 +92,6 @@ def resolve_polly_cli() -> str | None:
     """
     aws_bin = resolve_aws_bin()
     return aws_bin if shutil.which(aws_bin) else None
-
-
-# ── Provider constants ──
-PROVIDER_POLLY = "polly"
-PROVIDER_SYSTEM = "system"
-VALID_PROVIDERS = frozenset({PROVIDER_POLLY, PROVIDER_SYSTEM})
-# Removed providers a saved config may still name. Each resolves to the
-# default with one warning per process; see docs/request-for-change/
-# rfc-remove-piper-tts.md. The ``piper_*`` keys beside it are left in
-# config.json, unread, so a downgrade still finds them.
-REMOVED_PROVIDERS = frozenset({"piper"})
-# The host's built-in speech engine is the default because it is the only
-# provider that needs nothing installed and no account: macOS and Windows both
-# ship one, so auto-speak works on a fresh machine. Polly is the paid cloud
-# option, used only when explicitly selected.
-DEFAULT_PROVIDER = PROVIDER_SYSTEM
 
 
 def valid_providers() -> frozenset[str]:
@@ -1396,6 +1387,34 @@ class VoiceSynthesisError(RuntimeError):
         self.code = code
 
 
+def _stitch_ffmpeg() -> str | None:
+    """The ffmpeg the stitch runs: a trusted directory first, then ``PATH``.
+
+    The stitch runs in the gateway, outside the agent sandbox, and the
+    gateway's ``PATH`` can hold a directory the sandbox can write
+    (``~/.local/bin`` in the service unit). So the fixed system and
+    package-manager directories the transcriber trusts
+    (``transcribe._find_system_ffmpeg``) win whenever one of them has an
+    ffmpeg, and a ``PATH`` entry cannot shadow them. Only when none does is the
+    ``PATH`` lookup used, so every ffmpeg the stitch found before is still
+    found; that fallback is logged with the path it chose.
+    """
+    # Read through the facade at call time, which is the patch surface every
+    # ffmpeg caller shares.
+    from kiro_crew import transcribe
+
+    trusted = transcribe._find_system_ffmpeg()
+    if trusted is not None:
+        return trusted
+    found = shutil.which("ffmpeg")
+    if found is not None:
+        logger.warning(
+            "voice_reply: no ffmpeg in a trusted system directory; " "stitching with %s from PATH",
+            found,
+        )
+    return found
+
+
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
@@ -1404,8 +1423,14 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
     argument) is removed on any unsuccessful exit; a caller-supplied
     ``output`` path is left untouched.
 
-    Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
-    path fails there; making it optional with a warning is a known gap. The
+    Which ffmpeg runs is decided by :func:`_stitch_ffmpeg`: the fixed system
+    and package-manager directories the transcriber trusts come first, and the
+    gateway's ``PATH`` is used only when none of them has one. The bundled and
+    stored decoders are not used: they are audio-only builds with no concat
+    demuxer and no MP3 muxer, so they cannot stitch.
+
+    A host with no ffmpeg in those directories or on ``PATH`` returns ``None``;
+    the dashboard caller then completes the request without a replay clip. The
     Slack thread-upload path is unaffected.
     """
     if not paths:
@@ -1430,14 +1455,35 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             except OSError:
                 pass
 
-    concat = "|".join(paths)
+    listing: str | None = None
     succeeded = False
     try:
+        # The lookup probes the filesystem, so it runs off the event loop.
+        ffmpeg_bin = await asyncio.to_thread(_stitch_ffmpeg)
+        if ffmpeg_bin is None:
+            logger.warning(
+                "voice_reply: no ffmpeg in a trusted system directory; "
+                "skipping the replay clip stitch"
+            )
+            return None
+        # The chunk paths go in a list file for ffmpeg's concat demuxer, so the
+        # command line keeps one length for any chunk count: Windows refuses
+        # one over 32,767 characters. Single quotes keep each path literal, and
+        # ``'\''`` writes a quote inside them.
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            listing = f.name
+            for path in paths:
+                quoted = path.replace("'", "'\\''")
+                f.write(f"file '{quoted}'\n")
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            f"concat:{concat}",
+            listing,
             "-c",
             "copy",
             output,
@@ -1475,6 +1521,11 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         logger.exception("ffmpeg stitch failed")
         return None
     finally:
+        if listing is not None:
+            try:
+                os.unlink(listing)
+            except OSError:
+                pass
         # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
         # CancelledError, which ``except Exception`` does not catch — must
         # discard the owned output, or a new exit path re-opens the leak.
@@ -1576,7 +1627,7 @@ def _warn_removed_provider(name: str) -> None:
     )
 
 
-def resolve_configured_provider(section: dict | None) -> str:
+def resolve_configured_provider(section: dict | None, *, warn: bool = True) -> str:
     """Resolve the provider from a raw ``voice_reply`` config section.
 
     One implementation for every reader, so the rules below cannot drift between
@@ -1598,11 +1649,15 @@ def resolve_configured_provider(section: dict | None) -> str:
     ``piper_model`` from before ``system`` became the default resolves like any
     absent one, each with one warning per process so the operator can see why
     their voice changed.
+
+    ``warn=False`` resolves the same way without logging, for a periodic reader
+    (the voice-provider inventory gauge) that would otherwise repeat the invalid
+    value warning on every collection.
     """
     section = section or {}
     provider = section.get("provider")
     if not provider:
-        if validated_config_string(section.get("piper_model")):
+        if warn and validated_config_string(section.get("piper_model")):
             _warn_removed_provider("piper")
         # Only an absent, null or empty provider takes the edition default. A
         # malformed falsy value (``false``, ``0``, ``[]``) keeps the built-in one.
@@ -1610,7 +1665,8 @@ def resolve_configured_provider(section: dict | None) -> str:
             return default_provider()
         return DEFAULT_PROVIDER
     if isinstance(provider, str) and provider in REMOVED_PROVIDERS:
-        _warn_removed_provider(provider)
+        if warn:
+            _warn_removed_provider(provider)
         return DEFAULT_PROVIDER
     # ``in VALID_PROVIDERS`` raises TypeError on an unhashable JSON value
     # (config.json can hold a list or dict where a string belongs), so the type
@@ -1620,12 +1676,13 @@ def resolve_configured_provider(section: dict | None) -> str:
         # Deliberately the built-in DEFAULT_PROVIDER, not the edition default: a
         # mistyped value must not land on a provider (possibly a hosted, billed
         # one) that nobody chose.
-        logger.warning(
-            "voice_reply.provider %r not in %s, defaulting to %r",
-            provider,
-            sorted(selectable),
-            DEFAULT_PROVIDER,
-        )
+        if warn:
+            logger.warning(
+                "voice_reply.provider %r not in %s, defaulting to %r",
+                provider,
+                sorted(selectable),
+                DEFAULT_PROVIDER,
+            )
         return DEFAULT_PROVIDER
     return provider
 

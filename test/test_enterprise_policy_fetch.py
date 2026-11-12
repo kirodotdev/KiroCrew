@@ -1328,3 +1328,48 @@ class TestBootWithoutCompanion:
         err = capsys.readouterr().err
         assert "governance rules" in err
         assert _TOKEN not in err
+
+
+class TestOlderTranslationTerminalRefusal:
+    """A ``t2`` translation wrote ``boot.allow_terminal: false``, which nothing enforced.
+    Read as left out, so an upgraded host keeps its terminal before any refresh lands."""
+
+    def test_an_offline_host_with_a_t2_cache_keeps_the_terminal(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import terminal_session
+        from kiro_crew.platform import context as platform_context
+        from kiro_crew.platform import policy_distribution_source as src
+
+        vault()
+        governance.load_security_policy()
+        cached = pd.read_cache()
+        doc = json.loads(cached.body)
+        doc["boot"]["allow_terminal"] = False  # what the t2 translation wrote
+        scope = epf.document_scope(cached.body)
+        pd.write_cache(
+            json.dumps(doc).encode("utf-8"),
+            source=src._source_identity(pd.ENTERPRISE_POLICY_URL, cached.body),
+            etag=f"{scope}:t2/{epf.cached_version(cached.etag)}",
+        )
+        _restart(monkeypatch)
+        cps.reply = TimeoutError("down")
+        ceiling = governance.load_security_policy()
+        assert ceiling.boot.allow_terminal is None
+        monkeypatch.setattr(
+            platform_context, "current_context", lambda: SimpleNamespace(governance=ceiling)
+        )
+        assert terminal_session._terminal_enabled({"enabled": True}) is True
+
+    @pytest.mark.parametrize(
+        ("issuer", "expected"),
+        [(epf.ISSUER_PREFIX + "abc", None), ("operator", False)],
+    )
+    def test_only_a_translated_document_has_its_refusal_dropped(self, issuer, expected):
+        from kiro_crew.platform import policy_distribution_boot as boot
+
+        doc = {"version": 1, "boot": {"allow_terminal": False}, "identity": {"issuer": issuer}}
+        ceiling = boot.parse_distributed_policy(json.dumps(doc).encode("utf-8"), source="")
+        assert ceiling.boot.allow_terminal is expected

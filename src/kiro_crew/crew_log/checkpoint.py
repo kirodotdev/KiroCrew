@@ -93,10 +93,11 @@ import dataclasses
 import json
 import logging
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple, TypeVar
 
+from kiro_crew.crew_log import slot_state_codec
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
@@ -188,6 +189,11 @@ CHECKPOINT_DIR: Final[str] = "projections"
 #: gains a unit (a session reset) finds no savepoint at its new newest unit. A warm cell
 #: in the same process carries over that rollover; a new process folds cold once.
 SLOT_CHECKPOINT_DIR: Final[str] = "slot-projections"
+
+#: Set only in a backfill child (:mod:`kiro_crew.crew_log.slot_backfill_child`): the
+#: directory :func:`save_slot` writes a unit's slot savepoints to instead of the unit's
+#: own, taking no lease. ``None`` in every other process.
+slot_save_dir: "Callable[[CrewLog], Path | None] | None" = None
 
 #: Largest savepoint file this package reads or writes, and the number the kernel
 #: store ENFORCES (:data:`~kiro_crew.projection.MAX_PAYLOAD_BYTES`). Every fold's
@@ -826,6 +832,7 @@ def save(
     *,
     prefix: "PrefixWitness | CutWitness | None",
     owes_point: bool = False,
+    final: bool = False,
 ) -> SessionProjections:
     """*bundle*, with its savepoints on disk brought forward when a write is owed.
 
@@ -862,14 +869,18 @@ def save(
     # this pass has one to give them. Owed only with a position in hand, so a pass that
     # read nothing cannot rewrite five files for no gain.
     owed = owes_point and prefix is not None and prefix.resume is not None
-    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES and not owed:
+    # *final* is :func:`~kiro_crew.crew_log.projection_session_memo.seal_session_folds`'s
+    # write on a closed unit: owed for any advance, since the unit will not be written
+    # again.
+    sealed = final and bundle.last_seq > bundle.saved_seq
+    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES and not owed and not sealed:
         return bundle
     if prefix is not None and bundle.size is not None:
-        # The files must be exactly as they were BEFORE the pass (the bundle's segment
-        # set fingerprint), or the extent taken below would describe bytes the pass never
-        # read: a record rewritten between the pass and this write would be pinned as if
-        # it were the one folded. A file that moved at all -- even by an append -- costs
-        # this write, and the next pass writes instead.
+        # The files must be exactly as they were when the pass ENDED (the bundle's
+        # segment set fingerprint), or the extent taken below would describe bytes the
+        # pass never read: a record rewritten between the pass and this write would be
+        # pinned as if it were the one folded. A file that moved at all -- even by an
+        # append -- costs this write, and the next pass writes instead.
         _origin, live_size, live_mtime = _log_identity(handle)
         if (live_size, live_mtime) != (bundle.size, bundle.mtime_ns):
             return bundle
@@ -1007,7 +1018,8 @@ def save(
 #: A payload without this wrapper decodes to a state with none of the fold's keys, which
 #: :func:`~kiro_crew.crew_log.projection.Checkpoint.from_dict` refuses, so it cold-folds
 #: rather than being misread.
-_SLOT_STATE_JSON: Final[str] = "state_json"
+#: Stored compressed when large (:mod:`~kiro_crew.crew_log.slot_state_codec`).
+_SLOT_STATE_JSON: Final[str] = slot_state_codec.STATE_JSON
 
 
 class SlotSavepoint(NamedTuple):
@@ -1174,8 +1186,8 @@ def _decoded_slot_state(payload: Any, name: str) -> "dict[str, Any] | None":
     """
     if not isinstance(payload, dict):
         return None
-    encoded = payload.get(_SLOT_STATE_JSON)
-    if not isinstance(encoded, str):
+    encoded = slot_state_codec.decode_state(payload)
+    if encoded is None:
         logger.debug("crew log slot savepoint for %s carries no encoded state", name)
         return None
     try:
@@ -1318,8 +1330,12 @@ def save_slot(
         origin=origin,
         first_seq=first_seq,
     )
-    lease = _hold(handle)
-    if lease is None:
+    # A backfill child writes to its staging directory instead, with no lease: the
+    # gateway's writers hold it, and the gateway moves the file in under it
+    # (``slot_backfill_child.admit``).
+    redirect = slot_save_dir
+    lease = None if redirect is not None else _hold(handle)
+    if lease is None and redirect is None:
         return False
     written = False
     #: Whether the store was actually asked to write. Set only around that call, so
@@ -1327,7 +1343,9 @@ def save_slot(
     offered = False
     elapsed_ms = 0.0
     try:
-        directory = _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
+        directory = (
+            redirect(handle) if redirect is not None else _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
+        )
         if directory is None:
             return False
         store = _UnitStore(directory)
@@ -1351,7 +1369,7 @@ def save_slot(
                     key=name,
                     state_version=fold_state_version(name),
                     watermark=watermark,
-                    state={_SLOT_STATE_JSON: encoded},
+                    state=slot_state_codec.encode_state(encoded),
                     identity=block,
                     witness=witness_mapping(prefix),
                 ),
@@ -1362,10 +1380,11 @@ def save_slot(
             # False here on that path, since the assignment never completed.
             offered = True
             elapsed_ms = (time.monotonic() - started) * 1000.0
-        if _discard_if_unit_gone(handle, directory):
+        if redirect is None and _discard_if_unit_gone(handle, directory):
             return False
     finally:
-        release_lease(lease)
+        if lease is not None:
+            release_lease(lease)
         # After the lease, for the reason :func:`_count_savepoint_write` states. Exactly
         # one point per call that reached the store, and none from a call that returned
         # before it: an unserializable state, a missing directory and a contended lease

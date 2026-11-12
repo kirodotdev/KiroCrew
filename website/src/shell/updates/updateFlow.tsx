@@ -8,6 +8,8 @@ import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease 
 import { safeSetItem } from '../../utils/safeStorage'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import { InAppUpdateFlow } from '../../pages/settings/AboutPanel'
 import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
 import { i18nT } from '../../i18n/t'
@@ -51,7 +53,7 @@ export function useUpdateFlow() {
   const [updateError, setUpdateError] = useState('')
   // Close update modal when progress clears (simulation complete or cancelled)
   useEffect(() => {
-    if (!updateProgress && (updating || showUpdateModal)) {
+    if ((!updateProgress || updateProgress.step === 'done') && (updating || showUpdateModal)) {
       setUpdating(false)
       setShowUpdateModal(false)
     }
@@ -121,7 +123,9 @@ export function useUpdateFlow() {
     setUpdateError('')
     setUpdating(true)
     try {
+      // Arms the update for the next start: nothing installs or restarts now.
       await api.applyUpdate()
+      setUpdating(false)
     } catch (err: unknown) {
       setUpdating(false)
       let msg = i18nT('app.update_failed_2')
@@ -169,6 +173,35 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
   // Escape closes like the X button; Tab stays inside; focus returns on close.
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocusTrap(dialogRef, close)
+  // One full-changelog fetch at a time: a second click while it is in flight
+  // starts none, so no later answer can reopen what the user hid. An answer
+  // that lands after the dialog closed is dropped too.
+  const fetchingFull = useRef(false)
+  const mounted = useRef(true)
+  const [fullError, setFullError] = useState<{ message: string; report?: ErrorReport } | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const toggleFull = async () => {
+    if (showFull) { setShowFull(false); return }
+    if (fullChangelog) { setShowFull(true); return }
+    if (fetchingFull.current) return
+    fetchingFull.current = true
+    setFullError(null)
+    try {
+      const d = await api.changelog()
+      if (!mounted.current) return
+      setFullChangelog(d.content || '')
+      setShowFull(true)
+    } catch (e) {
+      // The toggle itself is the retry. The report carries the request's
+      // details to the agent hand-off.
+      if (mounted.current) setFullError({ message: i18nT('app.couldn_t_load_full_changelog'), report: reportForError(e) })
+    } finally {
+      fetchingFull.current = false
+    }
+  }
   return (
     <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
       {/* Sized for a real release, not a patch note: a minor's section runs
@@ -216,7 +249,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
         {updateAvailable ? (
           affordance === 'apply' ? (
             <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-              {i18nT('app.update_now')}
+              {i18nT('app.update_when_i_restart')}
             </button>
           ) : affordance === 'arm' ? (
             <InAppUpdateFlow
@@ -244,9 +277,10 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
             of it, and the dialog then scrolls rather than collapsing this
             box to zero height. */}
         <div className={`mt-3 pt-3 border-t border-border flex flex-col flex-1 ${showFull ? 'min-h-[10rem]' : 'min-h-0'}`}>
-          <button className="self-start shrink-0 text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
-            if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
-          }}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
+          <button className="self-start shrink-0 text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={toggleFull}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
+          {fullError && (
+            <ErrorNotice variant="inline" className="mt-2" message={fullError.message} report={fullError.report} askAgent onHandoff={close} testId="changelog-full-error" />
+          )}
           {showFull && fullChangelog && (
             <div className="mt-2 bg-bg rounded-lg border border-border flex-1 min-h-0 flex flex-col" data-testid="changelog-full">
               <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-full-scroll">

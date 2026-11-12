@@ -329,7 +329,7 @@ class TestSpawnSubAgentsWaitsOnlyForStartedWork:
             return {}
 
         def _get(path: str, **_kw: object) -> dict:
-            aid = path.rsplit("/", 1)[-1]
+            aid = path.partition("?")[0].rsplit("/", 1)[-1]
             gets[aid] = gets.get(aid, 0) + 1
             if aid == "a1":
                 return {"id": "a1", "done": True, "result": "A"}
@@ -534,9 +534,12 @@ class TestSpawnSubAgentsReleasesDeferredMembers:
             return {}
 
         def _get(path: str, **_kw: object) -> dict:
-            calls.append(("GET", path, None))
             if "/resume" in path:
+                calls.append(("GET", path, None))
                 return next(resume)
+            # A status read, less the hold the wait asks the gateway for.
+            path = path.partition("?")[0]
+            calls.append(("GET", path, None))
             aid = path.rsplit("/", 1)[-1]
             if aid == "a1":
                 polls_of_a["n"] += 1

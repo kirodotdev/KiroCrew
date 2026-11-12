@@ -34,6 +34,7 @@ from aiohttp import web
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
+from kiro_crew.dashboard.handlers.usage_history import _parse_token_history
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -712,6 +713,12 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "sessions": sessions,
             "billing": billing,
             "codex": await asyncio.to_thread(read_codex_rate_limits),
+            # Every turn's tokens and dollar cost from the usage shards: what a
+            # harness that bills in dollars has instead of a credit plan.
+            "tokens": await asyncio.to_thread(_parse_token_history),
+            # The gateway's local calendar day, the key its usage rows file days
+            # under, so a browser in another zone picks today's bucket by it.
+            "local_day": datetime.now().strftime("%Y-%m-%d"),
             "refreshing": refreshing,
         }
 
@@ -781,9 +788,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TOKEN_CACHE_TS,
         _TOKEN_CACHE_TTL,
         _TOKEN_HISTORY_DAYS,
-        _parse_token_history,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
+        _BACKGROUND_CALL_SURFACE_PREFIX,
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
@@ -797,15 +804,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kas_transcripts,
         _parse_sessions,
         _pin_listing_dir,
+        _row_messages,
+        _shard_sessions,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
+        _DAILY_SPEND_FIELDS,
         _SLOT_SPEND_CACHE,
         _SLOT_SPEND_CACHE_AT,
         _SLOT_SPEND_CACHE_SIG,
         _SLOT_SPEND_TTL_S,
         TURN_USAGE_FIELDS,
+        _finite_number,
         daily_credits,
+        daily_spend,
         slot_spend,
         slot_turn_usage,
         spend_key_for_slot,
@@ -817,6 +829,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NON_SESSION_CHANNELS,
         _SESSIONS_DIR,
         _SESSIONS_HISTORY_DAYS,
+        _SHARD_COUNTED_PROVIDERS,
         _TOKEN_USAGE_DIR,
         MAX_WINDOW_DAYS,
         NAVIGABLE_CATEGORY,
@@ -834,6 +847,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401

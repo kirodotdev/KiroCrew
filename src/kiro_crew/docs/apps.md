@@ -190,16 +190,29 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app install git@github.com:you/my-app.git   # ...or clone a GitHub or GitLab repository
 kirocrew app update my-app             # re-copy it from that directory, keeping its data
 kirocrew app update my-app --source /path/to/my-app-v2   # ...or from another directory
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
 
+A git URL (`https://`, `ssh://` or `git@host:org/repo.git`) is cloned with your own git
+setup, so it installs whenever you could `git clone` it yourself, private repositories
+included. `--ref` picks a branch or tag, and `--subdirectory` names the folder holding
+`app.json` when it is neither the repository root nor its only top-level app folder.
+Each install keeps its clone in a new folder under `~/.kiro/crew/app-git-checkouts/`, and
+prints where. To update the app, run `git -C <that folder> pull`, then
+`kirocrew app update <app>` (after a `--ref <tag>` install, the command prints how to move to
+another tag). Old clones are never deleted for you: remove one once its app is uninstalled. A URL with a password
+or token in it, or a plaintext `http://` or `git://` URL, is refused: use an SSH key or a
+git credential helper instead.
+
 `update` is what the Update (or Sync) button on an app's page does, from a terminal: the
 running gateway stops the app, replaces its files, keeps its data and whether it
 was enabled, and starts it again. It needs the gateway running; with none to
-reach it changes nothing and says so.
+reach it changes nothing and says so. It is not available on native Windows; there,
+press Update (or Sync) on the app's page.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`

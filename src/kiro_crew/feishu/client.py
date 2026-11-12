@@ -219,6 +219,15 @@ def _post_body(content: dict[str, Any]) -> tuple[str, list[tuple[Attachment, str
     ``@_user_N`` placeholder, so mentions and commands read as in a plain
     message. ``img`` and ``media`` nodes become resource references; emoji and
     rules carry nothing to read.
+
+    A file attached alongside the text does NOT ride in ``content`` -- Feishu
+    puts it in a top-level ``files`` array that the published content reference
+    omits. Each entry that is a dict with a key becomes the same ``file``
+    resource a single-file message does, so it runs the identical gates, limits
+    and download path; a folder entry has no key the resource API can fetch, so
+    it is named as unreadable in the same ``[Attachment <name> — <reason>]``
+    line ``ingest_attachments`` uses for a rejection rather than dropped in
+    silence.
     """
     lines = [str(content.get("title") or "")]
     files: list[tuple[Attachment, str]] = []
@@ -241,6 +250,14 @@ def _post_body(content: dict[str, Any]) -> tuple[str, list[tuple[Attachment, str
             elif tag == "media":
                 files += _resource("media", node)
         lines.append("".join(parts))
+    for entry in content.get("files") or ():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("is_folder"):
+            name = str(entry.get("file_name") or "folder")
+            lines.append(f"[Attachment {name} — a folder cannot be fetched here]")
+        else:
+            files += _resource("file", entry)
     return "\n".join(lines).strip(), files
 
 
@@ -801,8 +818,20 @@ class LarkClient:
         """
         loop = self._loop
         handler = self._on_message
+        # A closed client delivers nothing: an SDK receiver that outlived its
+        # close() (a reconnect it finished on its own) must not reach the
+        # dispatcher of a channel that was disabled or replaced.
+        if self._closed:
+            return
         if loop is not None and not loop.is_closed() and handler is not None:
-            asyncio.run_coroutine_threadsafe(handler(inbound), loop)
+
+            async def _run_if_open() -> None:
+                # Checked again on the loop: a delivery queued just before
+                # close() started must not run once the client is closed.
+                if not self._closed:
+                    await handler(inbound)
+
+            asyncio.run_coroutine_threadsafe(_run_if_open(), loop)
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -932,41 +961,54 @@ class LarkClient:
         if identity_task is not None and not identity_task.done():
             identity_task.cancel()
         ws = self._ws_client
-        if ws is not None:
-            stop = getattr(ws, "stop", None)
-            if callable(stop):
-                # A future SDK may expose a synchronous stop. Keep it off the
-                # gateway loop because a wedged peer would otherwise freeze all
-                # tasks and make the caller's timeout ineffective.
+        try:
+            if ws is not None:
+                await self._stop_receiver(ws)
+        finally:
+            # Also when the caller's timeout cancels the wait above: the
+            # executors and the badge must still be released.
+            # Do not wait: an in-flight REST reply must not hold up shutdown.
+            self._executor.shutdown(wait=False)
+            self._download_executor.shutdown(wait=False)
+            # An intentional shutdown is still "not connected" — with no reason,
+            # because nothing failed.
+            self._notify_state(False, "")
+            logger.info("Feishu client closed")
+
+    async def _stop_receiver(self, ws: Any) -> None:
+        """Stop the SDK's receiver: its own ``stop`` when it has one, else its loop."""
+        stop = getattr(ws, "stop", None)
+        if callable(stop):
+            # A future SDK may expose a synchronous stop. Keep it off the
+            # gateway loop because a wedged peer would otherwise freeze all
+            # tasks and make the caller's timeout ineffective.
+            try:
+                await asyncio.get_running_loop().run_in_executor(self._executor, stop)
+            except Exception:
+                logger.debug("Feishu WS stop failed", exc_info=True)
+            return
+        ws_loop = self._ws_loop
+        if ws_loop is None or ws_loop.is_closed():
+            return
+        # lark-oapi 1.x exposes only the private async disconnect used by its own
+        # reconnect path. Disable reconnect before closing, then stop the loop that
+        # blocks in start().
+        if hasattr(ws, "_auto_reconnect"):
+            ws._auto_reconnect = False
+        disconnect = getattr(ws, "_disconnect", None)
+        try:
+            if callable(disconnect) and ws_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(disconnect(), ws_loop)
                 try:
-                    await asyncio.get_running_loop().run_in_executor(self._executor, stop)
+                    await asyncio.wrap_future(future)
                 except Exception:
-                    logger.debug("Feishu WS stop failed", exc_info=True)
-            else:
-                ws_loop = self._ws_loop
-                if ws_loop is not None and not ws_loop.is_closed():
-                    # lark-oapi 1.x exposes only the private async disconnect
-                    # used by its own reconnect path. Disable reconnect before
-                    # closing, then stop the loop that blocks in start().
-                    if hasattr(ws, "_auto_reconnect"):
-                        ws._auto_reconnect = False
-                    disconnect = getattr(ws, "_disconnect", None)
-                    if callable(disconnect) and ws_loop.is_running():
-                        future = asyncio.run_coroutine_threadsafe(disconnect(), ws_loop)
-                        try:
-                            await asyncio.wrap_future(future)
-                        except Exception:
-                            logger.debug("Feishu WS disconnect failed", exc_info=True)
-                    try:
-                        ws_loop.call_soon_threadsafe(ws_loop.stop)
-                    except RuntimeError:
-                        # The disconnect may make a future SDK return from
-                        # start() and close the loop before this signal lands.
-                        pass
-        # Do not wait: an in-flight REST reply must not hold up shutdown.
-        self._executor.shutdown(wait=False)
-        self._download_executor.shutdown(wait=False)
-        # An intentional shutdown is still "not connected" — with no reason,
-        # because nothing failed.
-        self._notify_state(False, "")
-        logger.info("Feishu client closed")
+                    logger.debug("Feishu WS disconnect failed", exc_info=True)
+        finally:
+            # Also when the wait is cancelled: a loop left running reconnects
+            # on its own once the network is back.
+            try:
+                ws_loop.call_soon_threadsafe(ws_loop.stop)
+            except RuntimeError:
+                # The disconnect may make a future SDK return from start() and
+                # close the loop before this signal lands.
+                pass

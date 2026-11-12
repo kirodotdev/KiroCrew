@@ -32,7 +32,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { MeetingsApiError, meetingsApi, type TranscriptSegment } from '../api'
-import { reportIfMicDenied } from '../../../hooks/mic'
+import { acquireMicStream, reportIfMicDenied } from '../../../hooks/mic'
 import { dictationSeparator, joinTranscript, transcriptTail } from '../../../lib/dictationText'
 import { withBase } from '../../../lib/basePath'
 
@@ -65,9 +65,16 @@ const TERMINAL_ERROR_CODES = new Set([
 
 /** Cap the locally buffered pre-`ready` audio at ~8s (16 kHz mono Int16 = 32 KB/s). */
 const MAX_BUFFERED_BYTES = 8 * 32 * 1024
-/** Reconnect when no server frame has arrived for this long while recording. */
+/** Reconnect when the live socket has shown no sign of life for this long while recording. */
 const STALL_TIMEOUT_MS = 20_000
+/** Unsent audio past this much (one second) means the socket is not taking it. */
+const STALLED_SEND_BYTES = 32 * 1024
 const WATCHDOG_INTERVAL_MS = 5_000
+
+/** Whether *stream* still has a live audio track; an ended one only feeds silence. */
+function isCapturing(stream: MediaStream): boolean {
+  return stream.getAudioTracks().some(t => t.readyState === 'live')
+}
 /** How long to wait for the server to close after `stop` before forcing it. */
 const CLOSE_GRACE_MS = 8_000
 
@@ -911,7 +918,9 @@ export function useMeetingTranscription({
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // The microphone saved in Settings, as dictation records; the system
+      // default only when that device is gone or busy.
+      stream = await acquireMicStream()
     } catch (e) {
       // A stop or unmount during the prompt already reset the session; a denial
       // answered after that is not this session's error to report.
@@ -974,6 +983,14 @@ export function useMeetingTranscription({
       if (target.ready) {
         if (target.ws.readyState === WebSocket.OPEN) {
           try { target.ws.send(chunk) } catch { /* CLOSING */ }
+          // After `ready` the server sends a frame only on speech or an error,
+          // so a quiet room is silent on the wire. Audio the socket keeps taking
+          // from a live microphone is the sign of life there. Audio that backs
+          // up is not, and neither is the silence an ended track still feeds the
+          // worklet (an unplugged device), so the watchdog re-acquires the mic.
+          if (target.ws.bufferedAmount < STALLED_SEND_BYTES && isCapturing(stream)) {
+            lastFrameRef.current = Date.now()
+          }
         }
         return
       }
@@ -1012,8 +1029,8 @@ export function useMeetingTranscription({
       // while any is draining, the longest drain budget is the stall window.
       const stallMs = Math.max(STALL_TIMEOUT_MS, ...[...drainsRef.current].map(l => l.drainBudgetMs))
       if (Date.now() - lastFrameRef.current > stallMs) {
-        // A silent stream is indistinguishable from a wedged one from here, and
-        // a wedged one loses the rest of the meeting — so reconnect.
+        // No frame, and no audio leaving the socket: the stream is wedged or
+        // capture stopped, and either loses the rest of the meeting, so reconnect.
         cleanup()
         void start()
       }

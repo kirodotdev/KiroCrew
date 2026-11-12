@@ -1,11 +1,14 @@
 /**
  * The app SDK's hooks against a stubbed host context: the subscription pre-check
  * and its console diagnostics (logged once per app and event), the theme read
- * from the document and its live update, and the navigation badge event.
+ * from the document and its live update, the navigation badge event, and the
+ * app's own notification list.
  */
+import { createElement, type ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
-import { useAppEvents, useNavBadge, useTheme } from './index'
+import { useAppEvents, useAppNotifications, useNavBadge, useTheme } from './index'
 
 const ctx = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
 
@@ -129,5 +132,61 @@ describe('useNavBadge', () => {
       { appName: 'cov-badge', count: 4 },
       { appName: 'cov-badge', count: 0 },
     ])
+  })
+})
+
+describe('useAppNotifications', () => {
+  it("reads this app's own notes and acks one, then reads them again", async () => {
+    setHost('cov-notes', [])
+    const unread = [{ ts: 't1', channel: 'cov-notes.updates', title: 'a', body: 'b' }]
+    const read = [{ ...unread[0], acked: true }]
+    const get = vi.fn()
+      .mockResolvedValue({ notifications: read, unread: 0 })
+      .mockResolvedValueOnce({ notifications: unread, unread: 1 })
+    const post = vi.fn().mockResolvedValue({ ok: true })
+    ctx.current.api = { get, post }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children)
+
+    const { result } = renderHook(() => useAppNotifications(), { wrapper })
+    expect(result.current.status).toBe('loading')
+    await waitFor(() => expect(result.current.unread).toBe(1))
+    expect(result.current.status).toBe('ready')
+    expect(result.current.items).toEqual(unread)
+    expect(get).toHaveBeenCalledWith('/api/notifications/own?app=cov-notes')
+
+    await act(() => result.current.ack('t1'))
+    expect(post).toHaveBeenCalledWith('/api/notifications/own/ack', { app: 'cov-notes', ts: 't1' })
+    await waitFor(() => expect(result.current.unread).toBe(0))
+    expect(result.current.items).toEqual(read)
+    client.clear()
+  })
+
+  it('acks each unread note it holds through ack, past one already gone, then reads once', async () => {
+    setHost('cov-notes', [])
+    const held = [
+      { ts: 't1', channel: 'cov-notes.updates', title: 'a', body: 'b', acked: true },
+      { ts: 't2', channel: 'cov-notes.updates', title: 'c', body: 'd' },
+      { ts: 't3', channel: 'cov-notes.updates', title: 'e', body: 'f' },
+    ]
+    const get = vi.fn().mockResolvedValue({ notifications: held, unread: 2 })
+    // t2 left the bell after the page read the list: the host answers 404 for it.
+    const gone = Object.assign(new Error('API 404: no such notification'), { status: 404, body: '' })
+    const post = vi.fn().mockRejectedValueOnce(gone).mockResolvedValue({ ok: true })
+    ctx.current.api = { get, post }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children)
+
+    const { result } = renderHook(() => useAppNotifications(), { wrapper })
+    await waitFor(() => expect(result.current.unread).toBe(2))
+    await act(() => result.current.ackAll())
+    expect(post.mock.calls).toEqual([
+      ['/api/notifications/own/ack', { app: 'cov-notes', ts: 't2' }],
+      ['/api/notifications/own/ack', { app: 'cov-notes', ts: 't3' }],
+    ])
+    expect(get).toHaveBeenCalledTimes(2)
+    client.clear()
   })
 })

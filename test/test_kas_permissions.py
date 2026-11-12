@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.acp import kas_permissions
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
     CAPABILITY_BY_TOOL,
@@ -188,9 +189,9 @@ class TestMcpEntries:
 class TestToolGlobsTravelAsWritten:
     """A tool-part glob means the same thing on both backends, so it is relayed.
 
-    kiro-cli documents ``@server/read_*`` in ``allowedTools`` (``*`` and ``?``
-    over the tool name) and KAS's resource matcher reads ``server/read_*`` the
-    same way. Dropping it made one line of text a grant on kiro-cli and a prompt
+    kiro-cli documents ``@server/read_*`` in ``allowedTools`` (``*`` over the
+    tool name) and KAS's resource matcher reads ``server/read_*`` the same way.
+    Dropping it made one line of text a grant on kiro-cli and a prompt
     on KAS — a user who had auto-approved ``@srv/query_*`` on the CLI got asked
     for every ``query_`` call the moment they switched backend. That asymmetry is
     the defect; the translation is the one that is faithful.
@@ -202,7 +203,6 @@ class TestToolGlobsTravelAsWritten:
             ("@ent-a2rm/a2rm___query_*", "ent-a2rm/a2rm___query_*"),
             ("@srv/*_get", "srv/*_get"),
             ("@srv/get_*_info", "srv/get_*_info"),
-            ("@srv/cron_?", "srv/cron_?"),
         ],
     )
     def test_a_tool_part_glob_becomes_the_same_kas_pattern(self, entry, pattern):
@@ -267,6 +267,45 @@ class TestTranslationNeverWidensAGrant:
         with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_permissions"):
             allowed_tools_to_permissions(["@*"], agent_id="a")
         assert "@*" in caplog.text
+
+
+class TestToolGlobsTheBackendsReadApartYieldNoRule:
+    """kiro-cli matches ``allowedTools`` with ``globset``, where ``?`` is one
+    character and ``\\`` escapes the next. KAS compiles an ``mcp`` rule to a
+    Cedar ``like``, where ``*`` is the only wildcard and ``?`` and ``\\`` are
+    themselves. Such an entry would be a different grant on each side, so it
+    keeps prompting on KAS.
+    """
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "@srv/rea?",
+            "@srv/?ead",
+            "@srv/r??d",
+            "@srv/cron_?",
+            "@srv/?",
+            "@srv/read_*?",
+            "@srv/a\\*b",
+            "@srv/a\\?b",
+            "@srv/re\\ad",
+            "@srv/read\\",
+            "@srv/read_\\*",
+            "@srv/a\\\\*",
+            "@s\\rv",
+            "@s\\rv/read",
+            "@s\\rv/*",
+            "@srv\\/read",
+        ],
+    )
+    def test_the_entry_yields_no_rule(self, entry):
+        assert allowed_tools_to_permissions([entry]) is None
+
+    def test_a_refused_entry_does_not_suppress_the_plain_ones_beside_it(self):
+        policy = allowed_tools_to_permissions(
+            ["@srv/rea?", "@srv/a\\*b", "@other", "@srv/read", "@srv/read_*"]
+        )
+        assert _rule(policy, "mcp")["match"] == ["other/*", "srv/read", "srv/read_*"]
 
 
 class TestUnclassifiableEntriesFailClosed:
@@ -758,23 +797,23 @@ class TestTheVersionProbeItself:
 
     @pytest.fixture
     def pinned(self, monkeypatch, tmp_path):
-        """A pinned binary that exists on disk, and a recorder for the spawn."""
-        import subprocess
-
-        from kiro_crew import kiro_cli
+        """A pinned binary that exists on disk, and a recorder for the sandboxed runner."""
+        from kiro_crew import kiro_cli, kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
         binary = tmp_path / "kiro-cli"
         binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         calls: list[dict] = []
 
         def _install(stdout: str, returncode: int = 0):
-            def _run(argv, **kwargs):
-                calls.append({"argv": argv, **kwargs})
-                return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+            async def _run(command, args, **kwargs):
+                calls.append({"argv": [command, *args], **kwargs})
+                return ProcessResult(ok=returncode == 0, output=stdout, returncode=returncode)
 
-            monkeypatch.setattr(kiro_cli.subprocess, "run", _run)
+            monkeypatch.setattr(kiro_prerequisite, "_run_process", _run)
             return calls
 
         return binary, _install
@@ -787,15 +826,15 @@ class TestTheVersionProbeItself:
         assert installed_kiro_cli_version() == (2, 23, 0)
         assert calls[0]["argv"] == [str(binary), "--version"]
 
-    def test_the_output_is_decoded_as_utf8_not_the_platform_locale(self, pinned):
-        """A locale decode can mangle the token, and mangled reads as refusing."""
+    def test_the_probe_runs_through_the_sandboxed_runner(self, pinned):
+        """The pinned binary's directory is agent-writable, so the probe is sandboxed."""
         from kiro_crew.kiro_cli import installed_kiro_cli_version
 
         _binary, install = pinned
         calls = install("kiro-cli 2.23.0\n")
         installed_kiro_cli_version()
-        assert calls[0]["encoding"] == "utf-8"
-        assert calls[0]["timeout"] > 0
+        assert calls[0]["first_party_fixed_argv"] is True
+        assert calls[0]["timeout_secs"] > 0
 
     def test_a_non_zero_exit_or_garbage_is_unknown(self, pinned):
         from kiro_crew import kiro_cli
@@ -830,7 +869,7 @@ class TestTheVersionProbeItself:
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, True))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         monkeypatch.setattr(
-            kiro_cli.subprocess, "run", lambda *a, **k: pytest.fail("spawned without a pin")
+            kiro_cli, "_sandboxed_probe", lambda *a, **k: pytest.fail("spawned without a pin")
         )
         assert kiro_cli.installed_kiro_cli_version() is None
 
@@ -1091,6 +1130,21 @@ class TestALongMatchIsSplitNotRefused:
             merged = _merge({"rules": [allow, deny]}, derived=_DERIVED, agent_id="uno")
         assert _user_rules(merged) == [deny]
         assert "rule 0" in caplog.text and "refusing its whole" not in caplog.text
+
+    def test_the_allows_left_out_are_read_quietly_by_index(self, caplog):
+        """The session-start notice names each allow left out; a block refused
+        whole is named as ``permissions`` instead, so it reports none here."""
+        deny = {"capability": "web_search", "effect": "deny"}
+        allow = {"capability": "web_fetch", "exclude": self._hosts(65), "effect": "allow"}
+        bounded = dict(allow, exclude=self._hosts(64))
+        # Looked up when called, so a module without it fails this test, not the file.
+        projection_dropped_rules = kas_permissions.projection_dropped_rules
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            assert projection_dropped_rules({"rules": [deny, allow, bounded, allow]}) == [1, 3]
+            assert projection_dropped_rules({"rules": [allow, "not-a-rule"]}) == []
+            assert projection_dropped_rules({"rules": [bounded]}) == []
+            assert projection_dropped_rules(None) == []
+        assert caplog.text == ""
 
     @pytest.mark.parametrize("effect", ["deny", "ask"])
     def test_a_narrowing_rule_with_a_long_exclude_still_refuses_the_block(self, effect):

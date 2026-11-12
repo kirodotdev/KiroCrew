@@ -18,6 +18,7 @@ import {
   FILE_SEARCH_TIMEOUT_MS,
 } from '../api/client'
 import { __resetErrorJournalForTests, recentErrors } from '../utils/errorReport'
+import { apiErrorCode } from '../api/apiError'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
@@ -477,6 +478,16 @@ describe('installFromRegistryStream', () => {
     await expect(api.installFromRegistryStream('demo', () => {})).rejects.toThrow('gateway said no')
   })
 
+  it('reads a JSON refusal before the stream as an ApiError, not raw JSON', async () => {
+    fetchMock.mockResolvedValue(
+      res(403, '{"error":"owner authorization required","code":"owner_only"}'),
+    )
+    const err = await api.installFromRegistryStream('demo', () => {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(apiErrorCode(err)).toBe('owner_only')
+    expect((err as Error).message).not.toContain('{"error"')
+  })
+
   it('forwards the abort signal', async () => {
     const ctl = new AbortController()
     const { response, body } = streamRes(['event: done\ndata: {"ok":true}\n\n'])
@@ -608,6 +619,8 @@ describe('every api method issues one well-formed /api request', () => {
     // Memory reads take typed objects; positional strings do not satisfy the
     // query/record contract and would manufacture undefined URL parameters.
     memoryRecords: ['member-reviewer', { q: 'contact', kind: 'fact' }, 0, 50],
+    // A decide takes the typed target it is bound to, not a bare id.
+    decideApproval: [{ origin: 'native', id: 'sw-1', slot: 'sw-2', mid: 'sw-3' }, 'approve'],
     memoryRecordHistory: ['member-reviewer', { kind: 'fact', id: 'user.contact' }, 25, 0],
     // `invokeFileMenuItem(item, ctx)`: the URL is `item.endpoint`.
     invokeFileMenuItem: [

@@ -88,12 +88,13 @@ def test_only_a_backend_with_a_table_gets_a_qualified_id():
     assert qualified_harness_tool_id("goose", "shell") == "goose#shell"
     assert qualified_harness_tool_id("opencode", "bash") == "opencode#bash"
     assert qualified_harness_tool_id("claude", "Bash") == "claude#Bash"
-    assert qualified_harness_tool_id("codex", "Bash") == ""
+    assert qualified_harness_tool_id("codex", "exec_command") == "codex#exec_command"
+    assert qualified_harness_tool_id("copilot", "bash") == ""
     assert qualified_harness_tool_id("", "bash") == ""
     assert qualified_harness_tool_id("goose", "") == ""
 
 
-@pytest.mark.parametrize("backend", ["goose", "opencode", "strands", "claude"])
+@pytest.mark.parametrize("backend", ["goose", "opencode", "strands", "claude", "codex"])
 def test_no_harness_tool_is_reached_from_two_kiro_cli_names(backend):
     table = HARNESS_TOOL_TABLES[backend]
     seen: dict[str, str] = {}

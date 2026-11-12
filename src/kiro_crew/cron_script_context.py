@@ -26,13 +26,34 @@ from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
-from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, redact_exfiltration_urls
+from kiro_crew.security.redaction import (
+    _ARN_ACCOUNT_ID_12_DIGITS_RE,
+    _BOT_ID_LENGTHS,
+    _CDK_NAME_MAX_LEN,
+    _CDK_WORDS,
+    redact_credentials_with_records,
+)
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
 
 logger = logging.getLogger("kiro_crew.cron_script")
+
+
+def _delivered_text(message: object) -> str:
+    """The text a ``Done`` or ``Report`` raised with *message* carries.
+
+    A falsy value (``None``, ``0``, ``[]``, ``""``) gives ``""``, which sends nothing;
+    any other value that is not a string gives ``str()`` of it (``Done(42)`` gives
+    ``"42"``), because the gateway only sends text.
+    """
+    if not message:
+        return ""
+    if isinstance(message, str):
+        return message
+    return str(message)
 
 
 class SkipError(Exception):
@@ -45,9 +66,9 @@ class DoneError(Exception):
     Use ctx.notify() before raising Done() to deliver a message.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
 class ReportError(Exception):
@@ -56,14 +77,14 @@ class ReportError(Exception):
     Use for long-lived monitors that need to report multiple times.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
-# Backward-compat aliases: Skip/Done/Report are the public API used by
-# user-authored cron scripts. Renamed to *Error for flake8 N818; aliases
-# preserve the existing import/raise surface with zero behavior change.
+# Skip, Done and Report are the public names user-authored cron scripts import and
+# raise; the classes they alias carry the ``Error`` suffix pep8-naming's N818 asks of
+# an exception name.
 Skip = SkipError
 
 Done = DoneError
@@ -315,8 +336,8 @@ class ScriptContext:
 
         Args are scanned for credential/URL leakage before passing to the
         sandboxed MCP server subprocess (:func:`_scanned_tool_args`). Raises
-        ``ValueError``, and sends nothing, when an argument would reach the
-        server only as a credential placeholder.
+        ``ValueError``, and sends nothing, when the scan would change any
+        argument, so a server never receives an argument the script did not write.
         """
         try:
             result = self._kept_servers.call_tool(
@@ -480,43 +501,143 @@ def _redact_deep(value: Any, key: str = "") -> Any:
 
 
 def _scanned_tool_args(server: str, tool: str, args: dict) -> dict:
-    """*args* as ``call_tool`` sends them, with credential and exfiltration-URL spans redacted.
+    """*args* as ``call_tool`` sends them: exactly as the script wrote them, or not at all.
 
-    An argument the scan replaced whole with a credential tag is refused instead: the
-    server would get only the placeholder, which an id parameter rejects with an error of
-    its own that hides the cause. The refusal names the argument's path, never its value.
+    Every string in *args*, keys included, is judged on its own, and a string value also
+    beside its key (:func:`_reads_as_credential`). A call the scan would change anywhere
+    is refused rather than sent changed: a rewritten argument is one the script did not
+    write, which an id parameter rejects with an error of its own that hides the cause and
+    a free-text one stores. The refusal names the argument's path, never its value.
+
+    *args* are serialized first, as the client will send them, so an argument JSON cannot
+    hold raises ``TypeError`` here, before a kept server is taken for the call and stopped
+    by the failure.
     """
-    serialized = json.dumps(args)
-    safe_args = json.loads(redact(serialized))
-    path = _wholly_redacted_path(safe_args, json.loads(serialized), "args")
+    json.dumps(args)
+    path = _changed_path(args, "", "args")
     if path:
         raise ValueError(
-            f"call_tool({server!r}, {tool!r}) not sent: {path} reads as a credential, so "
-            "the server would receive only a redaction placeholder in its place"
+            f"call_tool({server!r}, {tool!r}) not sent: {path} reads as a credential, and "
+            "an argument is sent only as the script wrote it"
         )
-    return safe_args
+    return args
 
 
-def _wholly_redacted_path(sent: Any, original: Any, path: str) -> str:
-    """The path of the first string the scan turned into a credential tag alone, or ``""``.
+def _changed_path(value: Any, key: str, path: str) -> str:
+    """The path of the first string in *value* the scan would change, or ``""``.
 
-    *sent* is *original* after the scan, so the two share one shape unless keys were
-    redacted onto each other, and a pair whose shapes differ is not compared. The path is
-    spelled with the scanned keys, so a credential-shaped key is not echoed.
+    *key* is the string key *value* sits under, ``""`` for none. The path is spelled with
+    the scanned keys, so a credential-shaped key is not echoed.
     """
-    if isinstance(sent, str):
-        # The bare-secret pass leaves a padded value's trailing ``=`` after the tag.
-        return path if sent != original and sent.rstrip("=") in CREDENTIAL_REDACTION_TAGS else ""
-    if isinstance(sent, dict) and isinstance(original, dict) and len(sent) == len(original):
-        pairs = zip((f"{path}.{key}" for key in sent), sent.values(), original.values())
-    elif isinstance(sent, list) and isinstance(original, list) and len(sent) == len(original):
-        pairs = zip((f"{path}[{i}]" for i in range(len(sent))), sent, original)
-    else:
-        return ""
-    for inner_path, inner_sent, inner_original in pairs:
-        if found := _wholly_redacted_path(inner_sent, inner_original, inner_path):
-            return found
+    if isinstance(value, str):
+        return path if _reads_as_credential(key, value) else ""
+    if isinstance(value, dict):
+        for raw_key, inner in value.items():
+            name = redact(raw_key) if isinstance(raw_key, str) else raw_key
+            inner_path = f"{path}.{name}"
+            if name != raw_key:
+                return inner_path
+            found = _changed_path(inner, raw_key if isinstance(raw_key, str) else "", inner_path)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for i, inner in enumerate(value):
+            found = _changed_path(inner, key, f"{path}[{i}]")
+            if found:
+                return found
     return ""
+
+
+#: A key that names an identifier: ``id`` or ``ids`` alone or after ``_`` or ``-``, in
+#: any case, or ``Id`` / ``ID`` ending a camelCase name (``driveId``, ``messageIds``).
+_ID_KEY_RE = re.compile(r"(?:\A|[_-])(?i:ids?)\Z|[a-z0-9](?:Id|ID)s?\Z")
+#: The whole of an opaque id the bare-secret pass reads a key in: a Microsoft Graph item
+#: id (base64 of an Exchange id, ``AAMk...``) or a drive id (``b!`` then base64url). Both
+#: are longer than a 40-character key, so a key alone under an id key is still judged; a
+#: key behind an id's opening (``AAMk`` and 40 characters) is not, the residual the
+#: learn-cron-dashboard spec states.
+_OPAQUE_ID_RE = re.compile(r"A[A-Za-z0-9]{3}[A-Za-z0-9+/_-]{40,}={0,2}|b![A-Za-z0-9_-]{40,}")
+#: The resource name after an account id, ``MyServiceLambda``: PascalCase words, each a
+#: capital and then lowercase letters, the word shape of the ARN rule's CDK names. A bot
+#: token's secret, which Telegram starts with ``AA``, is never that shape.
+_RESOURCE_NAME_RE = re.compile(_CDK_WORDS)
+#: A name CloudFormation generated, ``<stack>-<logical id>-<suffix>``: letter and digit
+#: segments, the stack name's and the logical id's at least, each closed by ``-``, then
+#: the 12 or 13 uppercase letters and digits it appends
+#: (``OrderService-CodeDeployApp-1ABCDEF2GHIJK``).
+_CFN_PHYSICAL_NAME_RE = re.compile(r"(?:[A-Za-z0-9]+-){2,}[A-Z0-9]{12,13}")
+#: The Telegram rule's ``<digits>:<run>`` where the digits are an account id's 12: the
+#: whole digit run, then the whole run after the ``:``, with the AWS region segment and
+#: ``:`` right before it when one is there (the region grammar ``auth.service`` accepts).
+_ACCOUNT_RESOURCE_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_-])(?P<region>[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}):)?"
+    rf"(?<![0-9])(?P<account>{_ARN_ACCOUNT_ID_12_DIGITS_RE.pattern}):"
+    r"(?P<name>[A-Za-z0-9_-]+)(?![A-Za-z0-9_-])"
+)
+
+
+def _reads_as_credential(key: str, value: str) -> bool:
+    """Whether the scan would change *value*, sent under *key*.
+
+    Judged alone, then spelled beside its key as :func:`_redact_pair` spells it, so a
+    token only its key reveals (``authorization: Bearer ...``) is found too. Two rules
+    read an identifier as a secret, and here neither counts where it does:
+
+    * The bare-secret pass guesses a key from a run's entropy, which a random opaque id
+      has too, and the redaction tiers decision never redacts a resource id. Its spans
+      do not count in a value :data:`_OPAQUE_ID_RE` matches whole under a key
+      :data:`_ID_KEY_RE` names; every other rule still judges that value.
+    * The Telegram rule reads ``<digits>:<30 or more characters>`` as a bot token, so a
+      name that leads with an account id is one to it. Its hit does not count only where
+      it positively reads as an account id and a resource name
+      (:func:`_account_resource_apart`): the text is judged again with that ``:`` read
+      as a space, so a credential inside the name is still found.
+    """
+    opaque_id = bool(key and _ID_KEY_RE.search(key) and _OPAQUE_ID_RE.fullmatch(value))
+    texts = (value, f"{key}: {value}") if key else (value,)
+    return any(_changed_by_scan(text, opaque_id) for text in texts)
+
+
+def _changed_by_scan(text: str, opaque_id: bool) -> bool:
+    """Whether the scan changes *text* by a span that counts (:func:`_reads_as_credential`)."""
+    if redact(text) == text:
+        return False
+    if redact_exfiltration_urls(text)[0] != text:
+        return True
+    found = redact_credentials_with_records(text)[2]
+    if not found:
+        return True
+    apart = _ACCOUNT_RESOURCE_RE.sub(_account_resource_apart, text)
+    if apart != text:
+        # A Telegram hit outside an account id and resource name is in *apart* as it was
+        # and is found again there. Another rule's hit is kept from *text*: the ``:`` read
+        # as a space could hide one that spans it.
+        found = [match for match in found if match.rule != "telegram_bot_token"]
+        found += redact_credentials_with_records(apart)[2]
+    return not all(match.rule == "bare_aws_secret" and opaque_id for match in found)
+
+
+def _account_resource_apart(match: re.Match[str]) -> str:
+    """*match*, its ``:`` read as a space where it is an AWS account id and a resource name.
+
+    Positive, as the ARN rule's exemption is (``_arn_exemption_withheld``), and built from
+    its parts: the 12 digits are not a 6 to 10 digit bot id padded out with leading zeros,
+    and the WHOLE run after the ``:`` is a resource name. Anywhere, that is PascalCase
+    words (:data:`_RESOURCE_NAME_RE`). Between a region segment and another ``:``, where
+    a CodeDeploy target puts its application (``<region>:<account>:<app>:<group>:CD``),
+    it may also be a CloudFormation name (:data:`_CFN_PHYSICAL_NAME_RE`). So a bot token
+    behind a padded, glued or real account id, in an ARN or not, still counts.
+    """
+    region, account, name = match["region"], match["account"], match["name"]
+    if len(name) > _CDK_NAME_MAX_LEN or len(account.lstrip("0")) in _BOT_ID_LENGTHS:
+        return match.group()
+    if _RESOURCE_NAME_RE.fullmatch(name) or (
+        region
+        and match.string.startswith(":", match.end())
+        and _CFN_PHYSICAL_NAME_RE.fullmatch(name)
+    ):
+        return f"{region}:{account} {name}" if region else f"{account} {name}"
+    return match.group()
 
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")

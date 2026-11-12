@@ -53,15 +53,19 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
+    "bridge_approvals",
+    "chat_runtime_sharing",
     "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
+    "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "layout_harness",
     "mate_sessions",
     "remote_crew_chat",
     "session_environments",
+    "session_harness",
     "webhooks",
 )
 
@@ -1038,8 +1042,9 @@ class DashboardConfig:
         metadata=_meta(
             "Update Nudge",
             "Per-version state for the proactive update popup. Written by the "
-            "dashboard when the user snoozes or skips a release; a record only "
-            "suppresses the popup for the version it names. Validated as one "
+            "dashboard when the user snoozes or skips a release; a snooze only "
+            "suppresses the popup for the version it names, and every skipped "
+            "version stays in skipped_versions. Validated as one "
             "atomic record by the PATCH allowlist (dashboard.update_nudge); "
             "no Settings control reads it, so it carries no schema properties.",
         ),
@@ -1083,6 +1088,17 @@ class DashboardConfig:
             "rather than browser-local because the gateway gates the very FIRST "
             "heartbeat on it: until this is true the user has not yet been shown the "
             "opt-out, and a ping sent before the offer makes the offer meaningless.",
+        ),
+    )
+    privacy_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Privacy Notice Version Acknowledged",
+            "The version of the Privacy chapter text, the one saying local metric "
+            "recording is on, that the user last acknowledged (0 = none). When the "
+            "dashboard's notice version is higher, the chapter is shown once more "
+            "at the next dashboard load, but only while local recording is on. "
+            "Written by the Privacy chapter and by kirocrew telemetry enable.",
         ),
     )
     crewmates_onboarded: bool = field(
@@ -1163,6 +1179,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    project_tags_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Tags Enabled",
+            "Tag a new chat session with the last folder name of its project path, "
+            "such as my-app. Off creates and adds no project tag; tags already on a "
+            "session stay.",
         ),
     )
     topic_tags_enabled: bool = field(

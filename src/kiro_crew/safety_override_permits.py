@@ -3,9 +3,11 @@
 The ``yolo_duration`` scope's ``permanent`` and ``until_shutdown`` members decide
 whether a declared grant may stand without expiry and whether an ad-hoc grant may
 last until shutdown (``declared_grant_permitted``, ``until_shutdown_permitted``);
-the ``approval_modes`` scope decides whether a mode (``yolo``, ``trust``,
-``trust_reads``) may be selected at all (``approval_mode_permitted``). Each question is asked of the HOST profile, fail
-closed, through governance imports deferred to the call.
+the ``approval_modes`` scope decides whether a mode may be selected at all
+(``approval_mode_permitted``). The duration members and ``yolo`` are asked of the
+HOST profile, fail closed, through governance imports deferred to the call. ``trust``
+and ``trust_reads`` go through ``approval_mode_policy.session_mode_permitted``, which
+reads the same scope from the installed policy only.
 
 :mod:`kiro_crew.safety_override` stays the import path and the patch surface for every
 name here, and this module logs under that name. It imports no other part of the
@@ -130,29 +132,38 @@ def _non_deniable_approval_modes() -> tuple[str, ...]:
 def approval_mode_permitted(mode: str) -> bool:
     """True when policy allows the dashboard approval *mode* to be selected.
 
-    Backed by the ``approval_modes`` deny-list scope, e.g.
-    ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``.
+    Backed by the ``approval_modes`` scope, e.g.
+    ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``. A mode id Crew does
+    not know is refused.
 
-    A **non-deniable** mode short-circuits to True without consulting governance at
-    all. That is what makes "non-deniable" mean the same thing at runtime as it does
-    at parse time: the parse-time refusal stops an admin from WRITING such a deny,
-    and this stops a governance-evaluation error from producing one anyway. Without
-    it the ``fail_closed=True`` below could deny ``trust`` on a resolve error --
-    refusing a mode whose enforcement this scope does not even implement, which
-    surfaced as an unrelated trust grant silently failing. Only ``normal`` is
-    non-deniable; a mode id Crew does not know is refused.
+    ``normal`` is the **non-deniable** floor: it short-circuits to True without
+    consulting governance at all. That is what makes "non-deniable" mean the same
+    thing at runtime as it does at parse time: the parse-time refusal stops an admin
+    from WRITING such a deny, and this stops a governance-evaluation error from
+    producing one anyway.
 
-    Everything else is evaluated against the HOST profile with ``fail_closed=True``,
-    so a governance-evaluation error denies the riskier auto-approve mode rather than
+    ``trust`` and ``trust_reads`` return
+    :func:`kiro_crew.approval_mode_policy.session_mode_permitted`, so this function
+    and every place that sets or honours them give one answer: only the installed
+    policy's rule narrows them, and with no such rule they stay permitted.
+
+    ``yolo`` is evaluated against the HOST profile with ``fail_closed=True``, so a
+    governance-evaluation error denies the riskier auto-approve mode rather than
     silently granting it. With no policy configured the scope is ungoverned and
-    permits every mode, so a solo operator's picker is unchanged.
+    permits it, so a solo operator's picker is unchanged.
     """
-    from kiro_crew.approval_mode_policy import KNOWN_APPROVAL_MODES
+    from kiro_crew.approval_mode_policy import (
+        KNOWN_APPROVAL_MODES,
+        SESSION_TRUST_MODES,
+        session_mode_permitted,
+    )
 
     if mode not in KNOWN_APPROVAL_MODES:
         return False
     if mode in _non_deniable_approval_modes():
         return True
+    if mode in SESSION_TRUST_MODES:
+        return session_mode_permitted(mode)
     try:
         from kiro_crew.platform.governance_profiles import (
             HOST_SESSION_KEY,

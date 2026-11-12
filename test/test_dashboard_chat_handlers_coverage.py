@@ -244,6 +244,27 @@ class TestHasConversation:
         slot.messages.append({"role": "user", "content": "hi"})
         assert ch._has_conversation(slot) is True
 
+    def test_a_heartbeat_prompt_is_a_floor_to_resume_from(self):
+        # A heartbeat prompt delivered to an unused chat is its only request, so a
+        # first turn that fails to start can still be resumed.
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {
+                "role": "inject",
+                "content": "💓 Heartbeat\n\nreport",
+                "meta": {"injectKind": "heartbeat"},
+            }
+        )
+        slot.messages.append({"role": "error", "content": "session start timed out"})
+        assert ch._has_conversation(slot) is True
+
+    def test_another_inject_row_is_not_a_floor(self):
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {"role": "inject", "content": "resume", "meta": {"injectKind": "recovery"}}
+        )
+        assert ch._has_conversation(slot) is False
+
 
 # ── _wire_model_id ───────────────────────────────────────────────────────────
 
@@ -321,6 +342,20 @@ class TestReapplyEffortAfterLiveSwitch:
         )
 
         assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is False
+
+    @pytest.mark.asyncio
+    async def test_a_level_kiro_cli_refuses_keeps_the_live_session(self):
+        from kiro_crew.acp.command_refused import AcpCommandRefused
+
+        slot = _ChatSlot("s1")
+        slot.reasoning_effort = "max"
+        refused = AcpCommandRefused("invalid effort level 'max'")
+        provider = _acp(
+            supports_effort=MagicMock(return_value=True),
+            change_effort=AsyncMock(side_effect=refused),
+        )
+
+        assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is True
 
 
 # ── _try_live_model_switch ───────────────────────────────────────────────────

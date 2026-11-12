@@ -16,6 +16,7 @@ from kiro_crew.sandbox_leaves import (
     _MD_NOTEBOOK_STAGING_LEAF,
     _MD_NOTEBOOK_STATE_LEAVES,
     _SECRET_REQUEST_POLICY_LEAF,
+    _UPDATE_STAGING_LEAF,
     MD_NOTEBOOK_APP_NAME,
 )
 
@@ -154,6 +155,8 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # missing one, so an empty directory means what an absent one does, and the
     # bind is live, so a snapshot the gateway writes later is seen.
     "kas-mcp-launch",
+    # Connection bridge snapshots, for the same reasons.
+    "crew-oauth-bridge",
     # Empty directories are absent-equivalent to the approval and resolution readers.
     # Pre-creation gives Linux concrete bind targets on a fresh install.
     "mcp-launch-approvals",
@@ -206,6 +209,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "host-exec-grants",
     "pi-gate",
     "kas-mcp-launch",
+    "crew-oauth-bridge",
     "mcp-launch-approvals",
     "mcp/resolved",
     "template-mcp-additions",
@@ -296,6 +300,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed KAS MCP launch snapshots",
         "the agent could choose the command and environment a later MCP server start runs",
     ),
+    "crew-oauth-bridge": (
+        "sealed Connection bridge snapshots",
+        "the agent could choose the bridge token and port a later Connection bridge uses",
+    ),
     "mcp-launch-approvals": (
         "sealed MCP launch approvals",
         "the agent could approve a command the gateway launches outside the sandbox",
@@ -364,6 +372,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
     "decisions_consent.json",
+    # The update armed for the next start: ``update_next_start.read`` answers an
+    # absent, empty and unreadable record alike as nothing armed, so a pre-created
+    # ``{}`` means what an absent file means (criterion 1); the writer publishes
+    # through ``atomic_write`` (new inode), so a sandboxed reader frozen at ``{}``
+    # under-reports the arm, which is narrower than the truth (criterion 2). Without
+    # this entry the mount seal skips the absent leaf, which is the default before
+    # any click, leaving it creatable from inside the sandbox.
+    "update_next_start.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
     # exactly what an absent file means (criterion 1); the writer rewrites an
@@ -511,6 +527,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # (and the owner CLI publishes the policy) after a sandbox may already be running, so
     # the directory must exist, and be masked, before any namespace starts.
     _SECRET_REQUEST_POLICY_LEAF,
+    # The self-update wheel staging directory, by the same rule: the engine first creates it
+    # at an update, which can start while a sandbox is already running.
+    _UPDATE_STAGING_LEAF,
     # ``crew-panels`` is the same requirement seen from the mirror side of the
     # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
     # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,

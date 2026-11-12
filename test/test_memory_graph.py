@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -152,6 +153,10 @@ class TestMemoryGraphNodeExtraction:
             "#### 06:47 +0530",
             "#### 06:47 China Standard Time",
             "#### 06:47",
+            "#### 06:47 ChST",
+            "#### 06:47 UTC-11",
+            "#### 06:47 UTC+13",
+            "#### 06:47 W. Europe Standard Time",
         ],
     )
     async def test_history_timestamp_headers_are_not_nodes(self, tmp_path, monkeypatch, header):
@@ -164,6 +169,28 @@ class TestMemoryGraphNodeExtraction:
         data = json.loads(resp.body)
 
         assert [n for n in data["nodes"] if n["group"] == "history"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_stamp_in_the_host_zone_name_is_not_a_node(self, tmp_path, monkeypatch):
+        """A localized Windows zone name is what ``%Z`` printed from ``time.tzname``."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # Rebinds the recognizer module's own `time` name, so nothing else in the
+        # worker sees the fake zones.
+        monkeypatch.setattr(
+            "kiro_crew.memory_history_stamps.time",
+            SimpleNamespace(tzname=("Mitteleuropäische Zeit", "Mitteleuropäische Sommerzeit")),
+        )
+        state = self._make_state(
+            tmp_path, history="#### 06:47 Mitteleuropäische Zeit\n#### 10:00 deploy chat"
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        hist_titles = [n["title"] for n in data["nodes"] if n["group"] == "history"]
+        assert hist_titles == ["10:00 deploy chat"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("header", ["#### 06:47 standup notes", "## 2026-03-25 release"])

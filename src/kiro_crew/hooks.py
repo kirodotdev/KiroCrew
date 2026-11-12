@@ -51,6 +51,7 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     read_bytes_with_retry,
     replace_with_retry_checked,
 )
+from kiro_crew.bounded_read import bounded_read  # noqa: F401 - read by the two read owners
 from kiro_crew.config import paths as _config_paths
 
 # ``_coerce_bool`` reads a hand-edited bool without the ``bool("false")`` trap;
@@ -215,6 +216,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
+    _builtin_paths_proven,
     _context_matches,
     _glob_pattern_leaves_root,
     _granted_names,
@@ -226,6 +228,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_first_party_app,
     _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
+    _is_host_file_read_builtin_call,
     _is_host_read_only_builtin,
     _is_host_search_builtin_call,
     _normalize_tool_name,
@@ -259,6 +262,7 @@ from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
 from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
+    _every_operation_names_a_path,
     computer_use_action_classes,
     computer_use_action_from_title,
     mcp_title_to_ref,
@@ -757,6 +761,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -817,6 +822,11 @@ class HookManager:
         other tier judges the call exactly as without them. Default empty: only
         the dashboard's override path and the transport floor it approves through
         pass any.
+
+        ``pre_tool_hooks_fire`` says the surface runs the PreToolUse hooks on this
+        request whatever the gate answers (the chat, subagent and task-runner turn
+        loops). Only the ``batch-guard-grant`` row reads it, to answer
+        ``ToolCall.spec_hook_held``; ``False`` keeps those calls asking.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -829,6 +839,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=frozenset(deny_waivers),
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -855,8 +866,10 @@ class HookManager:
         mcp_tool_name: str = "",
         mcp_identity_trusted: bool = False,
         mcp_identity_unreadable: bool = False,
+        mcp_identity_unreadable_reason: str = "",
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
+        spec_hook_held: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
         spec_shell_allowlist: tuple[str, ...] | None = None,
         spec_write_allowlist: tuple[str, ...] | None = None,
@@ -872,6 +885,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -879,7 +893,8 @@ class HookManager:
         :class:`ToolCall` field of the same meaning (``tool_kind`` -> ``kind``,
         ``mcp_server_name`` -> ``mcp_server``, ``mcp_tool_name`` -> ``mcp_tool``,
         ``mcp_identity_trusted`` -> ``identity_trusted``, ``mcp_identity_unreadable``
-        -> ``identity_unreadable``) or a surface argument of
+        -> ``identity_unreadable``, ``mcp_identity_unreadable_reason`` ->
+        ``identity_unreadable_reason``) or a surface argument of
         :meth:`judge`. A dispatcher holding a permission event passes
         ``**hook_gate_kwargs(event)``, so an enforcement-relevant event field is
         threaded once. Each field's security meaning is documented on
@@ -900,8 +915,10 @@ class HookManager:
                 mcp_tool=mcp_tool_name,
                 identity_trusted=mcp_identity_trusted,
                 identity_unreadable=mcp_identity_unreadable,
+                identity_unreadable_reason=mcp_identity_unreadable_reason,
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
+                spec_hook_held=frozenset(spec_hook_held),
                 spec_granted_commands=tuple(spec_granted_commands),
                 spec_shell_allowlist=(
                     None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
@@ -925,6 +942,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=deny_waivers,
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:

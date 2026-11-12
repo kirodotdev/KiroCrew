@@ -25,7 +25,15 @@ from urllib.parse import urlsplit
 
 SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 ALGORITHM = "RSASSA_PKCS1_V1_5_SHA_256"
-CHANNELS = ("nightly", "insider", "stable")
+CHANNELS = ("nightly", "insider", "stable", "lts")
+
+
+def wheel_filename(channel: str, version: str) -> str:
+    """The wheel a channel publishes: the LTS edition's own distribution on lts."""
+    stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
+    return f"{stem}-{version}-py3-none-any.whl"
+
+
 SIGNED_FIELDS = {
     "algorithm",
     "channel",
@@ -232,7 +240,7 @@ def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
         if _release_core(floor) > _release_core(normalized["version"]):
             raise ManifestError("CLI manifest min_version exceeds the manifest version")
 
-    wheel_name = f"kirocrew-{normalized['version']}-py3-none-any.whl"
+    wheel_name = wheel_filename(normalized["channel"], normalized["version"])
     parsed = urlsplit(normalized["wheel_url"])
     if (
         parsed.scheme != "https"
@@ -291,7 +299,7 @@ def _validate_target_binding(
         raise ManifestError("artifact base must be a canonical HTTPS URL")
 
     version = payload["version"]
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    wheel_name = wheel_filename(expected_channel, version)
     expected_url = f"{normalized_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ManifestError("CLI manifest wheel URL does not match the artifact base")

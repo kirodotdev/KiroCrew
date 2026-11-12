@@ -27,6 +27,7 @@ class _Req:
     def __init__(self, state, slot: str, app: str = "") -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        self.query: dict[str, str] = {}
         self._app = app
 
     def get(self, key: str, default: str = "") -> str:

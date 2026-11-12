@@ -12,6 +12,7 @@ import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPas
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { QuoteFlight } from '../../../chat-core/composer/selectionActions'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
+import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import AgentDropdownList, { isCrewmateChat, DefaultAgentRow, defaultWriteKind, ManageAgentsFooter, type DefaultWriteFailure } from '../../../components/AgentDropdownList'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeChip'
@@ -31,6 +32,8 @@ import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
+import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -55,7 +58,7 @@ import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { pinIsWithheld } from '../../../lib/model'
-import FollowUpCard from '../../../components/FollowUpCard'
+import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
@@ -152,6 +155,8 @@ interface ComposerDockViewProps {
   anchorModelBtn: (rect: DOMRect, trigger?: HTMLElement | null) => void
   modelBtnRect: DOMRect | null
   messageQuote: UseMessageQuote
+  /** The sent quote card's jump, so the staged card in the composer jumps the same way. */
+  onJumpToQuote: (quote: MessageQuote) => void
   applyAutomationChange: ReturnType<typeof useSessionAutomation>['applyAutomationChange']
   automation: ReturnType<typeof useSessionAutomation>['automation']
   automationCreationReady: boolean
@@ -229,8 +234,8 @@ interface ComposerDockViewProps {
   removeFileChip: (p: string) => void
   selectPickedFile: ReturnType<typeof useFileMentionActions>['selectPickedFile']
   followupAddToSession: (item: FollowupItem, index: number) => void
-  followupStartInNewChat: (item: FollowupItem, index: number) => Promise<void>
-  followupStartInWorktree: (item: FollowupItem, index: number) => Promise<void>
+  followupStartInNewChat: (item: FollowupItem, index: number, mode: FollowupStartMode) => Promise<void>
+  followupStartInWorktree: (item: FollowupItem, index: number, mode: FollowupStartMode) => Promise<void>
   displayMode: SlotApprovalMode
   _modelPinActive: string
   _modelPinAgent: string
@@ -243,6 +248,8 @@ interface ComposerDockViewProps {
   effortSupported: boolean
   /** The picker says effort does not apply on `auto` (#11546). */
   effortAutoNote?: boolean
+  /** The active slot's ultracode switch, from its selection-capabilities read. */
+  ultracode?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -250,6 +257,7 @@ interface ComposerDockViewProps {
   projectGitError: boolean
   shownModel: string
   cardOwnsRecovery: boolean
+  resumeAfterSignIn: boolean
   continuable: boolean
   continuing: boolean
   handleContinue: () => void
@@ -325,7 +333,7 @@ export default function ComposerDockView({
   pendingQuestion, projectLocked, restoredQuestionNotice, sentMessages, slotRunning, slotStopping, composerDraft, historySuggestions, showHistorySuggestions, chatConfig, agentDropdown,
   agentDropdownRef, agentFilter, agentInputRef, defaultAgent, defaultAgentFailed, effectiveAgents, filteredAgents, installedAgents, setAgentDropdown, setAgentFilter, toggleDefaultAgent,
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
-  setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
+  setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, onJumpToQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
@@ -333,7 +341,7 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, effortAutoNote = false, ultracode, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
@@ -341,6 +349,10 @@ export default function ComposerDockView({
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // "Send follow-ups with one click": browser-local, off unless stored as '1'
+  // (followupStartSends.ts). The card renders its footer and its Start mode
+  // from this one value.
+  const [followupStartSends] = usePersistedBool(FOLLOWUP_START_SENDS_KEY, false)
   // App composer actions: rows in "+" whose apps insert plain text.
   const composerActions = useComposerActionItems()
   // Someone else holds the typing lock: no dictation may start into the draft.
@@ -532,6 +544,7 @@ export default function ComposerDockView({
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
                     onStartInNewChat={followupStartInNewChat}
+                    startSends={followupStartSends}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
                 </div>
@@ -663,6 +676,7 @@ export default function ComposerDockView({
               pendingSessions={pendingSessions}
               pendingQuote={messageQuote.pendingQuote}
               onRemoveQuote={messageQuote.clearQuote}
+              onJumpToQuote={onJumpToQuote}
               onRemoveSessionRef={unstageSessionRef}
               onFileSelect={selectPickedFile}
               onFileOpen={handleFileOpen}
@@ -701,6 +715,7 @@ export default function ComposerDockView({
               // would hide every routed turn. Same `jevRouteOn` the picker's row is
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
+              harnessBackend={modelsBackend}
               // A crew member's footer is the conductor's: the Crew Mode mark (never
               // a switch there) in place of the agent picker and its label.
               agentBadge={crewChipPressed ? undefined : agentPickerHidden || steerWorker !== undefined ? <CrewModeComposerChip /> : undefined}
@@ -772,6 +787,7 @@ export default function ComposerDockView({
                  button; typing still works. */
               continuable={continuable && interrupted && !cardOwnsRecovery}
               continueIsRecovery={interrupted}
+              resumeAfterSignIn={resumeAfterSignIn}
               restoredQueueCount={queuedMessages.filter(m => m.meta?.restored === true).length}
               onContinue={handleContinue}
               continuing={continuing}
@@ -875,6 +891,7 @@ export default function ComposerDockView({
                 currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)}
                 defaultEffort={defaultEffort}
                 effortLevelsOverride={effortLevelsOverride}
+                ultracode={ultracode}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))

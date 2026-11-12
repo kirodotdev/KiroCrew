@@ -119,3 +119,53 @@ def test_held_but_unnameable_is_holder_held(home, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["holder"] == "held"
     assert "reason" in payload
+
+
+def _held(monkeypatch):
+    _patch_holder(monkeypatch, LockProbeError("gateway.lock", OSError("hidden stamp"), held=True))
+
+
+def test_a_held_lock_is_named_from_the_ports_fresh_run_record(home, monkeypatch, capsys):
+    """With --port, a Windows lock that hides its stamp is named from the run record."""
+    _held(monkeypatch)
+    seen: list[int] = []
+    monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda port: seen.append(port) or 4242)
+
+    cli_server._gateway_pid(5476)
+
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"holder": "process", "pid": 4242, "alive": True, "source": "run_record"}
+    assert seen == [5476]
+
+
+def test_a_held_lock_with_no_fresh_run_record_stays_held(home, monkeypatch, capsys):
+    _held(monkeypatch)
+    monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: None)
+
+    cli_server._gateway_pid(5476)
+
+    assert json.loads(capsys.readouterr().out.strip())["holder"] == "held"
+
+
+def test_a_held_lock_without_a_port_never_reads_a_run_record(home, monkeypatch, capsys):
+    _held(monkeypatch)
+
+    def unexpected(_port):
+        raise AssertionError("no --port, so no run record is read")
+
+    monkeypatch.setattr(cli_server, "_recorded_gateway_pid", unexpected)
+
+    cli_server._gateway_pid()
+
+    assert json.loads(capsys.readouterr().out.strip())["holder"] == "held"
+
+
+def test_an_indeterminate_lock_is_not_named_from_a_run_record(home, monkeypatch, capsys):
+    _patch_holder(monkeypatch, LockProbeError("gateway.lock", OSError("unmeasurable"), held=False))
+    monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: 4242)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_server._gateway_pid(5476)
+
+    assert excinfo.value.code == 2
+    assert json.loads(capsys.readouterr().out.strip())["holder"] == "indeterminate"

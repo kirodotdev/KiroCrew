@@ -170,9 +170,9 @@ class ArtifactPublication:
     #: Machine-readable discriminator for :attr:`notice`, so the frontend can
     #: select per-case copy instead of printing one fixed "still rolling out"
     #: string for every notice. Exactly one of ``"rolling_out"`` /
-    #: ``"distribution_disabled"`` / ``"unknown"``, or ``""`` when there is no
-    #: notice. Always moves with :attr:`notice`: it is set from the publish
-    #: result's ``notice_code`` and cleared wherever ``notice`` is cleared.
+    #: ``"distribution_disabled"`` / ``"origin_mismatch"`` / ``"unknown"``, or ``""``
+    #: when there is no notice. Always moves with :attr:`notice`: it is set from the
+    #: publish result's ``notice_code`` and cleared wherever ``notice`` is cleared.
     #: Additive + defaulted, so a legacy meta.json with no ``notice_code`` loads
     #: as empty (no migration).
     notice_code: str = ""

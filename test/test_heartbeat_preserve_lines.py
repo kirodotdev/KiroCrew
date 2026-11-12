@@ -182,3 +182,26 @@ def test_a_bare_marker_is_not_a_task(line: str) -> None:
 @pytest.mark.parametrize("line", ["-flag on", "[x]y", "1.5 hours"])
 def test_text_that_only_looks_like_a_marker_is_kept(line: str) -> None:
     assert _extract_tasks(line) == [(line, "")]
+
+
+@pytest.mark.asyncio
+async def test_a_bom_file_runs_only_its_task_and_keeps_its_heading_and_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "HEARTBEAT.md"
+    path.write_bytes(b"\xef\xbb\xbf# My checks\n\n- [ ] check the build\n- [ ] watch the deploy\n")
+
+    seen = await _run_pass(path, monkeypatch, keep={"watch the deploy"})
+
+    assert seen == ["check the build", "watch the deploy"]
+    assert path.read_bytes() == b"\xef\xbb\xbf# My checks\n\n- [ ] watch the deploy\n"
+
+
+@pytest.mark.asyncio
+async def test_a_bom_on_a_first_task_line_does_not_keep_its_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "HEARTBEAT.md"
+    path.write_bytes(b"\xef\xbb\xbf- [ ] check the build\n")
+
+    assert await _run_pass(path, monkeypatch) == ["check the build"]

@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookOpen, Check, Copy, Lock, Trash2 } from 'lucide-react'
-import { SettingsCard, SettingsInput, SettingsSection } from '../../components/settings'
+import { SettingsCard, SettingsInput, SettingsSection, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -23,6 +23,7 @@ import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../compon
 import { api, type ConnectionOAuthClient, type ConnectionOAuthClientSave } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import { CONNECTION_PROVIDERS } from '../connections/registry'
 
 export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const
@@ -33,6 +34,12 @@ const RUNBOOK_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guid
 /** `[data-setting-id]` the gallery card deep-links to for one provider. */
 export function oauthClientSettingId(slug: string): string {
   return `connections-oauth-client-${slug}`
+}
+
+/** The six Google cards (Gmail, Drive, Calendar, Sheets, Docs, Slides) can all
+ *  use one Google OAuth client, so a save on one may fill the others. */
+export function isGoogleSlug(slug: string): boolean {
+  return slug === 'gmail' || slug.startsWith('google-')
 }
 
 function envName(slug: string, half: 'CLIENT_ID' | 'CLIENT_SECRET'): string {
@@ -88,7 +95,14 @@ function CopyRedirectUri({ value }: { value: string }) {
   )
 }
 
-function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient; index: number; readOnly: boolean }) {
+/** A shared Google save that this card took but some other Google cards did not. */
+class PartialShareError extends Error {
+  constructor(readonly failed: string[]) {
+    super(failed.join(', '))
+  }
+}
+
+function ClientCard({ client, index, readOnly, shareWith }: { client: ConnectionOAuthClient; index: number; readOnly: boolean; shareWith: ConnectionOAuthClient[] }) {
   const qc = useQueryClient()
   const provider = CONNECTION_PROVIDERS.find(p => p.slug === client.slug)
   const name = provider?.name ?? client.slug
@@ -103,27 +117,81 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
   // The change was saved but the agent spec did not follow it.
   const [notApplied, setNotApplied] = useState(false)
   const [removeConfirm, setRemoveConfirm] = useState(false)
+  // On by default: one Google app serves every Google card, so the person
+  // pastes the client once instead of six times.
+  const [shareAll, setShareAll] = useState(true)
+  // Product names a shared save did not reach, and whether Save stays armed to retry them.
+  const [partialFailed, setPartialFailed] = useState<string[] | null>(null)
+  const [retryShared, setRetryShared] = useState(false)
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   // Focus lands on Cancel when the delete arms, so a stray second press backs out.
   useEffect(() => { if (removeConfirm) removeCancelRef.current?.focus() }, [removeConfirm])
-  useEffect(() => { setClientId(client.client_id ?? '') }, [client.client_id])
+  // Follow the stored id only while nothing on this card is unsaved: another
+  // card's shared save refetches this one, and swapping the id under an
+  // unsaved id or secret would make the next Save send a mismatched pair.
+  const storedIdRef = useRef(client.client_id ?? '')
+  const secretPendingRef = useRef(false)
+  secretPendingRef.current = secret.length > 0 || secretClear
+  useEffect(() => {
+    const next = client.client_id ?? ''
+    // Read both refs now: React may run the updater after the ref moves on.
+    const prev = storedIdRef.current
+    const pending = secretPendingRef.current
+    setClientId(draft => (draft === prev && !pending ? next : draft))
+    storedIdRef.current = next
+  }, [client.client_id])
 
   const envId = client.client_id_source === 'env'
   const envSecret = client.client_secret_source === 'env'
 
   const saveMut = useMutation({
-    mutationFn: (body: ConnectionOAuthClientSave) => api.connectionsOAuthClientSave(client.slug, body),
+    mutationFn: async (body: ConnectionOAuthClientSave) => {
+      const own = await api.connectionsOAuthClientSave(client.slug, body)
+      // Only a whole pair travels: a non-empty Client ID plus a new secret.
+      // Anything less (an id alone, a secret with no id, a clear) would leave
+      // another card's half next to this card's, so it stays on this card.
+      const id = clientId.trim()
+      if (!shareAll || shareWith.length === 0 || !id || !body.client_secret) return own
+      // A card whose id or secret is set by the environment is skipped: a
+      // stored half there would pair with the environment's other half.
+      // Sequential: each PUT rewrites the agent spec.
+      const shared: ConnectionOAuthClientSave = { client_id: id, client_secret: body.client_secret }
+      let result = own
+      const failed: string[] = []
+      for (const peer of shareWith) {
+        if (peer.client_id_source === 'env' || peer.client_secret_source === 'env') continue
+        try {
+          const r = await api.connectionsOAuthClientSave(peer.slug, shared)
+          if (agentSpecNotRewritten(r)) result = r
+        } catch {
+          failed.push(CONNECTION_PROVIDERS.find(p => p.slug === peer.slug)?.name ?? peer.slug)
+        }
+      }
+      if (failed.length > 0) {
+        // This card did save: refresh the badges, and keep Save armed for a
+        // retry even though the refetched id no longer differs from the draft.
+        setRetryShared(true)
+        void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
+        throw new PartialShareError(failed)
+      }
+      return result
+    },
     onSuccess: (r) => {
       setNotApplied(agentSpecNotRewritten(r))
       setSecret('')
       setSecretClear(false)
       setFormKey(k => k + 1)
       setError(null)
+      setPartialFailed(null)
+      setRetryShared(false)
       void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
       // The gallery's status rows carry `needsClientConfig`; a save flips it.
       void qc.invalidateQueries({ queryKey: ['connections-status'] })
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+    onError: (e: unknown) => {
+      setPartialFailed(e instanceof PartialShareError ? e.failed : null)
+      setError(e instanceof Error ? e.message : String(e))
+    },
   })
   const deleteMut = useMutation({
     mutationFn: () => api.connectionsOAuthClientDelete(client.slug),
@@ -134,19 +202,27 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
       setSecretClear(false)
       setFormKey(k => k + 1)
       setError(null)
+      setPartialFailed(null)
+      setRetryShared(false)
       setRemoveConfirm(false)
       void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
       void qc.invalidateQueries({ queryKey: ['connections-status'] })
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+    onError: (e: unknown) => {
+      setPartialFailed(null)
+      setError(e instanceof Error ? e.message : String(e))
+    },
   })
 
   const trimmedId = clientId.trim()
   const idChanged = trimmedId !== (client.client_id ?? '') && !envId
-  const dirty = idChanged || secret.length > 0 || secretClear
+  const dirty = idChanged || secret.length > 0 || secretClear || retryShared
   const handleSave = () => {
     const body: ConnectionOAuthClientSave = {}
-    if (idChanged) body.client_id = trimmedId
+    // A new secret always travels with the id it was typed next to, so no
+    // write (this card's or another card's fan-out) can pair it with a
+    // different stored id.
+    if (idChanged || ((retryShared || secret) && trimmedId && !envId)) body.client_id = trimmedId
     if (secret) body.client_secret = secret
     else if (secretClear) body.client_secret_clear = true
     if (Object.keys(body).length === 0) return
@@ -234,10 +310,28 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
           />
         )}
 
+        {!readOnly && shareWith.length > 0 && (
+          <SettingsToggle
+            label={i18nT('pages.settings.connectionsPanel.share_google', { products: fmtList(shareWith.map(p => CONNECTION_PROVIDERS.find(c => c.slug === p.slug)?.name ?? p.slug), { style: 'narrow' }) })}
+            description={i18nT('pages.settings.connectionsPanel.share_google_help')}
+            checked={shareAll}
+            onChange={setShareAll}
+          />
+        )}
+
         {/* No hand-off: the hand-off navigates to chat and unmounts this card,
             destroying the client id and secret the operator has typed but not
             yet saved (a save failure is exactly when those drafts still exist). */}
-        {error && <ErrorNotice title={i18nT('pages.settings.connectionsPanel.save_failed')} message={error} />}
+        {error && (
+          <ErrorNotice
+            title={partialFailed
+              ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: fmtList(partialFailed, { style: 'narrow' }) })
+              : i18nT('pages.settings.connectionsPanel.save_failed')}
+            message={partialFailed
+              ? i18nT('pages.settings.connectionsPanel.share_google_partial', { provider: name })
+              : error}
+          />
+        )}
         {/* Same reason, no hand-off: it would unmount the card's unsaved drafts. */}
         {notApplied && <AgentSpecNotRewrittenNotice askAgent={false} />}
 
@@ -290,6 +384,7 @@ export function ConnectionsPanel({ readOnly = false }: { readOnly?: boolean }) {
     queryFn: api.connectionsOAuthClients,
   })
   const clients = data?.clients ?? []
+  const googleClients = clients.filter(c => isGoogleSlug(c.slug))
 
   return (
     <div className="space-y-6">
@@ -309,7 +404,13 @@ export function ConnectionsPanel({ readOnly = false }: { readOnly?: boolean }) {
           <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.none')}</p>
         )}
         {clients.map((client, index) => (
-          <ClientCard key={client.slug} client={client} index={index + 1} readOnly={readOnly} />
+          <ClientCard
+            key={client.slug}
+            client={client}
+            index={index + 1}
+            readOnly={readOnly}
+            shareWith={isGoogleSlug(client.slug) ? googleClients.filter(c => c.slug !== client.slug) : []}
+          />
         ))}
       </SettingsSection>
     </div>

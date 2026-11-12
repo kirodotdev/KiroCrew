@@ -3,7 +3,10 @@
 A server in ``mcp_gateway.stub_servers`` whose launch approval is refused runs one
 copy per chat while config says it is shared. These tests pin that doctor says so,
 names the reason and the approve path, and counts it as an issue -- and that it
-stays quiet about a refusal for a server that is not on the share list.
+stays quiet about a refusal for a server that is not on the share list. A changed
+refusal whose approved launches all still run beside an added one is named as a
+new launch; anything less complete, or an approved launch shown with a redaction
+tag, keeps "command changed".
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import pytest
 
 from kiro_crew.doctor_checks import mcp
 from kiro_crew.mcp_gateway import launch_approval
+from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 
 
 def _cfg(*, enabled: bool = True, stub: tuple[str, ...] = ("alpha-mcp", "beta-mcp")):
@@ -56,6 +61,134 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
 
 
+def _changed(**over):
+    """A complete changed-launch refusal whose approved launch is ``/opt/a --one``."""
+    record = {
+        "reason": launch_approval.REFUSED_CHANGED,
+        "complete": True,
+        "expected_launch": "pinned-identity",
+        "commands": [["/opt/a", "--one"]],
+        "envs": [[]],
+        "approved_commands": [["/opt/a", "--one"]],
+        "approved_envs": [[]],
+    }
+    record.update(over)
+    return record
+
+
+#: The approved launch still runs, and a second agent added its own.
+_ADDED = {"commands": [["/opt/a", "--one"], ["/opt/a", "--two"]], "envs": [[], []]}
+
+
+def test_a_launch_added_beside_the_approved_one_is_named_as_new(refused, capsys):
+    refused["alpha-mcp"] = _changed(**_ADDED)
+    refused["beta-mcp"] = _changed(commands=[["/opt/a", "--two"]])
+    issues: list[str] = []
+
+    mcp._doctor_mcp_share_refused(_cfg(), issues)
+
+    out = capsys.readouterr().out
+    assert "alpha-mcp (new launch not approved yet)" in out
+    assert "beta-mcp (command changed since it was approved)" in out
+    assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
+
+
+#: Display tags that read the same for two different values.
+_TAG = "--token=[REDACTED: credential]"
+_URL_TAG = "API_URL=[REDACTED: suspicious URL to example.invalid]"
+
+
+def test_every_display_redaction_tag_starts_with_the_head_the_rule_reads():
+    tags = (*CREDENTIAL_REDACTION_TAGS, EXFILTRATION_REDACTION_TAG_PREFIX)
+    assert tags and all(tag.startswith(mcp._REDACTION_TAG_HEAD) for tag in tags)
+
+
+#: Two approved launches, as after one Approve update on a row two agents declared.
+_TWO_APPROVED = {
+    "approved_commands": [["/opt/a", "--one"], ["/opt/a", "--two"]],
+    "approved_envs": [[], []],
+}
+
+
+def test_a_launch_added_beside_two_approved_ones_is_named_as_new(refused, capsys):
+    refused["alpha-mcp"] = _changed(
+        **_TWO_APPROVED,
+        commands=[["/opt/a", "--one"], ["/opt/a", "--two"], ["/opt/a", "--three"]],
+        envs=[[], [], []],
+    )
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("alpha-mcp",)), [])
+
+    assert "alpha-mcp (new launch not approved yet)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        pytest.param(
+            {"commands": [["/opt/a", "--two"], ["/opt/a", "--three"]], "envs": [[], []]},
+            id="approved-changed-and-another-added",
+        ),
+        pytest.param(
+            {
+                **_TWO_APPROVED,
+                "commands": [["/opt/a", "--one"], ["/opt/a", "--three"]],
+                "envs": [[], []],
+            },
+            id="one-of-two-approved-changed",
+        ),
+        pytest.param(
+            {**_ADDED, "envs": [["MODE=new"], []], "approved_envs": [["MODE=old"]]},
+            id="approved-settings-changed-beside-an-added-launch",
+        ),
+        pytest.param({}, id="nothing-added"),
+        pytest.param({**_ADDED, "approved_envs": None}, id="no-approved-env-displays"),
+        pytest.param({**_ADDED, "envs": [[]]}, id="live-displays-do-not-pair-up"),
+        pytest.param({**_ADDED, "complete": False}, id="partial"),
+        pytest.param({**_ADDED, "expected_launch": None}, id="no-identity"),
+        pytest.param(
+            {**_ADDED, "commands": [["/opt/a", "--one"], "/opt/a --two"]},
+            id="malformed-display-line",
+        ),
+        pytest.param(
+            {
+                "commands": [["/opt/a", _TAG], ["/opt/a", "--two"]],
+                "envs": [[], []],
+                "approved_commands": [["/opt/a", _TAG]],
+            },
+            id="approved-command-shows-a-redacted-credential",
+        ),
+        pytest.param(
+            {**_ADDED, "envs": [[_URL_TAG], []], "approved_envs": [[_URL_TAG]]},
+            id="approved-env-shows-a-redacted-url",
+        ),
+    ],
+)
+def test_anything_short_of_an_added_launch_keeps_command_changed(refused, capsys, over):
+    record = _changed(**over)
+    refused["alpha-mcp"] = {k: v for k, v in record.items() if v is not None}
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("alpha-mcp",)), [])
+
+    assert "alpha-mcp (command changed since it was approved)" in capsys.readouterr().out
+
+
+def test_a_never_approved_server_with_an_extra_launch_stays_not_approved_yet(refused, capsys):
+    refused["alpha-mcp"] = _changed(**_ADDED, reason=launch_approval.REFUSED_UNAPPROVED)
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("alpha-mcp",)), [])
+
+    assert "alpha-mcp (not approved yet)" in capsys.readouterr().out
+
+
+def test_an_alias_matched_share_reads_its_own_refusal_record(refused, capsys):
+    refused["playwright-mcp"] = _changed(**_ADDED)
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("npm:@playwright/mcp",)), [])
+
+    assert "npm:@playwright/mcp (new launch not approved yet)" in capsys.readouterr().out
+
+
 def test_refusal_for_a_server_no_longer_shared_is_ignored(refused, capsys):
     refused["gone-mcp"] = {"reason": launch_approval.REFUSED_UNAPPROVED}
     issues: list[str] = []
@@ -91,6 +224,14 @@ def test_refused_shares_keys_by_configured_name():
     ) == {
         "npm:@playwright/mcp": launch_approval.REFUSED_UNAPPROVED,
         "alpha-mcp": launch_approval.REFUSED_CHANGED,
+    }
+
+
+def test_refused_share_records_keys_the_whole_record_by_configured_name():
+    record = {"reason": launch_approval.REFUSED_CHANGED, "commands": [["/opt/a"]]}
+    refused = {"playwright-mcp": record, "gone-mcp": {"reason": launch_approval.REFUSED_UNAPPROVED}}
+    assert launch_approval.refused_share_records(["npm:@playwright/mcp", "beta-mcp"], refused) == {
+        "npm:@playwright/mcp": record
     }
 
 

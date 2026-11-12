@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import shlex
 import urllib.parse
@@ -162,6 +163,10 @@ def _setting_risk(path: str, before: Any, after: Any) -> str:
     if path in _CODE_EXEC_SETTINGS:
         return RISK_CODE_EXEC
     order = _SETTING_ORDER.get(path)
+    if path == "session.max_per_creator" and isinstance(after, float) and math.isfinite(after):
+        # The route saves ``int(value)``, so a card for 449.5 writes 449: rank the
+        # number the gateway will save, as for the pin scope below.
+        after = int(after)
     if path == "dashboard.tailscale.pin_scope":
         # The route takes any short string and the loader applies its
         # normalised form, so rank the values the gateway will apply.
@@ -774,7 +779,12 @@ def build_preview(
         if not impact:
             raise _fail("no_change", "these operations change nothing")
         label = str(context.get("label") or p["member"])
-        out["title"] = f"Change tools for “{label}”"
+        # A crewmate's own file extends its worker, not the chat the card is
+        # raised in, so the title says whose tools change.
+        if context.get("worker_kit"):
+            out["title"] = f"Change what “{label}”’s worker can use"
+        else:
+            out["title"] = f"Change tools for “{label}”"
         out["changes"] = _impact_rows(impact)
         launched = _launched_servers(p["draft"])
         for server, spec in launched:
@@ -1037,9 +1047,11 @@ def build_preview(
             out["changes"].append(row)
         out["risk"] = RISK_CODE_EXEC
         body = {"source": p["source"], "expected_revision": revision, **changed}
-        out["apply"] = [
-            step("PATCH", f"/api/workflows/definitions/{_q(str(snapshot['id']))}", body)
-        ]
+        ref = str(snapshot.get("ref") or snapshot["id"])
+        if ref != snapshot["id"]:
+            # A free slug stands in for a reserved id: pin the write to the id.
+            body["expected_id"] = str(snapshot["id"])
+        out["apply"] = [step("PATCH", f"/api/workflows/definitions/{_q(ref)}", body)]
     else:  # KIND_DENIED_COMMAND
         if p["action"] == "add":
             if snapshot.get("exists"):

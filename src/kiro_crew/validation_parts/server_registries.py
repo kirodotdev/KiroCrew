@@ -12,9 +12,6 @@ module never imports that facade.
 
 from __future__ import annotations
 
-from kiro_crew.validation_parts.app_schemas import (
-    OPS_MISSION_CONTROL_API_SCHEMA,
-)
 from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_DELETE_COMMENT_SCHEMA,
     ARTIFACT_DELETE_SCHEMA,
@@ -127,6 +124,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     SESSION_SEND_SCHEMA,
     SESSION_SET_COLOR_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
+    SESSION_SET_NOTE_SCHEMA,
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
     SESSION_SUMMARY_SCHEMA,
@@ -215,7 +213,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "workflow_library_list": WORKFLOW_LIBRARY_LIST_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
-    "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
 }
 
 
@@ -237,6 +234,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
     "session_set_color": SESSION_SET_COLOR_SCHEMA,
+    "session_set_note": SESSION_SET_NOTE_SCHEMA,
     "session_rename": SESSION_RENAME_SCHEMA,
     "session_generate_title": SESSION_GENERATE_TITLE_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,

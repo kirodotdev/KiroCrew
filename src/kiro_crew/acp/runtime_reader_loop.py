@@ -8,7 +8,8 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
-``_pending_requests``, ``_routed_requests``, ``_session_activity_at``.
+``_pending_requests``, ``_routed_requests``, ``_session_activity_at``,
+``_unrouted_child_frames``.
 
 Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_overflow``,
 ``_kas_host_auth``, ``_launch_cwd_roots``,
@@ -16,7 +17,7 @@ Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_ov
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
-``_turn_active_sessions``, ``recording_allowed``.
+``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
 from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
+from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
 from kiro_crew.acp.transport_framing import (
     _STDOUT_BUFFER_LIMIT,
     OversizeLineUnrecoverable,
@@ -110,6 +112,22 @@ def _oversize_frame_message(size: int) -> str:
         "description and welcomeMessage, so an agent package whose specs carry very large "
         "welcomeMessage text is the usual cause: trim those fields, or remove agents you "
         "do not use."
+    )
+
+
+#: JSON-RPC "internal error", the code a backend's own failed reply carries.
+_OVERSIZE_REPLY_ERROR_CODE = -32603
+
+
+def _oversize_reply_message(size: int) -> str:
+    """The one sentence a user sees when a chat prompt's reply was dropped as oversize.
+
+    Sizes in MB, rounded; the exact byte counts go to the log line the drop writes.
+    """
+    mb = 1024 * 1024
+    return (
+        f"The reply was too large to show ({size / mb:.1f} MB, limit "
+        f"{_STDOUT_BUFFER_LIMIT / mb:.0f} MB). Try asking for a shorter answer."
     )
 
 
@@ -213,6 +231,7 @@ async def _route_owned_child_frame(
     # activity, which keeps the owner off the idle sweep.
     self._session_activity_at[owner] = time.monotonic()
     if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION) and not _owner_turn_active:
+        self._unrouted_child_frames += 1
         await self._spawn_answer_task(
             msg,
             session_id,
@@ -339,10 +358,39 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 if pending is not None and not pending.done():
                     self._pending_requests.pop(req_id, None)
                     pending.set_exception(AcpFrameTooLarge(_oversize_frame_message(dropped)))
+                    continue
+                # A routed request (a chat prompt) has no future: its session
+                # reads the reply off its queue and would wait for it forever.
+                # Hand that session an error reply in the dropped one's place.
+                session_id = self._routed_requests.pop(req_id, None) if req_id is not None else None
+                if session_id and session_id in self._session_queues:
+                    await self._session_queues[session_id].put(
+                        JsonRpcMessage(
+                            id=req_id,
+                            error={
+                                "code": _OVERSIZE_REPLY_ERROR_CODE,
+                                "message": _oversize_reply_message(dropped),
+                                "data": OVERSIZE_REPLY_DATA,
+                            },
+                        )
+                    )
                 continue
 
             if not line:
-                rc = self._process.returncode if self._process else "?"
+                # EOF usually lands before the reap, and this reason is the text
+                # every pending caller receives, so the exit is waited for first,
+                # under the bound the retire below uses. A wait that times out or
+                # cannot run (as the retire treats one) leaves the status unread,
+                # and the reason then says ``<not reaped>``, never ``rc=None``.
+                process = self._process
+                rc: object = "?"
+                if process is not None:
+                    if process.returncode is None:
+                        try:
+                            await asyncio.wait_for(process.wait(), self._KILL_REAP_TIMEOUT)
+                        except Exception:
+                            logger.debug("AcpRuntime: exit status unread at EOF", exc_info=True)
+                    rc = self._RC_NOT_REAPED if process.returncode is None else process.returncode
                 self._mark_dead(self._exit_reason(rc))
                 # The one death path that OBSERVES the exit rather than
                 # causing it. ``kill()`` retires the registry entries after
@@ -520,6 +568,12 @@ async def _reader_loop(self: AcpRuntime) -> None:
 
             # Route notifications by sessionId
             session_id = (msg.params or {}).get("sessionId")
+            # Read before routing, so a snapshot for a session that is not
+            # registered yet (or any more) still says the shared queue moved.
+            # Read with getattr: a runtime built without __init__ has none.
+            _progress = getattr(self, "mcp_connect_progress", None)
+            if _progress is not None:
+                _progress.observe(msg)
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                 # Snapshot backend-internal subagent session ids before the
                 # broadcast below delivers the frame to the UI consumers.
@@ -621,6 +675,9 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # cost this child its approval card, and that is the one
                     # thing an operator can act on (the two counts in the
                     # snapshot warning above are the same signal).
+                    # Answered here, so it reaches no session: counted like a
+                    # dropped child update (``unrouted_child_frames``).
+                    self._unrouted_child_frames += 1
                     await self._spawn_answer_task(
                         msg,
                         session_id,

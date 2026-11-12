@@ -3,7 +3,8 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement } from 'react'
 import type { ChatMessage } from '../types'
-import { useChatNavigation } from '../hooks/useChatNavigation'
+import { api } from '../api/client'
+import { resetNavLinkLabelsForTest, useChatNavigation } from '../hooks/useChatNavigation'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -21,7 +22,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 describe('useChatNavigation', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); resetNavLinkLabelsForTest() })
 
   it('returns sections from user messages', () => {
     const messages = [msg('user', 'Hello world'), msg('assistant', 'Hi'), msg('user', 'Second question')]
@@ -129,5 +130,49 @@ describe('useChatNavigation', () => {
     const call = (api.resolveNavLinks as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(call[0].context).toContain('line2')
     expect(call[0].context).toContain('line4')
+  })
+
+  it('posts only new bare URLs when a chat adds one (#33708)', async () => {
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve.mockResolvedValueOnce({ summaries: ['First page'] }).mockResolvedValueOnce({ summaries: ['Second page'] })
+    const one = [msg('user', 'see https://example.com/one')]
+    const map = new Map([[0, 0], [1, 1]])
+    const { result, rerender } = renderHook(({ m }) => useChatNavigation(m, map), { wrapper, initialProps: { m: one } })
+    await waitFor(() => expect(result.current.links[0].label).toBe('First page'))
+    rerender({ m: [...one, msg('user', 'and https://example.com/two')] })
+    await waitFor(() => expect(result.current.links[1]?.label).toBe('Second page'))
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls[1][0].map((l: { url: string }) => l.url)).toEqual(['https://example.com/two'])
+    expect(result.current.links[0].label).toBe('First page')
+  })
+
+  it('does not store a reply whose line count does not match, so it retries', async () => {
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve.mockResolvedValueOnce({ summaries: [] })
+    const messages = [msg('user', 'see https://example.com/three')]
+    const map = new Map([[0, 0]])
+    const first = renderHook(() => useChatNavigation(messages, map), { wrapper })
+    await waitFor(() => expect(first.result.current.resolving).toBe(false))
+    first.unmount()
+    resolve.mockResolvedValueOnce({ summaries: ['Third page'] })
+    const second = renderHook(() => useChatNavigation(messages, map), { wrapper })
+    await waitFor(() => expect(second.result.current.links[0].label).toBe('Third page'))
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends at most 20 links per request and labels the rest in the next one', async () => {
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve.mockImplementation(async (links: { url: string }[]) => ({
+      summaries: links.map(l => `Label ${l.url.split('/').pop()}`),
+    }))
+    const urls = Array.from({ length: 21 }, (_, i) => `https://example.com/p${i}`)
+    const messages = urls.map(u => msg('user', `see ${u}`))
+    const map = new Map(urls.map((_, i) => [i, i]))
+    const { result } = renderHook(() => useChatNavigation(messages, map), { wrapper })
+    await waitFor(() => expect(result.current.links[20]?.label).toBe('Label p20'))
+    expect(result.current.links[0].label).toBe('Label p0')
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls[0][0]).toHaveLength(20)
+    expect(resolve.mock.calls[1][0]).toHaveLength(1)
   })
 })

@@ -1,8 +1,8 @@
 """Agent and harness rows of ``kirocrew doctor``.
 
 Crew member names and memory bindings, config surfaces that still name a
-deprecated agent spec, the optional Claude Code backend, and one sign-in row per
-selectable harness. Names the doctor imports, and the host probes
+deprecated agent spec, the optional Claude Code and Codex backends, and one
+sign-in row per selectable harness. Names the doctor imports, and the host probes
 ``cli_doctor_parts/host_probes.py`` holds, are read through :mod:`kiro_crew.cli_doctor`
 at call time, so a patch there reaches these sections.
 """
@@ -295,6 +295,63 @@ def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> No
     issues.append("a config names a deprecated agent spec")
 
 
+def _doctor_unreadable_allowed_commands(
+    cfg: KiroCrewConfig, project_dir: str | None, issues: list[str]
+) -> None:
+    """Report each agent spec ``toolsSettings`` shell ``allowedCommands`` entry Kiro
+    Crew cannot read.
+
+    On KAS and claude Kiro Crew answers those entries at its own gate, and refuses
+    what they do not match under ``denyByDefault``, reading each with
+    ``platform/allowed_commands.py``. An entry outside that syntax allows nothing,
+    so a command only it matches asks, or is refused, a scheduled job's included,
+    and this row is where an operator learns which entry before a run does. Shown
+    only when a selected role runs one of those two backends (a positive test):
+    kiro-cli reads the entries itself. Scans the user-level specs and, as the
+    model-pin audit does, the project's; a spec the hardened reader refuses is that
+    audit's to report. Silent when every entry reads.
+    """
+    from kiro_crew.agent_sdk.kas_tool_view import unreadable_allowed_commands
+
+    selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+    runs_claude = cli_doctor._selected_roles_run_claude(cfg)
+    if cli_doctor.ACP_BACKEND_KAS not in selected and not runs_claude:
+        return
+    findings: list[tuple[str, str, str, str]] = []
+    try:
+        directories = [cli_doctor._agents_dir()]
+        if project_dir and not cli_doctor.is_sensitive_path(str(project_dir)):
+            directories.append(cli_doctor.project_agents_dir(project_dir))
+        for directory in directories:
+            for path in cli_doctor._strict_agent_json_specs(directory):
+                data = cli_doctor._read_agent_spec(path, operation="doctor", source="cli")
+                if not isinstance(data, dict):
+                    continue
+                name = data.get("name")
+                agent = name if isinstance(name, str) and name else path.stem
+                for key, entry, reason in unreadable_allowed_commands(data.get("toolsSettings")):
+                    findings.append((agent, key, entry, reason))
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken spec tree
+        cli_doctor.logger.debug("doctor: allowedCommands scan failed", exc_info=True)
+        return
+    if not findings:
+        return
+    # Each value comes from a spec's own text, so it is shown through _safe_display.
+    for agent, key, entry, reason in findings:
+        print(
+            f"  allowed cmd: ⚠️  {render._safe_display(agent)} "
+            f"toolsSettings.{key}.allowedCommands entry {render._safe_display(entry)}: {reason}"
+        )
+    render._print_wrapped(
+        "Kiro Crew answers allowedCommands itself on KAS and claude and cannot read "
+        "these entries, so each allows nothing: a command only it matches asks for "
+        "approval, or is refused when denyByDefault is set, a scheduled job's "
+        "included. Rewrite each in the syntax agent-spec-fields.md lists under "
+        "toolsSettings."
+    )
+    issues.append("an agent spec has allowedCommands entries Kiro Crew cannot read")
+
+
 def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
     """Report the Claude Code agent backend, installed or not.
 
@@ -393,6 +450,75 @@ def _warn_old_claude_adapter(version: str) -> None:
         return
     print(f"               ⚠️  claude-agent-acp {version} is older than {floor}; update it:")
     print(f"               {command}")
+
+
+def _doctor_codex_backend(issues: list[str], *, required: bool) -> None:
+    """Report the Codex agent backend, installed or not.
+
+    The rules of ``_doctor_claude_backend``, for the one component Codex needs: the
+    codex-acp adapter. *required* is True when a selected role runs Codex, and a
+    ``MISSING`` verdict is then an issue, because every session on that role fails
+    to spawn. ``UNKNOWN`` or a raising probe is never an issue. The verdict comes
+    from ``agent_sdk.probe_backend``, which the dashboard also reads.
+    """
+    try:
+        from kiro_crew.agent_sdk import INSTALLED, MISSING, probe_backend
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
+
+        codex_state = probe_backend(ACP_BACKEND_CODEX)
+    except Exception:
+        codex_state = None
+    if codex_state is None:
+        print("  codex-acp:   ⚠️  could not check")
+    elif codex_state.installed == INSTALLED:
+        # The path and the version come from the resolver the spawn uses, never
+        # from ``which``: CODEX_ACP_BIN, a vendored node_modules or a mise shim can
+        # win over the copy on PATH, and the row must name the adapter that runs.
+        where, version = _codex_adapter_install()
+        shown = f" {version}" if version else ""
+        print(f"  codex-acp:   ✅ {where or 'path not read'}{shown} (Codex installed)")
+        _warn_untested_codex_adapter(version)
+    elif codex_state.installed == MISSING:
+        missing = ", ".join(codex_state.missing_components) or "components"
+        if required:
+            print(f"  codex-acp:   ❌ {missing} not found (a selected backend runs it)")
+            issues.append(f"codex-acp: {missing} not found")
+        else:
+            print(f"  codex-acp:   ⏭  {missing} not found (optional agent backend)")
+        if codex_state.install_command:
+            print(f"               {codex_state.install_command}")
+    else:
+        print("  codex-acp:   ⚠️  could not check")
+
+
+def _codex_adapter_install() -> tuple[str, str]:
+    """The resolved codex-acp entry and its npm package version, ``""`` when unread.
+
+    Never by running the adapter: codex-acp serves stdin on any argv, so a
+    ``--version`` probe would hang doctor.
+    """
+    try:
+        from kiro_crew.agent_sdk.drivers.acp import codex_adapter_disk_install
+
+        return codex_adapter_disk_install()
+    except Exception:
+        return "", ""
+
+
+def _warn_untested_codex_adapter(version: str) -> None:
+    """A warning row when *version* is outside the tested range; never an issue.
+
+    Sessions still start on such a release, and each new chat shows the same
+    notice, so this row informs rather than fails doctor.
+    """
+    try:
+        from kiro_crew.agent_sdk.drivers.acp import codex_adapter_untested_version_notice
+
+        notice = codex_adapter_untested_version_notice(version)
+    except Exception:
+        return
+    if notice:
+        print(f"               ⚠️  {notice}")
 
 
 def _backend_policy_label(backend: str) -> str:
@@ -592,6 +718,10 @@ def _doctor_agent_auth() -> None:
             continue
         if host_signed_in is True:
             print(f"  {label.ljust(13)}✅ {source}")
+        elif host_signed_in is None and not cli_doctor.resolve_kiro_cli():
+            # Nothing to ask, so not a failed check: the kiro-cli row above
+            # already reports the missing install.
+            print(f"  {label.ljust(13)}⏭  {source}; kiro-cli not installed")
         elif host_signed_in is None:
             print(f"  {label.ljust(13)}⚠️  {source}; could not check")
         else:

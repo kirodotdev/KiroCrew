@@ -1,8 +1,9 @@
-"""Only tagged per-run cron transcripts that are expired or past the keep count go.
+"""Only finished per-run cron transcripts that are expired or past the keep count go.
 
-Untagged three-part keys may belong to durable agent sequences, independent
-of the current job settings. Active, pinned and recent transcripts within each
-job's keep count are retained.
+A finished run is one tagged ``ephemeral``, or an untagged legacy file that holds
+nothing besides its metadata line. Untagged three-part keys with rows may belong to
+durable agent sequences, independent of the current job settings. Active, pinned
+and recent transcripts within each job's keep count are retained.
 """
 
 from __future__ import annotations
@@ -37,6 +38,15 @@ def _write(log: ConversationLog, key: str, *, age_from: float = OLD, tagged: boo
         log.append(key, "user", "run")
         if tagged:
             log.update_metadata(key, {"cron_run": "ephemeral"})
+    path = log._path(key)
+    os.utime(path, (age_from, age_from))
+    return os.fspath(path)
+
+
+def _write_legacy_empty(log: ConversationLog, key: str, *, age_from: float = OLD) -> str:
+    """A run file as builds before the ``cron_run`` tag left it: one metadata line."""
+    with history_mod.allow_on_loop_persist():
+        log.update_metadata(key, {"memory_mode": "persistent"})
     path = log._path(key)
     os.utime(path, (age_from, age_from))
     return os.fspath(path)
@@ -139,9 +149,102 @@ def test_an_untagged_file_past_the_keep_count_is_kept(log) -> None:
     assert os.path.exists(path)
 
 
+def test_an_old_untagged_metadata_only_run_transcript_is_removed(log) -> None:
+    path = _write_legacy_empty(log, f"cron:{JOB}:0f0f0f0f")
+    assert _prune(log) == 1
+    assert not os.path.exists(path)
+
+
+def test_untagged_metadata_only_runs_past_the_keep_count_are_removed(log) -> None:
+    """A busy job's pre-tag pile drains however recent its files are."""
+    paths = [
+        _write_legacy_empty(log, f"cron:{JOB}:{i:08x}", age_from=NOW - 60 * (i + 1))
+        for i in range(RUN_TRANSCRIPT_KEEP_PER_JOB + 3)
+    ]
+    assert _prune(log) == 3
+    kept = [os.path.exists(p) for p in paths]
+    assert kept == [True] * RUN_TRANSCRIPT_KEEP_PER_JOB + [False] * 3
+
+
+def test_a_recent_untagged_metadata_only_run_transcript_is_kept(log) -> None:
+    path = _write_legacy_empty(log, f"cron:{JOB}:0f0f0f0f", age_from=NOW - 60)
+    assert _prune(log) == 0
+    assert os.path.exists(path)
+
+
+def test_a_held_untagged_metadata_only_run_transcript_is_kept(log) -> None:
+    key = f"cron:{JOB}:0f0f0f0f"
+    path = _write_legacy_empty(log, key)
+    assert _prune(log, active=frozenset({key})) == 0
+    assert os.path.exists(path)
+
+
+def test_a_pinned_untagged_metadata_only_run_transcript_is_kept(log) -> None:
+    key = f"cron:{JOB}:0f0f0f0f"
+    path = _write_legacy_empty(log, key)
+    with history_mod.allow_on_loop_persist():
+        log.update_metadata(key, {"pinned": True})
+    assert _prune(log) == 0
+    assert os.path.exists(path)
+
+
+def test_a_tab_tagged_metadata_only_run_transcript_is_kept(log) -> None:
+    key = f"cron:{JOB}:0f0f0f0f"
+    path = _write_legacy_empty(log, key)
+    with history_mod.allow_on_loop_persist():
+        log.update_metadata(key, {"cron_run": "tab"})
+    assert _prune(log) == 0
+    assert os.path.exists(path)
+
+
+class _RegisteredAfterTheScan:
+    """Live keys where *key* registers after the pass's first look at it."""
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+        self.asked = 0
+
+    def __contains__(self, key: object) -> bool:
+        if key != self._key:
+            return False
+        self.asked += 1
+        return self.asked > 1
+
+
+def test_a_key_registered_during_the_pass_is_kept(log) -> None:
+    """A sequence step registers its stable key, then binds its record under the lock."""
+    key = f"cron:{JOB}:deadbeef"
+    path = _write_legacy_empty(log, key)
+    active = _RegisteredAfterTheScan(key)
+    assert prune_stale_run_transcripts(active_keys=active, now=NOW, log=log) == 0
+    assert os.path.exists(path)
+
+
 class _Service:
+    def __init__(self) -> None:
+        self.keys: frozenset[str] = frozenset()
+
     def active_session_keys(self) -> frozenset[str]:
-        return frozenset()
+        return self.keys
+
+
+def test_the_reaper_hands_the_prune_live_keys_not_a_snapshot(monkeypatch) -> None:
+    import asyncio
+
+    from kiro_crew.cron_service import run_residue
+    from kiro_crew.cron_service.service import run_teardown
+
+    service = _Service()
+    seen: list[bool] = []
+
+    def prune(*, active_keys, **_kw) -> int:
+        service.keys = frozenset({"cron:abcd1234:deadbeef"})
+        seen.append("cron:abcd1234:deadbeef" in active_keys)
+        return 0
+
+    monkeypatch.setattr(run_residue, "prune_stale_run_transcripts", prune)
+    asyncio.run(run_teardown._prune_run_residue(service, NOW))
+    assert seen == [True]
 
 
 @pytest.mark.parametrize(("removed", "backlog"), [(RUN_TRANSCRIPT_PRUNE_CAP, True), (3, False)])

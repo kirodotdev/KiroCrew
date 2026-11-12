@@ -100,7 +100,7 @@ PREDICATE_SITES = {
     "dashboard/messaging_api/discord_settings.py": 2,
     "dashboard/messaging_api/feishu_settings.py": 2,
     "dashboard/messaging_api/imessage_settings.py": 2,
-    "dashboard/messaging_api/slack_settings.py": 2,
+    "dashboard/messaging_api/slack_settings.py": 3,
     "dashboard/messaging_api/teams_settings.py": 2,
     "dashboard/messaging_api/telegram_settings.py": 2,
     "dashboard/messaging_api/webex_settings.py": 2,

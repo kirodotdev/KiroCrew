@@ -90,7 +90,7 @@ class RepoUrlError(ValueError):
 # Off by default — see validate_provider_executable for the current policy.
 STRICT_PROVIDER_BIN_ENV = "KIROCREW_PROVIDER_BIN_STRICT"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-# Well-known install dirs searched (in order) before the ambient PATH. Shared
+# Well-known POSIX install dirs searched (in order) before the ambient PATH. Shared
 # by every gh/glab-spawning surface so all panels accept exactly the same set
 # of CLI locations and never drift.
 PROVIDER_EXECUTABLE_DIRS = (
@@ -318,10 +318,10 @@ def path_parents(path: Path) -> list[Path]:
     """Return every parent through the filesystem root, LEXICALLY.
 
     Names each ancestor spelling and never a symlink hop, so it serves the
-    Windows ACL chain in :func:`validate_provider_executable` only; the POSIX
-    provenance walk there enumerates with
-    :func:`kiro_crew.platform_compat.traversed_components`, which visits every
-    directory the walk actually reads.
+    Windows ACL chain in :func:`validate_provider_executable` only, where
+    :func:`windows_link_hop_dirs` adds the hops; the POSIX provenance walk there
+    enumerates with :func:`kiro_crew.platform_compat.traversed_components`,
+    which visits every directory the walk actually reads.
     """
     parents: list[Path] = []
     current = path.parent
@@ -330,6 +330,77 @@ def path_parents(path: Path) -> list[Path]:
         if current.parent == current:
             return parents
         current = current.parent
+
+
+# Windows' own limit on reparse points expanded in one path resolution.
+_MAX_WINDOWS_LINK_HOPS = 63
+# Windows' extended-length ("verbatim") path prefix, ``\\?\``.
+_VERBATIM_PREFIX = "\\\\?\\"
+
+
+def windows_link_hop_dirs(path: Path) -> list[Path]:
+    r"""Each directory a link chain from *path* reads after its first hop.
+
+    The Windows ACL chain is the lexical parents of the original and the
+    resolved spellings, which never name the middle of a chain: for
+    ``C:\bin\gh.exe -> D:\mid\gh.exe -> C:\real\gh.exe`` the walk reads
+    ``D:\mid``, and whoever can write ``D:\mid`` can retarget the launch. This
+    follows the chain the way the OS expands it: the first link (symlink or
+    junction) in the current spelling is replaced by its target, and from the
+    second link on, the directory holding it and that directory's ancestors are
+    returned. The first link's directories are the original spelling's own
+    parents, which the caller already asks.
+
+    It only ADDS directories to the two chains the callers ask, so a chain it
+    cannot follow (an unreadable link, more hops than Windows allows) ends the
+    walk with what it found and leaves the two chains as they were. A relative
+    target is joined onto the directory holding its link, as the OS does.
+
+    An extended-length target (``\\?\D:\mid.\gh.exe``) is kept verbatim, never
+    folded to its plain spelling: the plain spelling drops a trailing dot or
+    space and so names a different directory, and the directory returned must
+    be the one the link really reads. ``..`` in a verbatim spelling is a name,
+    not a step up, so the walk stops there.
+    shortcut: a verbatim target that names no drive or UNC share (a volume
+    mount point's ``\\?\Volume{...}``) ends the walk too; follow it if mount
+    points in a provider chain come up.
+    """
+    found: list[Path] = []
+    spelling = os.path.normpath(str(path))
+    for hop in range(_MAX_WINDOWS_LINK_HOPS):
+        parts = Path(spelling).parts
+        if not parts:
+            return found
+        current = parts[0]
+        verbatim = current.startswith(_VERBATIM_PREFIX)
+        for index, name in enumerate(parts[1:], start=1):
+            if name == os.pardir:
+                if verbatim:
+                    return found
+                current = os.path.dirname(current)
+                continue
+            candidate = os.path.join(current, name)
+            if os.path.islink(candidate) or os.path.isjunction(candidate):
+                break
+            current = candidate
+        else:
+            return found
+        if hop:
+            found += [p for p in path_parents(Path(candidate)) if p not in found]
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            return found
+        if target.startswith(_VERBATIM_PREFIX):
+            rest = target[len(_VERBATIM_PREFIX) :]
+            if rest[1:2] != ":" and not rest.upper().startswith("UNC\\"):
+                return found
+        spelling = os.path.join(current, target, *parts[index + 1 :])
+        if not os.path.isabs(spelling):
+            # A drive-relative target (``D:x``) names a directory through the
+            # process's per-drive cwd, which this walk cannot model.
+            return found
+    return found
 
 
 def strict_provider_bins() -> bool:
@@ -358,7 +429,9 @@ def agent_writable_roots() -> tuple[Path, ...]:
         if not raw:
             continue
         try:
-            roots.append(Path(raw).resolve())
+            # Spelled without Windows' ``\\?\`` prefix; callers fold their side
+            # the same way, so the two spellings of one path compare equal.
+            roots.append(platform_compat.strip_extended_length_prefix(Path(raw).resolve()))
         except OSError:
             continue
     return tuple(roots)
@@ -807,14 +880,16 @@ def validate_provider_directory(candidate: str) -> str:
         raise ValueError("directory hierarchy is not accessible") from exc
 
     if not strict:
+        folded = platform_compat.strip_extended_length_prefix(resolved)
         for root in agent_writable_roots():
-            if resolved == root or root in resolved.parents:
+            if folded == root or root in folded.parents:
                 raise ValueError(f"directory is inside the agent-writable tree {root}")
 
     if windows:
         components = [resolved, *path_parents(resolved)]
         if not strict and not same_path:
             components += [p for p in [original, *path_parents(original)] if p not in components]
+            components += [p for p in windows_link_hop_dirs(original) if p not in components]
     else:
         walk = platform_compat.traversed_components_and_links(original)
         if walk is None:
@@ -973,8 +1048,9 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         raise ValueError("file is not executable")
 
     if not strict:
+        folded = platform_compat.strip_extended_length_prefix(resolved)
         for root in agent_writable_roots():
-            if resolved == root or root in resolved.parents:
+            if folded == root or root in folded.parents:
                 raise ValueError(f"executable is inside the agent-writable tree {root}")
 
     _check(resolved, label="executable")
@@ -983,10 +1059,12 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         # The ACL walk asks its question of lexical spellings, and the
         # component-by-component walker below is POSIX-shaped (``os.sep``-rooted),
         # so Windows keeps the two chains: the resolved path's parents plus, in
-        # relaxed mode, the original spelling's.
+        # relaxed mode, the original spelling's and the directory of every later
+        # link hop, which neither chain names.
         parents = list(path_parents(resolved))
         if not strict and not same_path:
             parents += [p for p in path_parents(original) if p not in parents]
+            parents += [p for p in windows_link_hop_dirs(original) if p not in parents]
     else:
         # Every directory the walk to the target actually reads: the original
         # spelling's side, each symlink hop's side and the target's side. Two
@@ -1051,6 +1129,9 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
     module has never heard of (asdf, mise, ``~/.local/bin``). ``PATH`` is not
     consulted in strict mode, which by definition only trusts system dirs.
 
+    On Windows the drive-less POSIX dirs are left out: there ``/usr/bin/gh``
+    resolves against the current drive, to a folder any local account can create.
+
     Resolution inside a directory is delegated to :func:`shutil.which`, which
     applies whatever the platform defines as "runnable there": ``PATHEXT`` on
     Windows, so a bare ``gh`` matches ``gh.exe``, and ``X_OK`` on POSIX. Joining
@@ -1083,7 +1164,10 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
         target = os.path.normcase(os.path.abspath(candidate))
         return os.path.dirname(target) == base
 
-    ordered: dict[str, None] = dict.fromkeys(PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ()))
+    wellknown = PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ())
+    if sys.platform == "win32":
+        wellknown = tuple(c for c in wellknown if not c.startswith("/"))
+    ordered: dict[str, None] = dict.fromkeys(wellknown)
     searched = list(_wellknown_windows_dirs(executable))
     if not strict_provider_bins():
         searched += [e for e in (os.environ.get("PATH") or "").split(os.pathsep) if e]
@@ -1146,8 +1230,9 @@ def _consume_prevalidated(value: str) -> str:
         raise SetupError(f"{GH_PREVALIDATED_ENV} target is world-writable")
     if not os.access(resolved, os.X_OK):
         raise SetupError(f"{GH_PREVALIDATED_ENV} target is not executable")
+    folded = platform_compat.strip_extended_length_prefix(resolved)
     for root in agent_writable_roots():
-        if resolved == root or root in resolved.parents:
+        if folded == root or root in folded.parents:
             raise SetupError(
                 f"{GH_PREVALIDATED_ENV} target is inside the agent-writable tree {root}"
             )

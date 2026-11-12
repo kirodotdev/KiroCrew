@@ -355,19 +355,27 @@ class WeixinTransport(MessagingTransport):
             # startup outcome forever.
             if not cancelled and self._running:
                 logger.warning("weixin: inbound poll loop ended unexpectedly — inbound is dead")
-                if self.on_state_change is not None:
-                    try:
-                        self.on_state_change(False, "poll loop ended unexpectedly")
-                    except Exception:
-                        logger.debug("weixin on_state_change observer raised", exc_info=True)
+                self._report_state(False, "poll loop ended unexpectedly")
+
+    def _report_state(self, connected: bool, error: str) -> None:
+        """Tell the dashboard badge observer, if any; an observer error never escapes."""
+        if self.on_state_change is not None:
+            try:
+                self.on_state_change(connected, error)
+            except Exception:
+                logger.debug("weixin on_state_change observer raised", exc_info=True)
 
     async def _poll_forever(self) -> None:
         failures = 0
         timeouts = 0
+        # Whether the badge was flipped off for an expired session, so it is
+        # flipped back once, on the first poll that answers without an error.
+        expired = False
         while self._running:
             try:
                 resp = await self._client.get_updates(self._sync_buf)
-                if resp.pop("_timed_out", False):
+                timed_out = bool(resp.pop("_timed_out", False))
+                if timed_out:
                     # Zero server contact for a full client-deadline window.
                     # Warn ONCE per streak, at a threshold well past normal
                     # long-poll behavior, so this stays quiet whether the
@@ -396,6 +404,11 @@ class WeixinTransport(MessagingTransport):
                     logger.warning(
                         "weixin: session expired (-14); pausing — re-login via Settings QR."
                     )
+                    if not expired:
+                        # Inbound is dead until the owner logs in again, so the
+                        # badge must stop saying connected.
+                        expired = True
+                        self._report_state(False, "session expired; log in again with the QR code")
                     await asyncio.sleep(600)
                     continue
                 if errcode == RATE_LIMIT_ERRCODE:
@@ -419,6 +432,11 @@ class WeixinTransport(MessagingTransport):
                     )
                     await asyncio.sleep(delay)
                     continue
+                if expired and not timed_out:
+                    # A client-side timeout is no server answer, so it says
+                    # nothing about whether the session is still expired.
+                    expired = False
+                    self._report_state(True, "")
                 self._sync_buf = resp.get("get_updates_buf", self._sync_buf)
                 for msg in resp.get("msgs") or []:
                     task = asyncio.current_task()
@@ -510,7 +528,14 @@ class WeixinTransport(MessagingTransport):
         from_user = str(raw_envelope.get("from_user_id") or "").strip()
         if not from_user:
             return
-        msg_id = str(raw_envelope.get("msg_id") or raw_envelope.get("client_id") or "")
+        # iLink names the server's id ``message_id`` (a number); ``msg_id`` and
+        # ``client_id`` are kept for envelopes that carry those instead.
+        msg_id = str(
+            raw_envelope.get("message_id")
+            or raw_envelope.get("msg_id")
+            or raw_envelope.get("client_id")
+            or ""
+        )
         if msg_id and self._dedup(msg_id):
             return
 

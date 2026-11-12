@@ -93,12 +93,17 @@ def _to_llm_event(e: Any) -> LLMEvent:
         tool_identity_trusted=e.tool_identity_trusted,
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
+        # The check that set the flag above; dropping it leaves a flagged event
+        # with no reason.
+        mcp_identity_unreadable_reason=e.mcp_identity_unreadable_reason,
         kas_builtin_ids=e.kas_builtin_ids,
         # Dropping it hides the reason box on a KAS card, and the reason with it.
         takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,
+        # Same row: dropping this would leave every hook-held MCP grant prompting.
+        spec_hook_held=e.spec_hook_held,
         # Same row: dropping this would leave every allowedCommands match prompting.
         spec_granted_commands=e.spec_granted_commands,
         # Dropping this would let a `denyByDefault` spec's unlisted command run on
@@ -503,6 +508,41 @@ def _inline_turn_finished_cleanly(self: AcpProvider) -> bool:
     """
     probe = getattr(self._client, "turn_finished_cleanly", None)
     return bool(probe()) if callable(probe) else False
+
+
+class _HeldChatTurnGate:
+    """The scope :func:`hold_chat_turn_gate` opens: the backing session's hold, or nothing."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self._held: Any = None
+
+    async def __aenter__(self) -> None:
+        hold = getattr(self._client, "hold_chat_turn_gate", None)
+        if hold is None:
+            return
+        held = hold()
+        if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
+            await held.__aenter__()
+            self._held = held
+
+    async def __aexit__(self, *exc: Any) -> Any:
+        held, self._held = self._held, None
+        if held is not None:
+            return await held.__aexit__(*exc)
+        return None
+
+
+def hold_chat_turn_gate(self: AcpProvider) -> _HeldChatTurnGate:
+    """Hold a shared process's chat turn gate across a whole compaction.
+
+    The compaction paths wrap ``stream_command('/compact')`` and the deferred
+    ``wait_for_compaction`` receipt in this, so a co-tenant chat cannot start a
+    turn between them into which this session's ownerless compaction terminal is
+    fanned. Delegates to the backing ``AcpSessionProvider``; a placeholder client
+    before startup or a non-runtime client has no gate, and this holds nothing.
+    """
+    return _HeldChatTurnGate(self._client)
 
 
 async def wait_for_compaction(

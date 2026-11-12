@@ -3,7 +3,8 @@
 Such a registry leaves each app's version to its own ``app.json``. The listing
 reads an installed app's ``app.json`` from its checkout, so nothing but these
 tip reads tells ``update_status`` (and so the app's banner and the automatic
-update) what the branch publishes now.
+update) what the branch publishes now. Both the explicit refresh and the
+listing's own index fetch run them.
 """
 
 from __future__ import annotations
@@ -22,8 +23,12 @@ from kiro_crew.apps import installed_app_tips
 from kiro_crew.apps import registry as reg_mod
 from kiro_crew.apps import update_status
 from kiro_crew.apps.registry import (
+    _expire_cache_file,
+    _external_registry_cache_identity,
+    _external_registry_cache_path,
     _manifest_cache_path,
     _read_manifest_cache,
+    _write_manifest_cache,
     refresh_registries,
 )
 
@@ -86,6 +91,13 @@ def tips_fixture(monkeypatch, cache_dir):  # noqa: F811 - the shared cache_dir f
     }
 
     async def _fetch(repo, branch, subdirectory="", app_name="", git_url="", **kwargs):
+        if app_name:
+            # The listing's own fetch names the app, so it answers from the
+            # installed checkout, which still names the installed version.
+            provenance = kwargs.get("provenance")
+            if isinstance(provenance, dict):
+                provenance["source"] = "installed"
+            return {"name": app_name, "version": "1.0.0"}
         state["calls"].append({"app_name": app_name, "git_url": git_url, "branch": branch})
         state["pins"].append(kwargs.get("commit", ""))
         state["owner_designated"].append(kwargs.get("owner_designated", False))
@@ -166,10 +178,39 @@ class TestWhichRowsAreRead:
         assert _run(installed_app_tips.refresh_installed_tips(_reg(), [_row()])) == 0
         assert tips["calls"] == []
 
+    def test_an_app_moved_here_from_another_pinned_registry_is_read(self, tips, monkeypatch):
+        monkeypatch.setattr(
+            reg_mod,
+            "_pinned_registries",
+            lambda: [
+                types.SimpleNamespace(name=n, repo=f"https://forge/{n}.git")
+                for n in (REGISTRY, "other-tier")
+            ],
+        )
+        tips["installed"] = [_installed(sourceRegistry="other-tier")]
+        assert _run(installed_app_tips.refresh_installed_tips(_reg(), [_row()])) == 1
+        assert tips["calls"][0]["git_url"] == APP_URL
+
     def test_a_row_tagged_for_another_registry_is_not_read(self, tips):
         row = {**_row(), "_registry": "someone-else"}
         assert _run(installed_app_tips.refresh_installed_tips(_reg(), [row])) == 0
         assert tips["calls"] == []
+
+    def test_a_row_whose_source_cache_is_still_fresh_is_not_read_again(self, tips):
+        # That cache already answers the listing and update_status, so the
+        # listing's hourly index fetch clones each tip at most once per its TTL.
+        row = _row()
+        assert _write_manifest_cache(row, {"name": "cool-app", "version": "1.1.0"})
+        assert _run(installed_app_tips.refresh_installed_tips(_reg(), [row])) == 0
+        assert tips["calls"] == []
+        assert _read_manifest_cache(row)["version"] == "1.1.0"
+
+    def test_a_row_whose_source_cache_lapsed_is_read(self, tips):
+        row = _row()
+        assert _write_manifest_cache(row, {"name": "cool-app", "version": "1.1.0"})
+        _expire_cache_file(_manifest_cache_path(row))
+        assert _run(installed_app_tips.refresh_installed_tips(_reg(), [row])) == 1
+        assert _read_manifest_cache(row)["version"] == "1.2.0"
 
     def test_an_owner_tier_registry_is_left_to_the_prewarm(self, tips, monkeypatch):
         monkeypatch.setattr(reg_mod, "_registry_trust_tier_of", lambda reg: "owner")
@@ -235,6 +276,68 @@ class TestWhatIsWritten:
         assert not _manifest_cache_path(row).exists()
 
 
+@pytest.fixture(name="listing")
+def listing_fixture(tips, monkeypatch):
+    """The one configured index-tier registry, whose index fetch returns one versionless row."""
+    _configure_registry(monkeypatch)
+    fetch = AsyncMock(return_value=[{k: v for k, v in _row().items() if k != "_registry"}])
+    monkeypatch.setattr("kiro_crew.apps.registry._fetch_external_registry_index", fetch)
+    return fetch
+
+
+def _expire_index_cache() -> None:
+    """Age the configured registry's index cache past its TTL, as an hour passing does."""
+    (reg,) = reg_mod._effective_registries()
+    _expire_cache_file(_external_registry_cache_path(_external_registry_cache_identity(reg)))
+
+
+class TestTheListingReadsTheTip:
+    """The listing's own index fetch reads the tip, with no refresh.
+
+    It refetches the index whenever its one-hour cache lapsed. Without the tip
+    read there, the row of an installed app resolves to the installed checkout
+    and ``update_status`` keeps the lapsed source cache, so the app shows no
+    newer release unless the user refreshes the store.
+    """
+
+    def test_a_fresh_index_fetch_reads_the_tip_before_the_rows_resolve(self, tips, listing):
+        rows = _run(reg_mod._load_external_registries())
+
+        assert listing.await_count == 1
+        assert tips["calls"] == [{"app_name": "", "git_url": APP_URL, "branch": "main"}]
+        (row,) = [r for r in rows if r.get("name") == "cool-app"]
+        # The row resolves to what the branch publishes, not the installed checkout.
+        assert _run(reg_mod._resolve_manifest(row))["version"] == "1.2.0"
+        detail = update_status.attach_update("cool-app", _installed())
+        assert detail["update"]["available"] is True
+        assert detail["update"]["latestVersion"] == "1.2.0"
+
+    def test_a_tip_is_cloned_once_per_manifest_ttl_not_once_per_index_fetch(self, tips, listing):
+        _run(reg_mod._load_external_registries())
+        # Within the index's hour: a cache hit, which never reads a tip.
+        _run(reg_mod._load_external_registries())
+        assert listing.await_count == 1
+        # The index lapsed, but the tip read is still within the manifest TTL.
+        _expire_index_cache()
+        _run(reg_mod._load_external_registries())
+        assert listing.await_count == 2
+        assert len(tips["calls"]) == 1
+        # Once that lapses too, the next index fetch reads the tip again.
+        _expire_cache_file(_manifest_cache_path(_row()))
+        _expire_index_cache()
+        tips["tip"] = {"name": "cool-app", "version": "1.3.0"}
+        _run(reg_mod._load_external_registries())
+        assert len(tips["calls"]) == 2
+        assert _read_manifest_cache(_row())["version"] == "1.3.0"
+
+    def test_an_owner_tier_registry_is_not_read_here(self, tips, listing, monkeypatch):
+        monkeypatch.setattr(reg_mod, "_registry_trust_tier_of", lambda reg: "owner")
+        monkeypatch.setattr(reg_mod, "_prewarm_owner_tier_store_assets", AsyncMock(return_value=0))
+        _run(reg_mod._load_external_registries())
+        assert listing.await_count == 1
+        assert tips["calls"] == []
+
+
 class TestRefreshReadsTheTip:
     @pytest.mark.asyncio
     async def test_the_tip_survives_the_refreshs_own_expiry_and_reaches_update_status(
@@ -254,6 +357,8 @@ class TestRefreshReadsTheTip:
         monkeypatch.setattr(
             "kiro_crew.apps.registry.list_registry", AsyncMock(return_value=[{"name": "cool-app"}])
         )
+        # A fresh source cache does not hold the refresh back: it expires it first.
+        assert _write_manifest_cache(_row(), {"name": "cool-app", "version": "1.0.0"})
 
         result = await refresh_registries()
 
