@@ -602,6 +602,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # bound for a third party -- so it is defensive input hygiene, not an egress
         # sink.
         "mcp_tools/browser.py",
+        # Inbound sanitization, same shape: the browser `read` op redacts the whole
+        # page text before paging it, so a credential cannot be split across two
+        # pages and slip past the shim's per-page redaction above.
+        "browser_harness/ops.py",
         # Comparison-only: applies the redactors to compute a match identity and
         # discards the result. The two files being merged can hold the same
         # message with and without redaction, so a raw comparison would keep both

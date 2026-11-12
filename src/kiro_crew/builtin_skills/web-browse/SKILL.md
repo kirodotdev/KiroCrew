@@ -16,10 +16,13 @@ Kiro's own headless Chromium. **The page shows live in the chat** while you
 work, in a card attached to your turn. The user can click that card to take
 over with their real mouse and keyboard, and hand it back with Esc.
 
-Other ops: `snapshot` (the page as an outline with element refs), then
+Other ops: `snapshot` (the page as an outline with element refs), `read`
+(the page's text, or `format: "html"`, the whole page and not only the
+screen; a long page names the `offset` to read next), then
 `click` / `type` / `press_key` / `hover` / `drag` / `scroll` / `select_option`
 / `wait_for` / `back` / `console` / `screenshot` / `tabs`. Call `snapshot`
-first to get refs before a `click` or `type`.
+first to get refs before a `click` or `type`. To read a page's content, use
+`read`, not a scroll and a screenshot per screen.
 
 ## What the tool opens
 
