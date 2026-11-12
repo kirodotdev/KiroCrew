@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -1540,6 +1541,16 @@ def _unlink_temp(tmp: str, pin: int | None, *, acl_carried: bool = False) -> Non
         pass
 
 
+def _make_parent(parent: Path, *, in_data_home: bool) -> None:
+    """Create *parent* and its missing ancestors."""
+    if in_data_home:
+        # Every directory this creates inside the data home is born 0700;
+        # Path.mkdir(parents=True) would create the intermediate ones 0755.
+        mkdirs_owner_only(parent)
+    else:
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 def _stage_temp(
     path: Path,
     content: str | bytes,
@@ -1567,12 +1578,7 @@ def _stage_temp(
     receives the name of a complete, closed file.
     """
     if pin is None:
-        if in_data_home:
-            # Every directory this creates inside the data home is born 0700;
-            # Path.mkdir(parents=True) would create the intermediate ones 0755.
-            mkdirs_owner_only(path.parent)
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
+        _make_parent(path.parent, in_data_home=in_data_home)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     else:
         fd, tmp = _mkstemp_at(pin)
@@ -1740,3 +1746,92 @@ def atomic_write_at(
         except OSError:
             pass
         raise
+
+
+def rewrite_in_place(
+    path: Path | str, content: str | bytes, *, restrict_to_owner: bool = False
+) -> None:
+    """Write *content* into the file at *path*, keeping its inode. Owner-only (0600).
+
+    For a record a running Linux sandbox bind-mounts read-only: a rename over a
+    mount point in another namespace detaches the mount there, so
+    :func:`atomic_write` would leave the new file writable inside that sandbox.
+    An absent record is created with ``O_EXCL`` and written the same way, so a
+    name created first is opened, never renamed over. A symlink, reparse point or
+    hard-linked record is refused, never followed. *restrict_to_owner* is
+    ``atomic_write``'s: a linked parent is refused and the fail-loud lockdown (the
+    Windows DACL) lands before any content does. A write that fails tries to put
+    the previous bytes back before the error propagates; a record it created goes
+    back to ``{}``. A created record is never removed again: a sandbox spawned
+    meanwhile may already have sealed it.
+
+    Not crash-atomic: a reader racing the write, or a crash inside it, can see a
+    torn record (empty, for a record one ``write`` holds). Only a store whose reader
+    fails soft to its narrow answer may use it, and the caller serializes its own
+    writes.
+    """
+    path = Path(path)
+    data = _encode(content, newline=None)
+    if restrict_to_owner:
+        _refuse_linked_parent(path)
+    _make_parent(path.parent, in_data_home=is_owner_only_target(path))
+    base = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    base |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    created = False
+    try:
+        fd = os.open(path, base | os.O_CREAT | os.O_EXCL, OWNER_ONLY_FILE_MODE)
+        created = True
+    except FileExistsError:
+        named = os.lstat(path)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if stat.S_ISLNK(named.st_mode) or (getattr(named, "st_file_attributes", 0) & reparse):
+            raise OSError(
+                f"refusing to rewrite {path.name}: it is a link; replace it with a regular file"
+            ) from None
+        if not stat.S_ISREG(named.st_mode):  # a FIFO or device is never opened
+            raise OSError(f"refusing to rewrite {path.name}: not a regular file") from None
+        fd = os.open(path, base)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise OSError(
+                f"refusing to rewrite {path.name}: not a single-link regular file; remove "
+                "its other hard links (a hard-link backup, or a leftover temp file beside it)"
+            )
+        named = os.lstat(path)
+        if (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino):
+            raise OSError(f"refusing to rewrite {path.name}: it changed while opening")
+        if platform_compat.IS_POSIX:
+            os.fchmod(fd, OWNER_ONLY_FILE_MODE)  # fail-loud, and on the open inode
+        elif restrict_to_owner:
+            platform_compat.restrict_to_owner(path)
+        # A record this call created rolls back to the document a sandbox spawn
+        # pre-creates, which every caller reads as absent; zero bytes would read as
+        # corrupt and refuse the next save.
+        # shortcut: a literal, right for the three JSON switches using this writer;
+        # take it as an argument when a store with another absent document adopts it.
+        previous = b"{}\n" if created else b""
+        while len(previous) < st.st_size:
+            chunk = os.read(fd, st.st_size - len(previous))
+            if not chunk:
+                break
+            previous += chunk
+        try:
+            _overwrite(fd, data, path)
+            os.fsync(fd)
+        except BaseException:
+            try:
+                _overwrite(fd, previous, path)
+                os.fsync(fd)
+            except OSError:
+                pass  # the error that started the rollback is the one to report
+            raise
+    finally:
+        os.close(fd)
+
+
+def _overwrite(fd: int, data: bytes, path: Path) -> None:
+    """Replace the whole content of the open file *fd* with *data*."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    _write_all(fd, data, path)

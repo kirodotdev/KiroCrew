@@ -405,14 +405,14 @@ class TestWrite:
         from kiro_crew.decisions import consent as module
 
         consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
-        real_write = module.atomic_write
+        real_write = module.rewrite_in_place
 
         def _slow_keeper_write(path, text, **kwargs):
             if '"history_budget_chars": 2000' in text:
                 time.sleep(0.3)
             return real_write(path, text, **kwargs)
 
-        monkeypatch.setattr(module, "atomic_write", _slow_keeper_write)
+        monkeypatch.setattr(module, "rewrite_in_place", _slow_keeper_write)
         errors: list[BaseException] = []
 
         def _keep():
@@ -447,7 +447,7 @@ class TestWrite:
         """The read and the write are inside the same acquisition, not two."""
         held: list[bool] = []
         real_read = consent.read_state_strict
-        real_write = consent.atomic_write
+        real_write = consent.rewrite_in_place
 
         def _read_under_the_lock():
             held.append(consent._SAVE_LOCK.locked())
@@ -459,7 +459,7 @@ class TestWrite:
 
         with (
             patch.object(consent, "read_state_strict", _read_under_the_lock),
-            patch.object(consent, "atomic_write", _write_under_the_lock),
+            patch.object(consent, "rewrite_in_place", _write_under_the_lock),
         ):
             consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
 
