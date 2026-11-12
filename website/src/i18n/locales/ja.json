@@ -15021,6 +15021,7 @@
         "install_check_failed_can_still_switch": "このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作します。新しいセッションはすでに Kiro Agent を使っているため、ここで切り替えるものはありません。",
         "kiro_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作するため、新しいセッションはすでにそれを使っています。Kiro Agent を設定として保存しますか？",
         "kiro_runs_on_kas_save": "Kiro Agent を自分の設定として保存",
         "kiro_runs_on_kas_saved": "保存しました：Kiro Agent。",

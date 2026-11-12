@@ -181,6 +181,12 @@ so a harness this machine cannot run still gets a row and a full card. Under the
 old control an unselectable harness had no chip at all, which meant the harnesses
 an operator most needed to read about were the ones the page had least room for.
 
+The row that is in use and a harness this build never offers carry no Use button.
+Neither does the Kiro CLI row while a saved Kiro CLI setting runs on KAS
+(`kiro_selection_runs_on_kas` on `GET /api/acp-backends`). A button there would
+save the value that is already saved, so the detail says in one line that Kiro CLI
+runs on Kiro Agent.
+
 That projection is why this stage costs a new harness nothing beyond the decisions
 it already owes. A harness that joins `ACP_BACKENDS_KNOWN` and decides every set
 renders a complete card with no edit to any card file, no frontend edit and no

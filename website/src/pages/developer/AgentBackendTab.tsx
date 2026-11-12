@@ -1604,6 +1604,9 @@ export function AgentBackendTab() {
             const row = probe(value)
             const selected = value === shown
             const isCurrent = value === current
+            // The saved Kiro CLI setting, while sessions run it on Kiro Agent. Use
+            // on this row would save the value that is already saved.
+            const savedPickRunsElsewhere = value === KIRO && kiroPickRunsOnKas
             return (
               <AgentPickerRow
                 key={value}
@@ -1674,9 +1677,18 @@ export function AgentBackendTab() {
                         button that says "Use", with nothing stating that neither has
                         switched anything yet. One sentence, directly above the
                         button, names the from and the to. Absent on the running row
-                        (there is no button) and on a harness this build never
-                        offers (same). */}
-                    {!buildExcluded(value) && !isCurrent && (
+                        (there is no button), on a harness this build never
+                        offers (same), and on the saved Kiro CLI setting that runs
+                        on Kiro Agent, which says that instead. */}
+                    {savedPickRunsElsewhere && (
+                      <p
+                        data-testid="kiro-row-runs-on-kas"
+                        className="text-[12px] leading-relaxed text-muted"
+                      >
+                        {i18nT('pages.developer.agentBackendTab.kiro_row_runs_on_kas')}
+                      </p>
+                    )}
+                    {!buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere && (
                       <p className="mb-0 text-[12px] leading-relaxed text-muted">
                         {i18nT('pages.developer.agentBackendTab.use_switches_new_sessions', {
                           current: nameOf(current),
@@ -1692,7 +1704,7 @@ export function AgentBackendTab() {
                     <AgentDetailActions
                       name={nameOf(value)}
                       onUse={
-                        !buildExcluded(value) && !isCurrent
+                        !buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere
                           ? () => {
                               // A PATCH writing the value already stored still
                               // resolves, which would run `onSuccess` and reset the

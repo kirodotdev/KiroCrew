@@ -15021,6 +15021,7 @@
         "install_check_failed_can_still_switch": "无法检查本机是否已安装。仍然可以切换到它。如果未安装，会话启动时会说明。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI 现在运行在 Kiro Agent 上。新会话已经在用 Kiro Agent，所以这里没有需要切换的。",
         "kiro_runs_on_kas": "Kiro CLI 现在运行在 Kiro Agent 上，所以新会话已经在用它。要把 Kiro Agent 保存为你的设置吗？",
         "kiro_runs_on_kas_save": "将 Kiro Agent 保存为我的设置",
         "kiro_runs_on_kas_saved": "已保存：Kiro Agent。",

@@ -15419,6 +15419,7 @@
         "install_check_failed_can_still_switch": "এই মেশিনে এটি ইনস্টল করা আছে কিনা তা যাচাই করা যায়নি। তবুও এটিতে যাওয়া যাবে। ইনস্টল না থাকলে সেশন শুরুর সময় তা জানিয়ে দেবে।",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI এখন Kiro Agent-এ চলে। নতুন সেশনগুলো এখনই Kiro Agent ব্যবহার করে, তাই এখানে বদলানোর কিছু নেই।",
         "kiro_runs_on_kas": "Kiro CLI এখন Kiro Agent-এ চলে, তাই নতুন সেশনগুলো এখনই এটি ব্যবহার করে। Kiro Agent কি তোমার সেটিং হিসেবে সংরক্ষণ করবে?",
         "kiro_runs_on_kas_save": "Kiro Agent আমার সেটিং হিসেবে সংরক্ষণ করো",
         "kiro_runs_on_kas_saved": "সংরক্ষিত: Kiro Agent।",
