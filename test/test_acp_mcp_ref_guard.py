@@ -943,10 +943,11 @@ class TestTheRuntimeCallSitesAreWired:
     def test_every_runtime_roster_handoff_is_paired_with_the_guard(self):
         """Both runtime call sites (session/new, session/load), held by structure.
 
-        ``begin_session(`` marks where the wire array is final. The guard must be the
-        next statement, and must take the SAME roster, so a new establishment path
-        that hands over a roster and forgets the guard -- or guards a different list
-        than it reported -- is the omission this pins.
+        ``_open_mcp_report(`` marks where the wire array is final: it begins the
+        session's report with that roster, together with the session's queue. The
+        guard that follows in the same function must take the SAME roster, so a new
+        establishment path that hands over a roster and forgets the guard -- or
+        guards a different list than it reported -- is the omission this pins.
         """
         from kiro_crew.acp import runtime as runtime_mod
 
@@ -955,14 +956,21 @@ class TestTheRuntimeCallSitesAreWired:
             inspect.getsource(sys.modules[name])
             for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
         ).splitlines()
-        handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
+        # One reset, inside the helper both paths call: a second one elsewhere
+        # would wipe what frames already reported.
+        assert sum(".begin_session(" in ln for ln in lines) == 1
+        handoffs = [i for i, ln in enumerate(lines) if "self._open_mcp_report(" in ln]
         assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
         for i in handoffs:
-            roster = lines[i].split(".begin_session(", 1)[1].rstrip(")")
+            roster = lines[i].split("_open_mcp_report(", 1)[1].rstrip(")").split(",")[1]
+            # The guard of the same function: the first one before the next ``def``.
             j = i + 1
-            while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+            while j < len(lines) and not (
+                "self._guard_unresolved_mcp_refs(" in lines[j]
+                or lines[j].startswith(("def ", "async def "))
+            ):
                 j += 1
-            guard = lines[j]
+            guard = lines[j] if j < len(lines) else ""
             assert (
                 "self._guard_unresolved_mcp_refs(" in guard
             ), f"line {i} hands over a final roster and never reaches the guard: {guard!r}"

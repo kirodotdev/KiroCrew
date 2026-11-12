@@ -191,6 +191,7 @@ if TYPE_CHECKING:
     from kiro_crew.agent_discovery import plain_markdown_document  # noqa: F401
     from kiro_crew.agent_discovery import read_agent_spec_strict  # noqa: F401
     from kiro_crew.agent_discovery import spec_by_declared_name  # noqa: F401
+    from kiro_crew.agent_sdk.mcp_problems import mcp_server_state  # noqa: F401
     from kiro_crew.agent_sdk.mcp_refs import per_tool_grants  # noqa: F401
     from kiro_crew.agent_spec_format import agent_spec_candidates  # noqa: F401
     from kiro_crew.agent_spec_format import is_markdown_spec  # noqa: F401

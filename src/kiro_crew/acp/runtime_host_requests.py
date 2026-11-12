@@ -12,7 +12,7 @@ Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_l
 ``_kas_host_auth_failure_logged``,
 ``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
 
-Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``,
+Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``, ``_fold_mcp_frame``,
 ``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
 """
 
@@ -585,12 +585,13 @@ async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, par
         refusal = "the consent URL is not an http(s) URL"
     else:
         session_id, server_name = entry
-        await queue.put(
-            JsonRpcMessage(
-                method=METHOD_MCP_OAUTH_REQUEST,
-                params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
-            )
+        consent = JsonRpcMessage(
+            method=METHOD_MCP_OAUTH_REQUEST,
+            params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
         )
+        # Made here, so the reader never saw it: folded as the reader folds one.
+        self._fold_mcp_frame(session_id, consent)
+        await queue.put(consent)
     try:
         if refusal:
             logger.info("MCP consent URL not opened: %s", refusal)

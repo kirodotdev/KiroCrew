@@ -17,6 +17,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import session_directive
+from kiro_crew.agent_sdk.mcp_problems import mcp_server_state
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
@@ -490,6 +491,11 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     wait_id = str(body.get("wait_id") or "").strip()[:64]
     if wait_id:
         _service_wait_ping(state, session_key, wait_id, body, reply, provider)
+    # The parked ``mcp_server_wait`` tool asks, on this same ping, what is true of
+    # one of THIS session's MCP servers. A read of the session's own report.
+    mcp_server = body.get("mcp_server")
+    if isinstance(mcp_server, str) and mcp_server.strip():
+        reply.update(mcp_server_state(provider, mcp_server.strip()[:128]))
     return web.json_response(reply)
 
 

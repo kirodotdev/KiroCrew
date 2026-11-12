@@ -293,6 +293,7 @@ class AcpSessionHandle:
         crew_agent: str = "",
         session_key: str = "",
         bound_cwd: str = "",
+        mcp_report: McpSessionReport | None = None,
     ) -> None:
         self._session_id = session_id
         # The Kiro Crew session that OWNS this ACP session, threaded from the
@@ -734,11 +735,12 @@ class AcpSessionHandle:
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
-        # What THIS session's MCP servers reported at init — parity with
-        # AcpClient._mcp_report. On the shared runtime the frames are staged
-        # per sessionId before this handle's queue exists, so the report is
-        # genuinely this session's and not the process's.
-        self._mcp_report = McpSessionReport()
+        # What THIS session's MCP servers reported — parity with
+        # AcpClient._mcp_report. The runtime creates it together with this
+        # session's queue and folds each frame that names the session into it
+        # as the frame arrives (``AcpRuntime._fold_mcp_frame``), so it is this
+        # session's and not the process's, and nothing here folds a frame again.
+        self._mcp_report = mcp_report if mcp_report is not None else McpSessionReport()
         # (server, tool) pairs this session's agent spec switches off, set by the
         # runtime from the mirror's session projection. The wire cannot carry the
         # restriction on a mirrored host -- there is no per-tool deny channel in

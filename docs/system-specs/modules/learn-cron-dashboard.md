@@ -3774,7 +3774,8 @@ discarded.
 
 Contract:
 
-- **Request** (`wait` only; every other caller still sends `{}` and is
+- **Request** (`wait`; `mcp_server_wait` sends the body described below; every
+  other caller still sends `{}` and is
   unaffected): `{wait_id, seconds, remaining, interval}`, or
   `{wait_id, wait_done: true}` on the final ping. `wait_id` is a uuid4 hex
   minted per sleep. The body is optional and advisory — a malformed or
@@ -3789,6 +3790,24 @@ Contract:
   naming its own `wait_id` and uses to say which session ended the sleep. The
   tool breaks its loop and returns a normal string — deliberately **not**
   `ToolCancelled`, whose response is suppressed.
+- **`mcp_server_wait`** asks on the same ping what is true of one of the
+  calling session's MCP servers. Request `{"mcp_server": "<name>"}` (trimmed, cut
+  to 128 characters; an empty or non-string value is ignored). The reply adds
+  `{"mcp_server_state": "<state>"}`: `connected`, `connecting`, `failed`,
+  `needs_sign_in`, `disabled`, `registry_dropped`, or `unknown` for a name no
+  report holds and for a session that keeps no report. `unknown` may carry
+  `mcp_server_names`, at most 32 names the caller may have meant, with
+  `mcp_server_names_more` counting the rest, and `mcp_reports_left_out` when
+  the session's report left server reports out at its bound (the server asked
+  about may be one of them, and the tool says that instead of "the host may not
+  report its servers"). The route
+  reads only the report of the session the key names
+  (`agent_sdk.mcp_problems.mcp_server_state`), and the lookup writes nothing
+  (the ping still stamps the session's activity, as every ping does). The tool
+  asks again about a second after each answer and stops asking once
+  `MCP_SERVER_WAIT_SECS` (90 s) have passed; what it tells the model for each
+  state is in
+  [mcp](../../architecture/mcp.md#a-server-that-is-still-starting).
 - **Ping interval** is `mcp_core.WAIT_PING_SECS` (5.0s), not the 60s the
   staleness watchdog alone needs: it is the button's worst-case latency. The
   handler only touches two timestamps, so a 30-minute wait costs ~360 loopback

@@ -21,6 +21,7 @@
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
     "wait": "Wait",
+    "mcp_server_wait": "Wait for MCP server",
     "route_crew": "Route to crew",
     "select_crew": "Select crew",
     "register_hook": "Register webhook",
