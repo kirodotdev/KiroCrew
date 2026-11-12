@@ -11441,7 +11441,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} cannot verify whether this crew has AWS resources",
+        "unverified_cloud_note": "{{productName}} cannot tell from here whether it launched this crew or you added it. Remove only takes it off this list and leaves the machine as it is; stop or delete the machine yourself if you no longer need it.",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Apply my edits to the crew as it is now",
         "your_code": "Your code: {{code}}",

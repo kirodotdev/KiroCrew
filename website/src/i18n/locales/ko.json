@@ -20595,7 +20595,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}}은(는) 이 크루에 AWS 리소스가 있는지 확인할 수 없습니다",
+        "unverified_cloud_note": "이 크루를 {{productName}}이(가) 시작했는지, 직접 추가했는지 여기서는 알 수 없습니다. 제거는 이 목록에서만 빼며 머신은 그대로 둡니다. 머신이 더 이상 필요 없으면 직접 중지하거나 삭제하세요.",
         "up_to_warm": "최대 {{n}}개를 동시에 대기 상태로 유지합니다",
         "use_my_edits_anyway": "지금 상태의 크루에 내 편집 적용",
         "your_code": "내 코드: {{code}}",

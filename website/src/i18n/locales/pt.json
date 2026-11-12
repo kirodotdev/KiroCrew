@@ -21617,7 +21617,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "O {{productName}} não consegue verificar se esta crew tem recursos da AWS",
+        "unverified_cloud_note": "O {{productName}} não consegue saber daqui se iniciou esta crew ou se você a adicionou. Remover apenas a retira desta lista e deixa a máquina como está; se não precisar mais da máquina, pare-a ou exclua-a por conta própria.",
         "up_to_warm": "Até {{n}} permanecem aquecidas ao mesmo tempo",
         "use_my_edits_anyway": "Aplicar minhas alterações à crew como ela está agora",
         "your_code": "Seu código: {{code}}",
