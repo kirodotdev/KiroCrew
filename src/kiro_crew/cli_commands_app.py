@@ -910,6 +910,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             # error contract of the sibling app actions, not a raw traceback.
             print(f"❌ {exc}", file=sys.stderr)
             sys.exit(1)
+        except OSError as exc:
+            # A --dir that is a file, or one this user cannot write to.
+            print(
+                f"❌ cannot write {exc.filename or output / args.name}: {exc.strerror or exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
         if include_ui:
