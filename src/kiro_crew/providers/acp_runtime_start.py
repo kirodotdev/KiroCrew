@@ -720,6 +720,25 @@ async def _start_kiro_runtime_impl(
                 "close": functools.partial(remote.launch.close_relay, relay),
             }
         )
+        # The skills this agent may use, scripts included, so they run in the
+        # workspace (remote_session/skills_copy.py). Before the engine starts, so
+        # the first turn's context names the copy; a failure costs only the copy.
+        from kiro_crew.remote_session.skills_copy import copy_for_session
+
+        if session_key:
+            try:
+                await copy_for_session(
+                    session_key,
+                    agent or "kirocrew",
+                    work_dir,
+                    remote.launch.shell,
+                    enabled=section.copy_skills,
+                )
+            except BaseException:
+                # A cancel (the chat closed mid-copy) lands before the spawn's
+                # end-watcher owns this relay, so nothing else would close it.
+                await remote.launch.close_relay(relay)
+                raise
         # GitHub git from the workspace goes through this gateway, which holds
         # the credential (remote_session/git_gateway.py). In the background:
         # it never delays the start, and a failure only costs git access.

@@ -143,7 +143,12 @@ def post_compaction_parts(
         lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
         caps = ctx._resolve_caps(model_window)
         required_skills, skills_ctx = _inclusion.skill_parts(
-            builder, globs=_globs, project=project, caps=caps, lazy_skills=lazy_skills
+            builder,
+            globs=_globs,
+            project=project,
+            caps=caps,
+            lazy_skills=lazy_skills,
+            session_key=session_key,
         )
         skills_ctx = "".join(required_skills) + skills_ctx
         if skills_ctx:
@@ -425,8 +430,14 @@ def rail_parts(
             "anything describing it (paths, host memory) is not this session's "
             "workspace.\n\n"
         )
+        from kiro_crew.remote_session.skills_copy import context_note, record_for
         from kiro_crew.session_environment import take_workspace_recreated
 
+        # Where this agent's skills are in the workspace. The guest's answer is
+        # held to shapes the gateway checks (skills_copy._parse) before it gets here.
+        skills_note = context_note(record_for(session_key))
+        if skills_note:
+            parts.append(skills_note)
         if take_workspace_recreated(session_key):
             parts.append(
                 "[PROJECT] This session's remote workspace was recreated empty: files, "

@@ -182,8 +182,10 @@ async def test_provider_carries_agent_through_background_start_to_audited_channe
     # The start gate prepares a remote workspace once Session Environments is set up,
     # which needs the developer flag.
     monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
-    section = SimpleNamespace(coder_url="https://coder.example", profiles=[])
+    section = SimpleNamespace(coder_url="https://coder.example", profiles=[], copy_skills=True)
     monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
+    copy_skills = AsyncMock()
+    monkeypatch.setattr("kiro_crew.remote_session.skills_copy.copy_for_session", copy_skills)
     prepare = AsyncMock(return_value=remote)
     monkeypatch.setattr("kiro_crew.coder.session_launch.prepare_for_session", prepare)
     monkeypatch.setattr("kiro_crew.session_environment.remember_remote_workspace", Mock())
@@ -217,8 +219,57 @@ async def test_provider_carries_agent_through_background_start_to_audited_channe
         assert decision["outcome"] == "denied" and decision["agent"] == governed
         # The cloud and workspace start gate judges the same identity.
         assert prepare.await_args.kwargs["agent"] == governed
+        # The start copies the session's skills over the launch's own shell, scoped
+        # by the template the session runs (its skills), before the engine spawns.
+        copy_skills.assert_awaited_once_with(
+            "dashboard:git", agent, tmp_path, launch.shell, enabled=True
+        )
     finally:
         await asyncio.wait_for(launch.stop_git_proxy(), 30)
+
+
+@pytest.mark.asyncio
+async def test_a_start_cancelled_during_the_skill_copy_closes_its_relay(tmp_path, monkeypatch):
+    """Before the spawn's end-watcher owns the relay, a cancel must close it itself."""
+    relay = SimpleNamespace(write_token=Mock(), name="relay")
+    launch = SimpleNamespace(
+        workspace_server=AsyncMock(return_value={}),
+        relay=relay,
+        shell=Mock(),
+        close_relay=AsyncMock(),
+        close_relay_when_ended=Mock(),
+    )
+    remote = SimpleNamespace(
+        launch=launch, workdir="/workspace/app", profile_name="Dev", created=False
+    )
+    from kiro_crew.config import live
+
+    monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
+    section = SimpleNamespace(coder_url="https://coder.example", profiles=[], copy_skills=True)
+    monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
+    monkeypatch.setattr(
+        "kiro_crew.remote_session.skills_copy.copy_for_session",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.coder.session_launch.prepare_for_session", AsyncMock(return_value=remote)
+    )
+    monkeypatch.setattr("kiro_crew.session_environment.report_start_stage", Mock())
+    runtime = Mock()
+    monkeypatch.setattr(acp, "AcpRuntime", Mock(return_value=runtime))
+    monkeypatch.setattr(acp, "AcpClient", Mock())
+    provider = acp.AcpProvider(acp_backend="kas")
+    provider._client = SimpleNamespace(
+        _work_dir=tmp_path,
+        _agent="kirocrew",
+        _resume_session_id="",
+        _session_key="dashboard:cancel",
+        backend="kas",
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(provider._start_kiro_runtime_impl({}, {}), 30)
+    launch.close_relay.assert_awaited_once_with(relay)
+    runtime.spawn.assert_not_called()
 
 
 @pytest.mark.asyncio

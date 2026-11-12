@@ -209,6 +209,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, a conductor may run sessions on a connected remote crew (``crew=``) and
     # this crew answers its headroom and takes bound work items.
     "work_ledger.remote_dispatch": (False, True),
+    # On, a remote session's skills (scripts included) are copied to its workspace.
+    "session_environments.copy_skills": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

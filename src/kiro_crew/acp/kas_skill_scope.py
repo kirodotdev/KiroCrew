@@ -50,6 +50,8 @@ import glob
 import hashlib
 import json
 import logging
+import os
+import stat
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -75,16 +77,20 @@ def _skill_name(path: Path) -> str | None:
     """The skill's frontmatter ``name``, else its directory's name. KAS has no such
     fallback and drops a skill without a name; :func:`refused_skill_copies` gives
     that skill a copy KAS loads."""
-    from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
     from kiro_crew.hooks import safe_read_prefix
 
     # A ``skill://`` path comes from a spec, which may point anywhere: the read
     # goes through the sensitive-path fence and refuses a credential store.
     raw = safe_read_prefix(str(path), _FRONTMATTER_BYTES)
-    if raw is None:
-        return None
+    return None if raw is None else _skill_name_in(raw, path)
+
+
+def _skill_name_in(raw: bytes, path: Path) -> str | None:
+    """:func:`_skill_name` of the bytes *raw* already read from *path*."""
+    from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
     # ``utf-8-sig``, as every SKILL.md reader decodes: a BOM would hide the fence.
-    head = raw.decode("utf-8-sig", errors="replace")
+    head = raw[:_FRONTMATTER_BYTES].decode("utf-8-sig", errors="replace")
     name = (parse_frontmatter(head, SKILL_LOADER).get("name") or "").strip()
     if not name:
         name = path.parent.name if path.name == "SKILL.md" else path.stem
@@ -547,7 +553,9 @@ def _yaml_quoted(text: str) -> str:
     return "".join(out)
 
 
-def _restricted_by_author(spec: dict[str, Any], names: set[str]) -> bool:
+def _restricted_by_author(
+    spec: dict[str, Any], names: set[str], *, effects: tuple[str, ...] = ("deny", "ask")
+) -> bool:
     """Whether the spec's own ``permissions`` deny or ask for a skill under one of
     *names*. Such a rule does not match a copy's new name, so that skill gets no
     copy."""
@@ -556,7 +564,7 @@ def _restricted_by_author(spec: dict[str, Any], names: set[str]) -> bool:
     block = spec.get("permissions")
     rules = block.get("rules") if isinstance(block, dict) else None
     for rule in rules if isinstance(rules, list) else []:
-        if not isinstance(rule, dict) or rule.get("effect") not in ("deny", "ask"):
+        if not isinstance(rule, dict) or rule.get("effect") not in effects:
             continue
         capability = rule.get("capability")
         if not isinstance(capability, str):
@@ -693,36 +701,48 @@ def _unsafe_to_copy(opened: str) -> bool:
     return is_unsafe_prompt_path(Path(opened))
 
 
-def refused_skill_copies(
+def _authored_names(path: Path, text: str, front: dict[str, Any] | None) -> set[str]:
+    """Every name a rule may have been written against: kiro-cli's (read whether or
+    not KAS accepts the front matter), KAS's, the folder, the path."""
+    names = {str(path), path.parent.name if path.name == "SKILL.md" else path.stem}
+    names |= _kiro_cli_names(text)
+    if isinstance((front or {}).get("name"), str):
+        names.add(front["name"].strip())  # type: ignore[index]
+    return names
+
+
+class _Refused(NamedTuple):
+    """An in-scope skill file KAS refuses as it is, which may get a fixed copy."""
+
+    path: Path
+    front: dict[str, Any] | None
+    body: str
+    text: str
+    #: The bytes classified, so a verdict holds only for this content.
+    raw: bytes = b""
+
+
+def _classify(
     agent: str,
     spec: dict[str, Any],
     globs: list[str] | None,
     *,
     agents_dir: Path,
     work_dir: str | Path | None,
-) -> list[SkillCopy]:
-    """Copies of the in-scope skills KAS would drop, written for it to load.
-
-    In scope is what *globs* (:func:`scope_globs`) match, or every default-tree
-    skill when *globs* is ``None``. A skill is dropped when no way KAS reaches it
-    loads it: the default trees (strict check) and the spec's ``skill://`` entries,
-    forwarded as they are (front matter, name and description only). The copy gets
-    a name KAS accepts, unused by any skill KAS loads, and a description: the
-    original's, else the first line of the body, else kiro-cli's
-    "No description available", cut to 1024. Each copy is rewritten at every
-    session start, so it follows the original. A skill that cannot be read or
-    written gets no copy and stays dropped, as before.
-    """
-    from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.config import paths
+) -> tuple[list[tuple[Path, str, bytes]], list[_Refused], set[str]]:
+    """How KAS treats each in-scope skill file: the ones it loads as they are (with
+    the name it gives each and the bytes classified), the ones it refuses that may
+    get a fixed copy, and the names every skill it loads holds. The one classifier
+    both :func:`refused_skill_copies` and :func:`loaded_skill_files` read."""
     from kiro_crew.hooks import safe_read_prefix
 
     native = set(_matched_files(_default_tree_globs(work_dir)))
     resource = set(_matched_files(_resource_globs(spec, agents_dir / f"{agent}.json", work_dir)))
-    in_scope = sorted(native) if globs is None else _matched_files(globs)
+    in_scope = set(native if globs is None else _matched_files(globs))
+    loaded: list[tuple[Path, str, bytes]] = []
     taken: set[str] = set()
-    refused: list[tuple[Path, dict[str, Any] | None, str, str]] = []
-    for path in sorted(native | resource | set(in_scope)):
+    refused: list[_Refused] = []
+    for path in sorted(native | resource | in_scope):
         # A copy's text reaches the model, as a file:// prompt does, so the
         # file actually opened must pass the prompt fence too.
         raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1, refuse=_unsafe_to_copy)
@@ -734,21 +754,27 @@ def refused_skill_copies(
             path in resource and _kas_loads(front, native=False)
         )
         if loads:
-            taken.add(str((front or {})["name"]))
+            name = str((front or {})["name"])
+            taken.add(name)
+            if path in in_scope:
+                loaded.append((path, name, raw))
         elif path in in_scope and len(raw) <= _MAX_COPY_BYTES:
-            refused.append((path, front, body, text))
-    copies: list[SkillCopy] = []
+            if _restricted_by_author(spec, _authored_names(path, text, front)):
+                logger.info("KAS skill %s is denied or asked under its own name; no copy", path)
+                continue
+            refused.append(_Refused(path, front, body, text, raw))
+    return loaded, refused, taken
+
+
+def _write_copies(refused: list[_Refused], taken: set[str]) -> list[tuple[_Refused, SkillCopy]]:
+    """Write a fixed copy of each refused skill; return each original with its copy."""
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.config import paths
+
+    written: list[tuple[_Refused, SkillCopy]] = []
     root = paths.data_home() / COPY_DIR_NAME
-    for path, front, body, text in refused:
-        # Every name a rule may have been written against: kiro-cli's (read
-        # whether or not KAS accepts the front matter), the folder, the path.
-        authored = {str(path), path.parent.name if path.name == "SKILL.md" else path.stem}
-        authored |= _kiro_cli_names(text)
-        if isinstance((front or {}).get("name"), str):
-            authored.add(front["name"].strip())  # type: ignore[index]
-        if _restricted_by_author(spec, authored):
-            logger.info("KAS skill %s is denied or asked under its own name; no copy", path)
-            continue
+    for item in refused:
+        path, front, body = item.path, item.front, item.body
         base = (
             _kas_name(str((front or {}).get("name") or ""))
             or _kas_name(path.parent.name if path.name == "SKILL.md" else path.stem)
@@ -770,7 +796,165 @@ def refused_skill_copies(
             logger.warning("KAS skill copy of %s could not be written", path, exc_info=True)
             continue
         taken.add(name)
-        copies.append(SkillCopy(name, f"skill://{target}"))
+        written.append((item, SkillCopy(name, f"skill://{target}")))
+    return written
+
+
+def loaded_skill_files(
+    agent: str,
+    spec: dict[str, Any],
+    globs: list[str] | None,
+    *,
+    agents_dir: Path,
+    work_dir: str | Path | None,
+) -> tuple[dict[tuple[int, int], str], set[tuple[int, int]], set[str], list[dict[str, Any]]]:
+    """What a KAS session of *spec* loads, for a reader that copies skill files:
+
+    * each loaded file's identity (:func:`skill_file_id`) mapped to the sha256 of
+      the bytes classified, so the verdict holds only for that content (a file
+      replaced after this call matches no digest);
+    * the identities and the paths (as written and resolved) of every skill file
+      KAS reaches, loaded or not, plus the roots it reads under (ending in a
+      separator; see :func:`reaches`), so no link, alias, replacement, later
+      addition or file past the classifier's read bound escapes KAS's verdict;
+    * the session's skill rules, for :func:`rules_keep` on files KAS never reaches.
+
+    The same steps as a KAS start (``harness/kas._skill_scope``): :func:`_classify`,
+    the fixed copies written as :func:`refused_skill_copies` writes them (so a
+    write that fails drops the skill here too), then the session's rules, the
+    spec's own plus :func:`skill_scope_rules`, read with KAS's skill-name match.
+    An ``ask`` rule keeps a skill: the agent can use it once approved.
+
+    shortcut: the spec's own ``permissions`` stand for the projected block
+    (``kas_agents``), which can only drop more (a misfit block, a ceiling); upgrade
+    to the projected entry if a projection step ever adds a ``skill`` deny.
+    """
+    loaded, refused, taken = _classify(agent, spec, globs, agents_dir=agents_dir, work_dir=work_dir)
+    written = _write_copies(refused, taken)
+    block = spec.get("permissions")
+    own = block.get("rules") if isinstance(block, dict) else None
+    scope = skill_scope_rules(
+        globs, work_dir=work_dir, also_allowed=frozenset(c.name for _p, c in written)
+    )
+    rules = [*(own if isinstance(own, list) else []), *scope]
+    kept = [*loaded, *((item.path, copy.name, item.raw) for item, copy in written)]
+    files = {
+        ident: skill_bytes_digest(raw)
+        for path, name, raw in kept
+        if rules_keep(rules, name) and (ident := skill_file_id(str(path))) is not None
+    }
+    # Every file KAS reaches, so a link into or out of a tree, a hard link, or a
+    # file past the classifier's read bound (never weighed, so not loaded) is
+    # still KAS's to judge. Stat only, no read.
+    reach = [
+        *_default_tree_globs(work_dir),
+        *_resource_globs(spec, agents_dir / f"{agent}.json", work_dir),
+        *(globs or []),
+    ]
+    matches = [m for pattern in reach for m in glob.glob(pattern, recursive=True)]
+    weighed = {ident for m in matches if (ident := skill_file_id(m)) is not None}
+    paths = {p for m in matches for p in (os.path.abspath(m), os.path.realpath(m))}
+    # And every root those patterns read under, as written and resolved: a file
+    # added there after this snapshot is KAS's to judge too (so, unclassified, it
+    # is left out). Wider than KAS's reach only ever narrows the copy.
+    for pattern in reach:
+        root = _glob_root(pattern)
+        if root:
+            paths |= {os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep}
+    return files, weighed, paths, rules
+
+
+def _glob_root(pattern: str) -> str:
+    """The directory a skill glob reads under: its part before any wildcard."""
+    parts = Path(pattern).parts
+    for i, part in enumerate(parts):
+        if any(c in part for c in "*?["):
+            return str(Path(*parts[:i])) if i > 1 else ""
+    return str(Path(pattern).parent)
+
+
+def reaches(paths: set[str], skill_file: str) -> bool:
+    """Whether *skill_file*, as written or resolved, is one of :func:`loaded_skill_files`'
+    reached *paths* or under one of its roots (the entries ending in a separator)."""
+    spelled = (os.path.abspath(skill_file), os.path.realpath(skill_file))
+    stored = [p for p in paths if p.endswith(os.sep)]
+    # Each root as stored and as it resolves now: a linked root retargeted since
+    # the snapshot still claims the files under its new target.
+    roots = {*stored, *(os.path.realpath(r) + os.sep for r in stored)}
+    return any(s in paths or any(s.startswith(r) for r in roots) for s in spelled)
+
+
+def crew_only_file_kept(rules: list[dict[str, Any]], skill_file: str) -> bool:
+    """:func:`crew_only_skill_kept` of the file at *skill_file*, read fenced."""
+    from kiro_crew.hooks import safe_read_prefix
+
+    raw = safe_read_prefix(skill_file, _FRONTMATTER_BYTES)
+    return raw is not None and crew_only_skill_kept(rules, raw, skill_file)
+
+
+def crew_only_skill_kept(rules: list[dict[str, Any]], data: bytes, skill_file: str) -> bool:
+    """Whether the session's rules leave a skill KAS never reaches usable: none of
+    the names a rule could be written against (:func:`_authored_names`) is denied."""
+    text = data.decode("utf-8", errors="replace")
+    front, _body = _kas_front_matter(text)
+    names = _authored_names(Path(skill_file), text, front)
+    if (own := _skill_name_in(data, Path(skill_file))) is not None:
+        names.add(own)
+    # A rule's ``exclude`` names the skill it keeps: one spelling excluded keeps it,
+    # or "deny every skill except X" would drop X under its path or other name.
+    for rule in rules:
+        if not _restricted_by_author({"permissions": {"rules": [rule]}}, names, effects=("deny",)):
+            continue
+        exclude = rule.get("exclude") if isinstance(rule, dict) else None
+        excluded = [p for p in exclude if isinstance(p, str)] if isinstance(exclude, list) else []
+        if not any(_cedar_like(name, p) for name in names for p in excluded):
+            return False
+    return True
+
+
+def skill_bytes_digest(data: bytes) -> str:
+    """The digest :func:`loaded_skill_files` binds a verdict to."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def skill_file_id(path: str) -> tuple[int, int] | None:
+    """The identity of the regular file *path* names, links followed, or ``None``."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if stat.S_ISREG(st.st_mode) else None
+
+
+def rules_keep(rules: list[dict[str, Any]], name: str) -> bool:
+    """Whether a session's skill *rules* let a skill named *name* load (no ``deny``)."""
+    return not _restricted_by_author({"permissions": {"rules": rules}}, {name}, effects=("deny",))
+
+
+def refused_skill_copies(
+    agent: str,
+    spec: dict[str, Any],
+    globs: list[str] | None,
+    *,
+    agents_dir: Path,
+    work_dir: str | Path | None,
+) -> list[SkillCopy]:
+    """Copies of the in-scope skills KAS would drop, written for it to load.
+
+    In scope is what *globs* (:func:`scope_globs`) match, or every default-tree
+    skill when *globs* is ``None``. A skill is dropped when no way KAS reaches it
+    loads it: the default trees (strict check) and the spec's ``skill://`` entries,
+    forwarded as they are (front matter, name and description only). The copy gets
+    a name KAS accepts, unused by any skill KAS loads, and a description: the
+    original's, else the first line of the body, else kiro-cli's
+    "No description available", cut to 1024. Each copy is rewritten at every
+    session start, so it follows the original. A skill that cannot be read or
+    written gets no copy and stays dropped, as before.
+    """
+    _loaded, refused, taken = _classify(
+        agent, spec, globs, agents_dir=agents_dir, work_dir=work_dir
+    )
+    copies = [copy for _path, copy in _write_copies(refused, taken)]
     if copies:
         logger.info(
             "KAS would drop %d skill(s) kiro-cli loads; loading fixed copies: %s",

@@ -355,6 +355,23 @@ async def api_skills(request: web.Request) -> web.Response:
                     "description": "",
                     "content": outcome.content,
                 }
+                # A remote session runs scripts in its workspace: name the copy
+                # there, or null for a skill the copy does not hold. Imported here so
+                # the prompts facade does not serve it.
+                from kiro_crew.remote_session.skills_copy import copy_for
+
+                copy = copy_for(session_key)
+                where = copy.guest_dir(key) if copy is not None else None
+                # A project skill is never copied: it lives in the repository the
+                # workspace checks out, so it gets no "not copied" line.
+                if copy is not None and (
+                    where is not None
+                    or not any(
+                        row.get("key") == key and row.get("confine_root")
+                        for row in skills.scoped_skills(project_dir=project_dir, only=only)
+                    )
+                ):
+                    match["workspace_dir"] = where
                 if paging:
                     match["page"] = {
                         field: value

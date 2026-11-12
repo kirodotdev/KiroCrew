@@ -4047,8 +4047,8 @@ screenshot.
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
 nothing else: `coder_url`, `profiles`, and the optional `sprites_profiles`,
-`boxd_profiles`, `kiro_cloud_profiles`, `default_profile` and
-`stop_on_shutdown`. `config/session_environments.py` owns
+`boxd_profiles`, `kiro_cloud_profiles`, `default_profile`,
+`stop_on_shutdown` and `copy_skills`. `config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -4082,6 +4082,10 @@ duplicate or over-cap profile is dropped with a warning).
   `boxd_profiles` leaf write refuses to drop the profile the saved default names
   (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
+- `copy_skills`: a boolean, default `true`: copy each remote session's skills
+  that sit in Crew's skill folders into its workspace at every start
+  (`providers.md`, Skills in the workspace).
+  A hand-edited non-boolean loads as `false`, the reading that sends no files.
 - `kiro_cloud_profiles` (optional): at most 20 Kiro Cloud Sessions records,
   each exactly `{id, name, repositories}`: `id` and `name` follow the profile
   rules above, and `repositories` is a list of at most 10 `name` or
@@ -4099,7 +4103,7 @@ GET.
 
 `PATCH /api/config/kirocrew` accepts `session_environments` and the leaf paths
 `coder_url`, `sprites_profiles`, `boxd_profiles`, `kiro_cloud_profiles`,
-`default_profile` and `stop_on_shutdown` (`profiles` only through the whole
+`default_profile`, `stop_on_shutdown` and `copy_skills` (`profiles` only through the whole
 section), all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
 value under the config lock. After every write to the section, a saved

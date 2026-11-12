@@ -143,6 +143,7 @@ def _session_environment_key_validators() -> dict[str, Any]:
     only once it has a validator here: an unvalidated saved value is never kept.
     """
     from kiro_crew.config.session_environments import (
+        load_copy_skills,
         validate_default_profile,
         validate_stop_on_shutdown,
     )
@@ -153,6 +154,9 @@ def _session_environment_key_validators() -> dict[str, Any]:
         "boxd_profiles": _keep_saved_profiles("boxd_profiles"),
         "kiro_cloud_profiles": _keep_saved_profiles("kiro_cloud_profiles"),
         "stop_on_shutdown": validate_stop_on_shutdown,
+        # Carried as the loader reads it: a hand-edited non-boolean stays off, never
+        # dropped (which would turn copying back on by default).
+        "copy_skills": lambda saved: load_copy_skills({"copy_skills": saved}),
     }
 
 
