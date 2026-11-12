@@ -633,9 +633,10 @@ def launch(
                 )
                 if not keep_on_failure:
                     ui.detail(
-                        "Re-run with --keep-on-failure to keep the instance for "
-                        "inspection (`kirocrew cloud launch --keep-on-failure`)."
+                        "To keep a failed instance for inspection instead of rolling it back, "
+                        "re-run with --keep-on-failure (`kirocrew cloud launch --keep-on-failure`)."
                     )
+            _name_stack_left_behind(tag, profile, region)
             return 1
         # Deploy succeeded (WaitCondition confirmed the gateway healthy) — NOW it
         # is safe to persist the tag as the saved deployment.
@@ -885,6 +886,30 @@ def _clear_prior_pointer(previous_tag: str) -> bool:
         ui.detail("Re-run `kirocrew cloud launch` to launch against the current pointer.")
         return False
     return True
+
+
+def _name_stack_left_behind(tag: str, profile: str, region: str) -> None:
+    """After a failed deploy, name the stack it left in the account and how to remove it.
+
+    A failed launch is not recorded (see :func:`_record_launch`), so a bare ``cloud
+    destroy`` has no target: the command names the tag, Region and profile. Prints
+    nothing when the stack is absent or cannot be read.
+    """
+    try:
+        stack = ec2.find_stack(tag, profile, region)
+    except AWSError:
+        return
+    if not stack:
+        return
+    status = str(stack.get("StackStatus", ""))
+    bills = (
+        "It holds no instance, so it does not bill."
+        if status == "ROLLBACK_COMPLETE"
+        else "It may still be billing until you remove it."
+    )
+    where = f" --region {region}" + (f" --profile {profile}" if profile else "")
+    ui.detail(f"The stack {ec2.stack_name(tag)} is still in your account ({status}). {bills}")
+    ui.detail(f"Remove it with: kirocrew cloud destroy --tag {tag}{where}")
 
 
 def _record_launch(*, profile: str, region: str, tag: str) -> None:

@@ -219,6 +219,10 @@ class RealLaunchEngine:
                 "crew, or delete it, so it does not sit idle."
             )
 
+    def resource_exists(self, *, tag: str, profile: str, region: str) -> bool:
+        """Whether this launch's stack exists; raises when AWS cannot say."""
+        return ec2.find_stack(tag, profile, region) is not None
+
     def teardown(self, *, tag: str, profile: str, region: str) -> bool:
         """Delete a stack this launch created — the rollback for a cancelled setup.
 
