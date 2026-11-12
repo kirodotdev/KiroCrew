@@ -787,7 +787,12 @@ def _url_payload_command(n: int) -> str:
 #: ``is_denied`` opens, in a leaf module with ``once_per_call`` on the pure readers one
 #: judgement repeats (shell tokens, program basename, operand, self-program test, line
 #: fold, Python lexer, quoted scripts). Same verdicts, less work. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_712
+#: Raised by 320, from 35,712, to 36,032, for
+#: ``shell_normalizer._xargs_reconstructed_commands``: an xargs kill payload is rebuilt from every command that feeds its pipeline, with
+#: producer words flattened past glued separators, and the lexical half of that reading
+#: (separators, stages, operand words) lives in ``shell_normalizer_xargs`` with its own
+#: header and the re-export block. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 36_032
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

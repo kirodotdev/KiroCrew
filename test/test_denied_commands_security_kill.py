@@ -83,6 +83,115 @@ class TestSelfProtectionKillTargetScoping:
     matcher reading those quoted characters as shell syntax would let through.
     """
 
+    # --- a chained prefix before the xargs pipeline does not hide the kill ---
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # `echo <verb> | xargs <prog>` runs `<prog> <verb>`, so the producer's words
+            # are the kill's target.  The rebuild reads them from the simple command that
+            # feeds the pipe, so a command in front of it, closed by any separator, cannot
+            # push those words out of the kill argv and leave the name unread.
+            f"{_PK} -f {_NAME}",
+            f"echo {_NAME} | xargs {_PK} -f",
+            f"echo x; echo {_NAME} | xargs {_PK} -f",
+            f"cd /tmp; echo {_NAME} | xargs {_PK} -f",
+            f"echo x && echo {_NAME} | xargs {_PK} -f",
+            f"echo x || echo {_NAME} | xargs {_PK} -f",
+            f"echo x & echo {_NAME} | xargs {_PK} -f",
+            f"echo x\necho {_NAME} | xargs {_PK} -f",
+            f"echo x | cat; echo {_NAME} | xargs {_PK} -f",
+            f"echo x; echo {_NAME} | xargs {_KA}",
+            # A trailing command after the pipeline, and a second pipeline earlier on the
+            # line, are each bounded to their own simple command rather than the first pipe.
+            f"echo {_NAME} | xargs {_PK} -f; echo done",
+            f"echo x | cat | xargs ls; echo {_NAME} | xargs {_PK} -f",
+            # The producer and xargs may each carry a leading `VAR=value` assignment.
+            f"echo x; FOO=1 echo {_NAME} | FOO=2 xargs -r {_PK} -f",
+            # A subshell open before the producer is a boundary too.
+            f"echo x && (echo {_NAME} | xargs {_PK} -f)",
+            # A wrapper in front of xargs must not hide it: xargs is found by basename,
+            # not only in the stage's program slot.
+            f"echo {_NAME} | sudo xargs {_PK} -f",
+            f"echo {_NAME} | env xargs {_PK} -f",
+            f"echo {_NAME} | timeout 5 xargs {_PK} -f",
+            # A separator nested inside the group that feeds xargs (the whole group is
+            # one stage) must not drop the name from the producer.
+            f"{{ echo {_NAME}; }} | xargs {_PK} -f",
+            f"{{ echo {_NAME} ; }} | xargs {_PK} -f",
+            f"(echo {_NAME}; echo x) | xargs {_PK} -f",
+            f"echo {_NAME} | ( xargs {_PK} -f )",
+            # A pass-through xargs stage still feeds the name to the next xargs.
+            f"echo {_NAME} | xargs | xargs {_PK} -f",
+            f"echo {_NAME} | xargs echo | xargs {_PK} -f",
+            # A quoted ERE operand whose own characters look like separators is the
+            # target, not a boundary.
+            f"echo '[;]*{_NAME}' | xargs {_PK} -f",
+            # An intermediate xargs stage runs the kill even when a later stage passes
+            # the output on.
+            f"echo {_NAME} | xargs {_PK} -f | xargs echo",
+            # A grouped or wrapped xargs in a pipeline that follows another command.
+            f"echo x | cat; echo {_NAME} | ( xargs {_PK} -f )",
+            f"echo x | cat; echo {_NAME} | xargs {_PK} -f | xargs echo",
+            # A standalone `;` that is the xargs -d delimiter value, not a separator.
+            f"printf '{_NAME};' | xargs -d ';' {_PK} -f",
+            # A command chained after the kill does not move the target off it.
+            f"echo {_NAME} | xargs {_PK} && echo x",
+            # xargs option values (-n 1, -I{}) do not displace the kill program.
+            f"echo {_NAME} | xargs -n 1 {_PK}",
+            # An OPTIONAL-value xargs flag (-i, -l, --replace) does not consume the kill
+            # program as its value.
+            f"echo {_NAME} | xargs -i {_PK} -f",
+            f"echo {_NAME} | xargs --replace {_KA}",
+            f"echo {_NAME} | xargs -l {_K} -9 $(pgrep {_NAME})",
+            # A wrapper before xargs in a pipeline that follows another command.
+            f"echo x | cat; echo {_NAME} | env xargs {_PK} -f",
+            f"echo x | cat; echo {_NAME} | timeout 5 xargs {_PK} -f",
+            # Fail closed on ambiguity: a kill-feeding xargs on a line that names the
+            # product through a spelling the exact rebuild cannot resolve -- a quoted
+            # delimiter, a group, a subshell -- is refused even in a later pipeline.
+            f"echo x | cat; printf '{_NAME};' | xargs -d ';' {_PK} -f",
+            f"echo x | cat; {{ echo {_NAME}; }} | xargs {_PK} -f",
+            f"echo x | cat; (echo {_NAME}; echo x) | xargs {_PK} -f",
+            f"echo x | cat && echo {_NAME} | xargs {_PK} -f",
+            # Accepted safe-side cost: a kill via xargs on a line that mentions the
+            # product path anywhere before the pipe is refused, even when the kill aims
+            # elsewhere. Documented in the PR body; quote-preserving tokenization lifts it.
+            f"npm run build && cp -r dist ~/.{_NAME}/web && echo vite | xargs {_PK} -f",
+            # The command lower-cases first, so `-E` arrives as `-e`: its separator value
+            # must still be consumed, not read as a boundary.
+            f"echo {_NAME} | xargs -E ';' {_PK} -f",
+            # A grouped producer in a later pipeline with an empty-substitution name.
+            "echo x | cat && { echo kiro$()crew ; } | xargs " + _PK + " -f",
+        ],
+    )
+    def test_chained_prefix_before_xargs_kill_still_blocked(self, cmd):
+        assert _denied_by(cmd) is not None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The fix must not deny an ordinary chained pipeline whose xargs command is
+            # harmless: the producer words land on `ls`, not a kill program.
+            "echo x; echo y | xargs ls",
+            "echo y | xargs ls",
+            f"echo x; echo {_NAME} | xargs echo -f",
+            # Only the FIRST stage of the pipeline feeds the kill, so a middle stage that
+            # EXCLUDES the product leaves a real, legitimate cleanup allowed.
+            f"ps -eo comm= | grep -v {_NAME} | grep vite | xargs {_KA}",
+            # A kill of an unrelated program followed by a command that merely names the
+            # product is not folded into the kill.
+            f"echo node | xargs {_KA} && echo {_NAME}",
+            # The kill program must be what an xargs stage RUNS, not a kill in a separate
+            # command (xargs here feeds grep), nor a kill name that is a data operand of
+            # another program (xargs here feeds echo).
+            f"git ls-files | xargs grep -l {_NAME}; {_PK} vite",
+            f"echo x | cat && printf '{_NAME};' | xargs -d ';' echo {_PK}",
+        ],
+    )
+    def test_benign_chained_xargs_pipeline_stays_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
     # --- by-name kills: still blocked ---
 
     @pytest.mark.parametrize(
