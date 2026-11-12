@@ -188,11 +188,13 @@ describe('the Ultra Mode filter offer', () => {
     renderSidebar(WITH_ROOT)
     const crewChip = await screen.findByTestId('filter-chip-crew')
     const runningChip = await screen.findByTestId('filter-chip-running')
-    // Two visual groups: the status row keeps its base-branch button count
+    // Two visual groups: the status row keeps its base-branch chip count
     // (AUTOSDE max-two-buttons-per-row), the Crew Mode chip is not one of its children.
     expect(crewChip.parentElement).not.toBe(runningChip.parentElement)
-    expect(runningChip.parentElement!.querySelectorAll('button')).toHaveLength(1)
-    expect(crewChip.parentElement!.querySelectorAll('button')).toHaveLength(1)
+    expect(runningChip.parentElement!.children).toHaveLength(1)
+    expect(crewChip.parentElement!.children).toHaveLength(1)
+    expect(runningChip.querySelectorAll('button')).toHaveLength(2)
+    expect(crewChip.querySelectorAll('button')).toHaveLength(2)
     expect(crewChip.className).toContain('crew-grad')
   })
 

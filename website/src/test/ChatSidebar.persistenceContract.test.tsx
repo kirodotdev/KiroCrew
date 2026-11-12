@@ -338,7 +338,7 @@ describe('mc-sidebar-conductor-expanded, and the superseded mc-sidebar-conductor
 
 describe('mc-session-recent-window-ms', () => {
   /** The active Recent chip names the window it filters by. */
-  const recentChip = () => screen.getByRole('button', { name: 'Clear Recent filter' })
+  const recentChip = () => screen.getByTestId('filter-chip-recent')
 
   it('shows a valid stored window', () => {
     localStorage.setItem('mc-session-recent-only', '1')

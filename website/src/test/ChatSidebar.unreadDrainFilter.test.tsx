@@ -142,8 +142,8 @@ function renderSidebar(opts: { unreadSlots: string[]; slotsLoaded?: boolean; slo
   return { ...view, store, setUnread: (unread: string[]) => view.rerender(tree(unread)) }
 }
 
-const unreadChip = () => screen.queryByRole('button', { name: 'Clear Unread filter' })
-const runningChip = () => screen.queryByRole('button', { name: 'Clear In progress filter' })
+const unreadChip = () => screen.queryByTestId('filter-chip-unread')
+const runningChip = () => screen.queryByTestId('filter-chip-running')
 const RUNNING_KEY = 'mc-session-running-only'
 
 beforeEach(() => {
@@ -217,7 +217,7 @@ describe('unread filter auto-drain', () => {
     renderSidebar({ unreadSlots: [] })
     expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
 
-    act(() => { runningChip()!.click() })
+    act(() => { screen.getByTestId('filter-chip-running-clear').click() })
     await waitFor(() => expect(localStorage.getItem(UNREAD_KEY)).toBe('0'))
     expect(unreadChip()).toBeNull()
   })
@@ -248,7 +248,7 @@ describe('filter counts follow the rendered rows', () => {
     renderSidebar({ unreadSlots: ['k-1'] })
     await screen.findByText('REMOTE recent row')
 
-    const recentChip = screen.getByRole('button', { name: 'Clear Recent filter' })
+    const recentChip = screen.getByTestId('filter-chip-recent')
     expect(recentChip.textContent).toContain('(1)')
     expect(document.querySelectorAll('[data-session-row]')).toHaveLength(1)
     // The funnel's badge is the Unread count: the local session only.
