@@ -54,6 +54,28 @@ and a later parse reads a transcript again only when either
 changed. The path check and the `stat` still run on every transcript, and on a
 store of thousands of transcripts the path check takes most of a warm parse.
 
+A harness that writes none of those transcripts (Claude Code, usage-row provider
+`claude_code`, listed in `usage_store._SHARD_COUNTED_PROVIDERS`) has its
+sessions counted from the per-turn usage rows of the same 30-day window
+(`_shard_sessions`) into the same today, week, month, daily and total figures. A
+row is parsed only when its text names one of those providers, so on an install
+where none ran the pass costs a substring test per row. A
+session is the row's `transcript` key, else its `slot` through
+`spend_key_for_slot` (so a bare `chat-…` slot joins its `dashboard:chat-…`
+session). It is filed under the
+local day of its earliest row in the window, the way a transcript is filed under
+its first row's day, and counts two messages per turn (the prompt and the reply,
+the two rows a kiro-cli turn's transcript holds), or one when the row says
+`delivered: false`. A row whose slot is not a session in its own right
+(`is_session_slot`: a subagent) is left out, and so is a background one-liner's
+row (a `surface` starting `bg:`: a title, a tag, a folder suggestion), which is
+no turn of any session. Usage rows carry no tool-call
+count, so such a session adds no tool calls. The set is positive: a provider whose
+sessions do write those transcripts is counted from them and never twice. Every
+other ACP harness records `provider: acp`, the same value kiro-cli does, so a
+usage row cannot tell its sessions from kiro-cli's and they are not counted
+here.
+
 When the local session transcript directory does not exist, `/api/usage/kiro`
 returns the same complete zero-valued session statistics as an empty directory,
 including `today`, `this_week`, `this_month`, and an empty `daily_history`.

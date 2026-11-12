@@ -241,6 +241,7 @@ async def _record_abnormal_turn_usage(
         stop_reason=reason or turn._stop_reason or STOP_REASON_CANCELLED,
         since=turn._turn_stats0,
         usage=_usage,
+        delivered=turn._saw_text_chunk,
     ):
         turn._turn_usage_persisted = True
 

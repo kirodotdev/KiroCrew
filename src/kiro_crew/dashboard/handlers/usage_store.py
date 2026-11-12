@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 
@@ -53,6 +54,12 @@ _TOKEN_USAGE_DIR: Path | None = None
 #: Window (in days) the Session Activity card and its Daily History table cover.
 #: The per-day credits column reads the same window so the two line up.
 _SESSIONS_HISTORY_DAYS = 30
+
+#: Usage-row providers whose sessions write no transcript the Session Activity
+#: parse reads (the kiro-cli ``cli`` directory and the KAS records), so their
+#: sessions are counted from the per-turn usage rows instead. A positive set: a
+#: provider that writes those transcripts is counted from them and never twice.
+_SHARD_COUNTED_PROVIDERS = frozenset({PROVIDER_CLAUDE_CODE})
 
 
 def _token_usage_dir() -> Path:
