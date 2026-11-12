@@ -573,8 +573,12 @@ class DashboardState:
                 self, note, publisher
             ),
             # A keyed note's replacement is written and committed asynchronously,
-            # and the write can fail: the bridge waits for that commit.
-            committed=lambda note: self.last_notification_persist if note.get("key") else None,
+            # and the write can fail: the bridge waits for that note's own commit.
+            committed=lambda note: (
+                _dashboard_services._notifications_for(self).take_keyed_commit(self, note)
+                if note.get("key")
+                else None
+            ),
         )
         # Lazy: the sink pulls in the Slack formatter, which a state import skips.
         from kiro_crew.notifications.bridge_slack import SlackBridgeSink

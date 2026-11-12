@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Executor
 from typing import Any
 
@@ -141,6 +141,27 @@ def _notes_held_under(state: Any, source: Any, key: Any) -> list[dict[str, Any]]
         for held in state._notification_log
         if held.get("key") == key and held.get("source") == source
     ]
+
+
+#: The most keyed-write commits kept for the bridge to collect. Each is taken once,
+#: right after its note is delivered; one left behind (a note no bridge reads)
+#: is dropped oldest first past this bound.
+_MAX_KEYED_COMMITS = 256
+
+
+def _keyed_commit_key(note: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """Which keyed delivery a commit belongs to: the note's source, key and stamp."""
+    return note.get("source"), note.get("key"), note.get("ts")
+
+
+def _remember_keyed_commit(state: Any, note: Mapping[str, Any], commit: Any) -> None:
+    """Record *commit* as *note*'s own keyed write, for the bridge to take."""
+    commits = getattr(state, "_keyed_note_commits", None)
+    if commits is None:
+        commits = state._keyed_note_commits = {}
+    commits[_keyed_commit_key(note)] = commit
+    while len(commits) > _MAX_KEYED_COMMITS:
+        commits.pop(next(iter(commits)))
 
 
 def _remove_keyed_notes(state: Any, source: Any, key: Any) -> None:
@@ -316,6 +337,21 @@ class NotificationCoordinator:
         state._background_tasks.add(operation)
         operation.add_done_callback(state._background_tasks.discard)
         state.last_notification_persist = asyncio.shield(operation)
+        _remember_keyed_commit(state, note, state.last_notification_persist)
+
+    @staticmethod
+    def take_keyed_commit(state: Any, note: Mapping[str, Any]) -> "asyncio.Future[bool] | None":
+        """The commit of *note*'s own keyed write, once, or ``None`` when none is in flight.
+
+        The notification bridge waits on it before it sends a keyed note anywhere.
+        ``last_notification_persist`` cannot stand in for it: a worker thread's
+        delivery and its bridge hand-off reach the loop as two separate callbacks,
+        and any delivery between them overwrites that gateway-wide value.
+        """
+        commits = getattr(state, "_keyed_note_commits", None)
+        if not commits:
+            return None
+        return commits.pop(_keyed_commit_key(note), None)
 
     def _handed_to_serving_loop(self, state: Any, note: dict[str, Any]) -> bool:
         """Queue a worker thread's delivery on the gateway's serving loop.

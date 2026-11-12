@@ -22,7 +22,7 @@ from kiro_crew.dashboard.state_parts import dashboard_services
 from kiro_crew.notifications import bridge_egress
 from kiro_crew.notifications.bridge import BridgeDispatcher
 from kiro_crew.notifications.bridge_slack import SlackBridgeSink, render_slack_parts
-from kiro_crew.notifications.bus import NotificationPayload
+from kiro_crew.notifications.bus import NotificationBus, NotificationPayload
 from kiro_crew.notifications.rate_limit import RATE_LIMIT_BURST
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
@@ -412,6 +412,42 @@ class TestKeyedCommit:
         assert await state.last_notification_persist is False
         await state.notification_bridge.drain()
         assert slack.posts == []
+
+    @pytest.mark.asyncio
+    async def test_a_keyed_note_waits_on_its_own_write_not_the_latest(
+        self, monkeypatch, tmp_path, sel_log
+    ):
+        # A worker thread's delivery and its bridge hand-off reach the loop as two
+        # callbacks, and another delivery can land between them: the bridge must
+        # still wait on this note's own commit.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+        slack = _FakeSlack()
+        state = DashboardState(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(),
+            lessons=MagicMock(),
+            start_time=0.0,
+            slack_client=slack,
+            owner_id="U-OWNER",
+        )
+        coordinator = dashboard_services._notifications_for(state)
+        monkeypatch.setattr(coordinator, "_rewrite_all", lambda rows: False)
+        state.notification_channel_settings.update("system.cron", deliver_to=["slack"])
+
+        def built(**fields: Any) -> dict[str, Any]:
+            notes: list[dict[str, Any]] = []
+            payload = dict(source="system", channel="system.cron", body="b", priority="critical")
+            NotificationBus(sink=notes.append).push(NotificationPayload(**{**payload, **fields}))
+            return notes[0]
+
+        keyed = built(title="refused update", key="k1")
+        other = built(title="another note")
+        state._deliver_note(keyed)  # Its replacement write will be refused.
+        state._deliver_note(other)  # Lands between the keyed delivery and its bridge.
+        state.notification_bridge.schedule(keyed)
+        await state.notification_bridge.drain()
+        assert all("refused update" not in text for _, text in slack.posts)
 
 
 class TestTransport:
