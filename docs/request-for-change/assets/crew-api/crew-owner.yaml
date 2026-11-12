@@ -3,15 +3,32 @@ info:
   title: Crew API · Owner
   version: 1.0.0-draft
   description: |
-    Owner tier of the Crew API: the user's own clients (dashboard, control panel, CLI) call it
-    with the user's own credential. Design and rationale: docs/request-for-change/rfc-crew-api.md.
+    Owner tier of the Crew API: the user's own clients (control panel, official app, CLI) call it with
+    the user's own first-party sign-in.
+    Design and rationale: docs/request-for-change/rfc-crew-api.md.
 
-    - paths holds the 6 new grant and connector operations, fully defined.
-    - x-crew-reused-routes lists the 96 existing routes that move into the Owner tier as they are.
-      They carry path, method, summary and source only, no full schema, and are all
-      x-crew-stability: experimental. They are wrapped as /v1/crew/owner/* over time.
-    - A delegated credential calling any Owner operation gets 403 insufficient_scope.
-    - The Owner tier's compatibility promise is an open question in the RFC.
+    - Every Owner operation is under /v1/crew/owner/, so the path alone tells the tier, and anything in
+      front of the gateway can refuse a request that carries an app token to this prefix.
+    - paths holds 11 new operations in full (7 for grants, 4 for capability bundles): 2 in phase 1a
+      (list and revoke a grant) and 9 in phase 2. Manifests are written over a control channel into
+      the gateway, which is Internal and not in this file.
+    - One more route wraps an existing one and is not counted in the 11: GET /v1/crew/owner/bots,
+      which wraps GET /api/members. Its code is in PR #34104, not merged, under the path
+      /v1/crew/owner/members; naming the resource bots in both tiers is a proposal.
+    - x-crew-reused-routes lists the 96 existing routes the inventory assigns to the Owner tier (98
+      registrations, 96 distinct method+path once 2 duplicates are removed), with only path, method,
+      summary and source, no full schema; all are x-crew-stability: experimental. They are candidates,
+      not a promise: a route is wrapped as /v1/crew/owner/* only when the official app, the command
+      line or the multi-instance console really needs it, and a wrapped one is marked
+      x-crew-wrapped-by in the list.
+    - The Owner tier is for the owner only. A delegated credential, an embed credential, a local app
+      token and a dashboard session that is not the owner's all get 403 owner_only on any Owner
+      operation (kept apart from insufficient_scope, which the user can fix by granting more). The
+      old /api/* routes answer an app token with 404; /v1 does not, because its route table is a
+      public document anyway.
+    - The Owner tier's compatibility promise is open: the proposal is at least 3 months from
+      deprecation to removal.
+    - The control plane under /v1/crew/owner/instance/* (phase 3) has no OpenAPI yet; see the RFC.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -28,14 +45,66 @@ servers:
     port:
       default: '5476'
 tags:
+- name: bundles
+  description: Capability bundles
+- name: bots
+  description: Bot roster (Owner view)
 - name: connectors
-  description: Connectors
+  description: connector
 - name: grants
   description: Grants
 paths:
-  /v1/crew/grants:
+  /v1/crew/owner/bots:
     get:
-      operationId: get_v1_crew_grants
+      operationId: get_v1_crew_owner_bots
+      summary: Bot roster (the full list, Owner view)
+      tags:
+      - bots
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: One row per global Bot
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/BotRoster
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/OwnerUnavailable
+      x-crew-tier: owner
+      x-crew-scope: bots:manage
+      x-crew-phase: 1b
+      x-crew-wraps: GET /api/members
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
+      x-crew-coverage: done
+      x-crew-stability: experimental
+      description: 'The full roster as the owner sees it: one row per global Bot, with its private chat with the
+        owner (slot_key, last_message), its configuration (model, workspace, memory store) and its live state. It
+        returns the same data as GET /api/members, from the same handler. The Public GET /v1/crew/bots is the cut-down
+        view apps get: only id, name, description, avatar and status, only the grant''s Bot range, and never private
+        chat, briefing or rules. While the gateway is still tidying the Bot roster it answers 503 prune_in_progress.
+        Where the code stands: this route is in PR #34104, not merged, and its path there is GET /v1/crew/owner/members;
+        it keeps the name members because it wraps the body of the existing GET /api/members. Naming the resource
+        bots in both tiers is a proposal.'
+      x-crew-pr: '#34104 (not merged; the path in that PR is /v1/crew/owner/members)'
+  /v1/crew/owner/grants:
+    get:
+      operationId: get_v1_crew_owner_grants
       summary: List grants (with usage)
       tags:
       - grants
@@ -76,14 +145,15 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: 1a
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
       description: revoked grants are not listed by default.
-  /v1/crew/grants/{grant_id}:
+  /v1/crew/owner/grants/{grant_id}:
     patch:
-      operationId: patch_v1_crew_grants_grant_id
-      summary: 'Tighten a grant: lower quota, remove mates, change sensitivity and notification limit'
+      operationId: patch_v1_crew_owner_grants_grant_id
+      summary: 'Tighten a grant: lower quota, remove Bots, change sensitivity and notification limit'
       tags:
       - grants
       security:
@@ -125,6 +195,7 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: '2'
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
@@ -137,7 +208,7 @@ paths:
             schema:
               $ref: '#/components/schemas/UpdateGrantRequest'
     delete:
-      operationId: delete_v1_crew_grants_grant_id
+      operationId: delete_v1_crew_owner_grants_grant_id
       summary: Revoke a grant
       tags:
       - grants
@@ -178,13 +249,15 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: 1a
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
-      description: Takes effect at once (status=revoked). Open streams receive grant.revoked and are closed.
-  /v1/crew/grants/{grant_id}/resume:
+      description: Takes effect locally first (status=revoked), then the issuer of the grant is told over the control
+        channel. Open streams receive grant.revoked and are closed.
+  /v1/crew/owner/grants/{grant_id}/resume:
     post:
-      operationId: post_v1_crew_grants_grant_id_resume
+      operationId: post_v1_crew_owner_grants_grant_id_resume
       summary: Resume a paused or throttled grant
       tags:
       - grants
@@ -227,14 +300,69 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: '2'
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
-      description: paused or throttled goes back to active. A grant paused for re-consent (pause.by=reconsent) gets
-        409 and recovers only through re-consent.
-  /v1/crew/connectors:
+      description: paused or throttled goes back to active. A grant with pause.by=reconsent gets 409 and recovers
+        only through a new consent; one with pause.by=entitlement gets 409 and recovers by itself when the app's
+        entitlement is back.
+  /v1/crew/owner/grants/{grant_id}/decisions:
     get:
-      operationId: get_v1_crew_connectors
+      operationId: get_v1_crew_owner_grants_grant_id_decisions
+      summary: Read the monitor's decision log
+      tags:
+      - grants
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: grant_id
+        in: path
+        required: true
+        description: grt_ id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MonitorDecisionList'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: '2'
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: 'Reads this grant''s monitor decisions, newest first. The shape is the same whichever kind of
+        decider is used: decided_by says whether a rule or a model decided, and decider gives its version. Retention:
+        monitor decisions are kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings
+        to 1 to 365 days.'
+  /v1/crew/owner/connectors:
+    get:
+      operationId: get_v1_crew_owner_connectors
       summary: List consented connectors
       tags:
       - connectors
@@ -269,12 +397,13 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: '2'
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
-  /v1/crew/connectors/{client_id}:
+  /v1/crew/owner/connectors/{client_id}:
     get:
-      operationId: get_v1_crew_connectors_client_id
+      operationId: get_v1_crew_owner_connectors_client_id
       summary: Read a connector's manifest and hash
       tags:
       - connectors
@@ -315,15 +444,231 @@ paths:
           $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: grants:manage
+      x-crew-phase: '2'
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
+  /v1/crew/owner/bundles:
+    get:
+      operationId: get_v1_crew_owner_bundles
+      summary: List capability bundles that came from apps
+      tags:
+      - bundles
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleList'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: '2'
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: Used by the crew's "capabilities from apps" panel. Site tokens never appear in the response.
+  /v1/crew/owner/bundles/{bundle_id}:
+    get:
+      operationId: get_v1_crew_owner_bundles_bundle_id
+      summary: Read one capability bundle
+      tags:
+      - bundles
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: bundle_id
+        in: path
+        required: true
+        description: bnd_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: '2'
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: 'Includes grants: before a removal, the panel lists from it the connections that will break (the
+        app''s backend connection and the embed connection).'
+    patch:
+      operationId: patch_v1_crew_owner_bundles_bundle_id
+      summary: Change a capability bundle's settings
+      tags:
+      - bundles
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: bundle_id
+        in: path
+        required: true
+        description: bnd_ id
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBundleRequest'
+            example:
+              plan_approval: true
+              tools:
+                replace_text:
+                  approval: never
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: '2'
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: 'Changed by the user: each tool''s approval and enabled, and the plan approval switch. Setting
+        a write tool to never needs confirm_write_never=true (the panel asks for confirmation first), else 400 invalid_request;
+        each such change writes an audit record. These settings survive a manifest update.'
+    delete:
+      operationId: delete_v1_crew_owner_bundles_bundle_id
+      summary: Remove a capability bundle from this crew
+      tags:
+      - bundles
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: bundle_id
+        in: path
+        required: true
+        description: bnd_ id
+        schema:
+          type: string
+      - name: bot
+        in: query
+        required: false
+        description: 'Required only when kind is bot: keep leaves the Bot in place (the app''s tools and skills
+          are taken off and its private memory stays), remove takes it away too (its private memory is archived
+          like a closed Bot''s). When kind is bot and this is absent, 400 invalid_request.'
+        schema:
+          enum:
+          - keep
+          - remove
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Deleted
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: '2'
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: 'Disconnects the app from this crew: revokes every grant that references this bundle (the app''s
+        backend connection and the embed connection), through the same revocation as DELETE /v1/crew/owner/grants/{grant_id};
+        then deletes the template, mounts, skills and site tokens, and revokes the tokens at the site when the site''s
+        metadata has a revocation_endpoint (RFC 7009). A running conversation that calls these tools afterwards
+        gets the tool error tools_removed from the proxy (ToolError in components.yaml).'
 components:
   securitySchemes:
     firstPartySession:
       type: http
       scheme: bearer
-      description: The user's own credential (owner). Holds every scope.
+      bearerFormat: JWT
+      description: The user's own first-party sign-in (owner, official app, control panel, CLI). Holds every scope.
   schemas:
     GrantStatus:
       enum:
@@ -366,19 +711,37 @@ components:
           type: array
           items:
             type: string
-        mates:
-          type: array
-          items:
-            type: string
-          description: Mate ids the user allows this app to use; empty means none.
+        bots:
+          $ref: '#/components/schemas/GrantBots'
+        wake_limits:
+          $ref: '#/components/schemas/WakeLimits'
         memory_global:
           type: boolean
-          default: false
-          description: Whether this grant may read the user's Global memory. Takes effect only together with memory:read.
+          description: 'The Global memory switch: whether this grant may read the user''s Global memory. Takes effect
+            only together with memory:read. The field name is provisional.'
         notify_per_hour:
           type: integer
           minimum: 0
           default: 10
+        entitlements:
+          type: array
+          items:
+            $ref: ./components.yaml#/components/schemas/Entitlement
+          description: The entitlements on the app's registration record (read only). An app registered with Kiro
+            gets them through publication review (a restricted entitlement needs one more request with a reason);
+            for a local-development app the owner grants them on this crew.
+        ent_mode:
+          enum:
+          - reviewed
+          - testing
+          description: Whether these entitlements passed publication review (reviewed, the default) or were issued
+            in testing mode to a list of test users (testing). With testing the consent page shows a "not reviewed
+            by Kiro" banner, and the audit log uses this to keep unreviewed test calls apart from real ones.
+        member:
+          type:
+          - string
+          - 'null'
+          description: 'Team Crew: the member who granted it.'
         status:
           $ref: '#/components/schemas/GrantStatus'
         pause:
@@ -392,10 +755,14 @@ components:
               - monitor
               - user
               - reconsent
-              description: 'monitor: the gateway paused it automatically; user: the user did; reconsent: it waits
-                for the user to agree to a changed grant'
+              - entitlement
+              description: 'entitlement: the app''s entitlement was withdrawn; the grant resumes by itself when
+                the entitlement is back.'
             reason:
               type: string
+            signals:
+              type: object
+              additionalProperties: true
             at:
               $ref: ./components.yaml#/components/schemas/Timestamp
         created_at:
@@ -421,6 +788,52 @@ components:
                 format: date
               credits:
                 type: number
+        monitor:
+          type: object
+          properties:
+            sensitivity:
+              enum:
+              - relaxed
+              - standard
+              - strict
+        kind:
+          enum:
+          - remote
+          - local
+          description: 'remote: issued by the Kiro authorization service; local: local authorization, issued by
+            this gateway.'
+    GrantBots:
+      type: object
+      required:
+      - mode
+      description: Which Bots this app may use. A Bot outside the range is always 404 to its credential.
+      properties:
+        mode:
+          enum:
+          - selected
+          - app_created
+          - all
+          description: 'selected: the ones the user ticked; app_created: only the ones this app created; all: every
+            Bot (a restricted range: the consent page lists each Bot by name, and when a Bot added later enters
+            the range the instance stream sends a notice).'
+        ids:
+          type: array
+          items:
+            type: string
+          description: With mode selected, the bot ids the user ticked; empty means no Bot may be used. With the
+            other modes, the Bots currently in the range (read only).
+    WakeLimits:
+      type: object
+      description: Limits for bots:wake. The defaults are proposals.
+      properties:
+        per_bot_per_hour:
+          type: integer
+          minimum: 0
+          default: 20
+        per_grant_per_hour:
+          type: integer
+          minimum: 0
+          default: 120
     GrantList:
       allOf:
       - $ref: ./components.yaml#/components/schemas/ListEnvelope
@@ -434,9 +847,16 @@ components:
       type: object
       minProperties: 1
       additionalProperties: false
-      description: 'Tighten only: quota can only go down and mates can only be removed. Raising quota or adding
-        a mate gets 403 insufficient_scope (the app must ask for re-consent).'
+      description: 'Tighten only: quota and wake limits can only go down, bots can only be removed, and status can
+        only be set to paused. Raising a limit or adding a Bot is 403 insufficient_scope (the app has to start a
+        new consent); resuming is POST /v1/crew/owner/grants/{grant_id}/resume.'
       properties:
+        status:
+          const: paused
+          description: 'The owner pauses this app in one step: the grant records pause.by user. After that a wake
+            is 403 grant_paused, a tool call returns the tool error grant_paused, and queued wakes are dropped.'
+        wake_limits:
+          $ref: '#/components/schemas/WakeLimits'
         quota:
           type: object
           properties:
@@ -448,14 +868,78 @@ components:
               type: integer
             max_turn_secs:
               type: integer
+        monitor:
+          type: object
+          properties:
+            sensitivity:
+              enum:
+              - relaxed
+              - standard
+              - strict
         notify_per_hour:
           type: integer
           minimum: 0
-        mates:
-          type: array
-          items:
-            type: string
-          description: The new full list; must be a subset of the current list.
+        bots:
+          type: object
+          additionalProperties: false
+          required:
+          - ids
+          description: Bots can be removed only with mode selected; changing the mode needs a new consent.
+          properties:
+            ids:
+              type: array
+              items:
+                type: string
+              description: The new full list; must be a subset of the current one.
+    MonitorDecision:
+      type: object
+      required:
+      - id
+      - at
+      - action
+      properties:
+        id:
+          type: string
+        at:
+          $ref: ./components.yaml#/components/schemas/Timestamp
+        action:
+          enum:
+          - none
+          - notify
+          - throttle
+          - pause
+        reason:
+          type: string
+        signals:
+          type: object
+          additionalProperties: true
+        sensitivity:
+          enum:
+          - relaxed
+          - standard
+          - strict
+        decided_by:
+          enum:
+          - rule
+          - model
+          description: Open enum.
+        decider:
+          type: string
+          description: Version of the model or rule.
+        expires_at:
+          type:
+          - integer
+          - 'null'
+          description: When the throttle ends.
+    MonitorDecisionList:
+      allOf:
+      - $ref: ./components.yaml#/components/schemas/ListEnvelope
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/MonitorDecision'
     Connector:
       type: object
       required:
@@ -464,8 +948,8 @@ components:
       - agent_id
       - manifest_hash
       - defn_sv
-      description: Manifests are written by the system that records the grant (Internal, not in this file); read
-        only here.
+      description: Manifests are written over the control channel by the service that records the consent (Internal,
+        not in this file); read only here.
       properties:
         client_id:
           type: string
@@ -475,6 +959,7 @@ components:
           type: string
         agent_id:
           type: string
+          description: Template id <client_id>/<bundle.agent.id>.
         manifest_hash:
           type: string
         defn_sv:
@@ -498,43 +983,195 @@ components:
             type: array
             items:
               $ref: '#/components/schemas/Connector'
+    BundleTool:
+      type: object
+      required:
+      - name
+      - access
+      - approval
+      - enabled
+      properties:
+        name:
+          type: string
+        server:
+          type: string
+          description: The name of that entry in bundle.mcp_servers[].
+        access:
+          enum:
+          - read
+          - write
+        approval:
+          enum:
+          - always
+          - never
+          description: The manifest's value combined with the user's own setting.
+        enabled:
+          type: boolean
+        description:
+          type: string
+    Bundle:
+      type: object
+      required:
+      - id
+      - object
+      - client_id
+      - template_id
+      - grants
+      - tools
+      - connection
+      - defn_sv
+      - kind
+      - bot_id
+      description: The record of one app's capability bundle for this user on this crew. Site tokens never appear
+        here.
+      properties:
+        id:
+          type: string
+          description: bnd_ id
+        object:
+          const: bundle
+        client_id:
+          type: string
+        app_name:
+          type: string
+        template_id:
+          type: string
+          pattern: ^app_[^/]+/[^/]+$
+        kind:
+          enum:
+          - agent
+          - bot
+          description: agent is an app agent (not a Bot); bot is a Bot created from the bundle, with private memory.
+        bot_id:
+          type:
+          - string
+          - 'null'
+          description: With kind bot, the id of that Bot, else null. Private memory is returned by no operation.
+        template_name:
+          type: string
+        grants:
+          type: array
+          description: The grants that reference it; the record is deleted when the last one is revoked. A removal
+            disconnects every one listed here.
+          items:
+            type: object
+            required:
+            - id
+            - type
+            - status
+            properties:
+              id:
+                type: string
+              type:
+                enum:
+                - backend
+                - embed
+              status:
+                $ref: '#/components/schemas/GrantStatus'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleTool'
+        skills:
+          type: array
+          items:
+            type: string
+          description: Skill name.
+        connection:
+          enum:
+          - not_needed
+          - connected
+          - revoked_by_app
+          description: State of the site connection; revoked_by_app means the site revoked the token and the user
+            has to reconnect.
+        defn_sv:
+          type: integer
+        calls:
+          type: integer
+        last_used_at:
+          type:
+          - integer
+          - 'null'
+          description: Unix seconds.
+    BundleList:
+      allOf:
+      - $ref: ./components.yaml#/components/schemas/ListEnvelope
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Bundle'
+    UpdateBundleRequest:
+      type: object
+      minProperties: 1
+      properties:
+        plan_approval:
+          type: boolean
+          description: Plan approval switch (on by default); when off, each write call asks separately.
+        confirm_write_never:
+          type: boolean
+          description: Must be true when any tool whose access is write is set to never.
+        tools:
+          type: object
+          description: Keyed by tool name.
+          additionalProperties:
+            type: object
+            minProperties: 1
+            properties:
+              approval:
+                enum:
+                - always
+                - never
+              enabled:
+                type: boolean
     ConnectorManifest:
       type: object
       required:
       - manifest_version
       - client_id
-      - agent
+      - bundle
       - scopes
-      description: 'What the user agreed to for this app: its agent, tools, mates, scopes and webhook address'
+      - ui
+      - callbacks
+      description: 'What the user agreed to for this app: its capability bundle, scopes and webhook address.'
       properties:
         manifest_version:
           const: 1
         client_id:
           type: string
-        agent:
+        bundle:
           type: object
           required:
-          - id
-          - name
-          - description
-          - prompt
+          - agent
+          description: 'A capability bundle: one agent per app. The whole of it is part of the security version,
+            except display fields.'
           properties:
-            id:
-              type: string
-            name:
-              type: string
-            description:
-              type: string
-            prompt:
-              type: string
-            icon_url:
-              type: string
-              format: uri
-        tools:
-          type: object
-          properties:
+            agent:
+              type: object
+              required:
+              - id
+              - name
+              - description
+              - prompt
+              properties:
+                id:
+                  type: string
+                  pattern: ^[a-z0-9][a-z0-9-]*$
+                  description: The template id in the crew is <client_id>/<id>; a request's model takes the template
+                    id.
+                name:
+                  type: string
+                description:
+                  type: string
+                prompt:
+                  type: string
+                icon_url:
+                  type: string
+                  format: uri
             mcp_servers:
               type: array
+              description: Mounted on this template only; never added to the global MCP list.
               items:
                 type: object
                 required:
@@ -553,14 +1190,46 @@ components:
                       type: object
                       required:
                       - name
-                      - approval
+                      - access
+                      - description
                       properties:
                         name:
+                          type: string
+                        access:
+                          enum:
+                          - read
+                          - write
+                        description:
                           type: string
                         approval:
                           enum:
                           - always
                           - never
+                          default: always
+                          description: Only a tool whose access is read may be never; a manifest that sets a write
+                            tool to never is refused as a whole.
+                        per_call:
+                          type: boolean
+                          default: false
+                          description: When true every call asks separately; plan approval cannot approve it in
+                            a batch.
+            skills:
+              type: array
+              maxItems: 20
+              description: Markdown text only; no scripts, hooks or attachments, and it cannot add tool permissions.
+              items:
+                type: object
+                required:
+                - name
+                - content
+                properties:
+                  name:
+                    type: string
+                  description:
+                    type: string
+                  content:
+                    type: string
+                    maxLength: 65536
             client_tools:
               type: array
               items:
@@ -568,11 +1237,25 @@ components:
                 properties:
                   name:
                     type: string
-        mates:
+            kind:
+              enum:
+              - agent
+              - bot
+              default: agent
+              description: bot needs the entitlement bots.create and adds one more line on the consent page; it
+                creates a Bot with private memory.
+        bots:
           type: array
           items:
             type: string
-          description: Mate ids the app asks for; the ones the user allows are stored in the grant's mates.
+          description: The bot ids the app wants to use; the consent page ticks them one by one and the result is
+            stored in the grant's bots.
+        entitlements:
+          type: array
+          items:
+            $ref: ./components.yaml#/components/schemas/Entitlement
+          description: The entitlements the app wants; they are written to the registration record and signed into
+            the token's ent only after Kiro reviews them.
         scopes:
           type: array
           items:
@@ -587,7 +1270,8 @@ components:
             - workflows:run
         requested_quota:
           type: object
-          description: Defaults apply when omitted.
+          description: Defaults apply when omitted. The default tier allows at most 50 credits a day; with quota.elevated,
+            at most 500; the user sets the final number on the consent page.
           properties:
             daily_credits:
               type: number
@@ -597,9 +1281,32 @@ components:
               type: integer
             max_turn_secs:
               type: integer
+        ui:
+          type: object
+          required:
+          - mode
+          properties:
+            mode:
+              enum:
+              - iframe
+              - components
+              - none
+            allowed_origins:
+              type: array
+              items:
+                type: string
+            context_fields:
+              type: array
+              items:
+                type: string
         callbacks:
           type: object
           properties:
+            redirect_uris:
+              type: array
+              items:
+                type: string
+                format: uri
             webhook_url:
               type: string
               format: uri
@@ -642,28 +1349,29 @@ x-crew-reused-routes:
   x-crew-stability: experimental
 - method: get
   path: /api/members
-  summary: 'Crewmate list: pick a mate'
+  summary: 'Bot list: pick a Bot'
   auth: cookie|token+owner-only
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/routes/agents.py:77
   x-crew-stability: experimental
+  x-crew-wrapped-by: GET /v1/crew/owner/bots
 - method: post
   path: /api/members/{slug}/thread
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token+owner-only
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/routes/agents.py:78
   x-crew-stability: experimental
 - method: get
   path: /api/members/{slug}/activity
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token+owner-only
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/routes/agents.py:81
   x-crew-stability: experimental
 - method: get
   path: /api/members/{slug}/briefing
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token+owner-only
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/routes/agents.py:83
@@ -1053,7 +1761,7 @@ x-crew-reused-routes:
     allow_always: allow_always (new)
 - method: get
   path: /api/members/{slug}/goals
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:343
@@ -1081,21 +1789,21 @@ x-crew-reused-routes:
   x-crew-stability: experimental
 - method: put
   path: /api/members/{slug}/goals/long-term
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:373
   x-crew-stability: experimental
 - method: put
   path: /api/members/{slug}/goals/key-results
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:377
   x-crew-stability: experimental
 - method: put
   path: /api/members/{slug}/goals/schedules
-  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  summary: 'Bot thread, goals, key results, check-ins: the owner manages a Bot'
   auth: cookie|token
   streaming: 'no'
   x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:381

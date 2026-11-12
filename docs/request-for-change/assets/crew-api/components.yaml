@@ -49,22 +49,37 @@ components:
             latest_seq:
               type: integer
               description: 'Always present on a 410 resync_required: resync starts here.'
-            supported:
-              type: object
-              description: Only on unsupported_api_version.
-              properties:
-                min:
-                  type: string
-                max:
-                  type: string
+            entitlement:
+              type: string
+              description: 'Only on entitlement_required: the missing entitlement, for example memory.read.'
+            retry_after:
+              type: integer
+              minimum: 0
+              description: 'Only on 429: seconds to wait before retrying, the same as the Retry-After header; not
+                sent with grant_paused.'
+            limit:
+              type: string
+              description: 'Only on concurrency_limit and on a wake''s rate_limited: which limit was hit. event_streams:
+                too many event streams, and the client should close the ones it does not use; turns: running and
+                queued turns are both full, and the client should retry after Retry-After; bot_wakes: this grant''s
+                wakes of this Bot in this hour are used up; grant_wakes: this grant''s total wakes in this hour
+                are used up. Open enum: later limits use this field too, and a client treats a value it does not
+                know as turns.'
+              enum:
+              - event_streams
+              - turns
+              - bot_wakes
+              - grant_wakes
             final:
               type: object
               description: 'Only on approval_already_resolved: the final result.'
               additionalProperties: true
     ErrorType:
       type: string
-      description: 'Open enum: clients must accept unknown values.'
-      enum:
+      description: 'Open enum: clients must accept unknown values. The examples are the known values, not all of
+        them.'
+      pattern: ^[a-z][a-z0-9_]*$
+      examples:
       - authentication_error
       - capability_error
       - conflict_error
@@ -76,16 +91,23 @@ components:
       - server_error
     ErrorCode:
       type: string
-      description: Open enum; see the error table in the RFC.
-      enum:
+      description: 'Open enum: a client treats an unknown code by its HTTP status. The examples are the known values,
+        not all of them; the table is in the RFC. stale_session_reauth (401): this first-party session signed in
+        before an owner was configured, the owner check does not accept it, and the user has to sign in again. grant_paused
+        is 403 (the user has to resume it; it is not rate limiting). prune_in_progress (503): the Bot roster is
+        being tidied; retry later.'
+      pattern: ^[a-z][a-z0-9_]*$
+      examples:
       - invalid_request
       - unsupported_parameter
       - unsupported_tool_type
-      - unsupported_api_version
       - invalid_token
       - token_revoked
+      - stale_session_reauth
       - third_party_disabled
+      - entitlement_required
       - insufficient_scope
+      - owner_only
       - approval_requires_first_party
       - tool_not_registered
       - connector_definition_changed
@@ -104,8 +126,12 @@ components:
       - quota_exhausted
       - grant_paused
       - notification_limited
+      - tools_removed
+      - tools_revoked_by_app
+      - structured_output_invalid
       - internal_error
       - instance_unavailable
+      - prune_in_progress
     Metadata:
       type: object
       maxProperties: 16
@@ -170,9 +196,9 @@ components:
           - type: string
           - type: array
             items:
-              $ref: '#/components/schemas/InputText'
-      description: '`input_image` and `input_file` are an open question; until settled only text is accepted and
-        other content types get 400.'
+              $ref: '#/components/schemas/InputContentPart'
+      description: 'Content is a string, or a list of content parts: `input_text` (phase 1), `input_image` and `input_file`
+        (phase 2). Images and files are allowed only in user messages.'
     FunctionCallOutputInput:
       type: object
       required:
@@ -259,14 +285,16 @@ components:
       required:
       - model
       - input
-      description: 'Rule: support what can be done and refuse the rest with 400, never silently ignore; sampling
-        parameters are the exception. `reasoning`, `include`, `truncation`, `prompt`, `service_tier`, `user`, `parallel_tool_calls`,
-        `max_tool_calls` and `top_logprobs` always get 400 `unsupported_parameter`.'
+      description: 'Rule: support what can be done; refuse with 400 what would change what runs or what is stored
+        (tools outside the manifest, `store: false`, unsupported tool types, `prompt`); accept and ignore fields
+        that only tune generation or do bookkeeping, and list them in the response''s `crew.ignored_parameters`.
+        Phase 2 fields (images, files, json_schema, reasoning summaries) open per agent as `GET /v1/crew/capabilities`
+        reports; when the agent does not support one, 422 `capability_unavailable`.'
       properties:
         model:
           type: string
-          description: 'For a delegated credential: the connector''s agent.id, or a mate id in the grant''s mates.
-            The owner may also pass a template name. Anything else gets 404 model_not_found.'
+          description: 'For a delegated credential: the template id of the app''s capability bundle, <client_id>/<bundle.agent.id>,
+            or a bot id in the grant''s bots. The owner may also pass a template name. Anything else gets 404 model_not_found.'
         input:
           oneOf:
           - type: string
@@ -291,8 +319,9 @@ components:
         background:
           type: boolean
           default: false
-          description: Returns queued at once. A background run started by a delegated credential ends incomplete
-            with reason grant_unverified if its grant can no longer be verified.
+          description: Returns queued at once. A background run started by a delegated credential holds a 5-minute
+            lease; if the grant can no longer be verified when the lease runs out, the run ends incomplete with
+            reason grant_unverified.
         metadata:
           $ref: '#/components/schemas/Metadata'
         tools:
@@ -310,13 +339,51 @@ components:
           description: Only true is accepted; false gets 400.
         text:
           type: object
+          description: 'Output format: `text` (phase 1) or `json_schema` (phase 2, only when the agent''s `structured_output`
+            is true).'
           properties:
             format:
-              type: object
-              properties:
-                type:
-                  const: text
-          description: Only text is supported; json_schema is an open question.
+              oneOf:
+              - type: object
+                required:
+                - type
+                properties:
+                  type:
+                    const: text
+              - type: object
+                required:
+                - type
+                - name
+                - schema
+                description: The crew validates the last reply against this schema; when it does not conform the
+                  whole turn is failed with error.code structured_output_invalid.
+                properties:
+                  type:
+                    const: json_schema
+                  name:
+                    type: string
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_-]+$
+                  description:
+                    type: string
+                  schema:
+                    type: object
+                    additionalProperties: true
+                    description: JSON Schema; at most 100 properties and 5 levels.
+                  strict:
+                    type: boolean
+                    default: true
+        reasoning:
+          type: object
+          description: 'Reasoning summary (phase 2), off by default: without this field no reasoning item is returned.
+            Summaries only, never the raw reasoning. A level that is not in the agent''s `reasoning_summary` is
+            422 capability_unavailable.'
+          properties:
+            summary:
+              enum:
+              - auto
+              - concise
+              - detailed
         temperature:
           type: number
           description: Accepted and ignored; listed in crew.ignored_parameters.
@@ -400,8 +467,8 @@ components:
       - id
       - server_label
       - name
-      description: Arguments and output are summaries only. A delegated credential sees only its own connector's
-        tool names; built-in tools show as "internal tool".
+      description: Arguments and output are summaries only, as in the crew log. A delegated credential sees only
+        its own connector's tool names; built-in tools show as "internal tool".
       properties:
         type:
           const: mcp_call
@@ -444,12 +511,18 @@ components:
         arguments:
           type: string
           description: Summary.
+        approval_url:
+          type: string
+          format: uri
+          description: Address of the approval page (a proposal). The app hands it to the user, who signs in in
+            a small window under the Kiro Crew host name and answers there. The app itself cannot answer.
     OutputItem:
       oneOf:
       - $ref: '#/components/schemas/MessageItem'
       - $ref: '#/components/schemas/FunctionCallItem'
       - $ref: '#/components/schemas/McpCallItem'
       - $ref: '#/components/schemas/McpApprovalRequestItem'
+      - $ref: '#/components/schemas/ReasoningItem'
       discriminator:
         propertyName: type
         mapping:
@@ -457,6 +530,7 @@ components:
           function_call: '#/components/schemas/FunctionCallItem'
           mcp_call: '#/components/schemas/McpCallItem'
           mcp_approval_request: '#/components/schemas/McpApprovalRequestItem'
+          reasoning: '#/components/schemas/ReasoningItem'
     Usage:
       type:
       - object
@@ -475,9 +549,11 @@ components:
           - 'null'
           description: 'Added by Crew: present only on engines that bill in credits.'
     ResponseStatus:
+      description: requires_action means it is waiting for the user to answer an approval (output has an mcp_approval_request).
       enum:
       - queued
       - in_progress
+      - requires_action
       - completed
       - failed
       - cancelled
@@ -488,8 +564,6 @@ components:
       - tool_call_limit
       - turn_time_limit
       - grant_unverified
-      - approval_expired
-      - cancelled
       description: Open enum.
     Response:
       type: object
@@ -550,6 +624,10 @@ components:
               type: array
               items:
                 type: string
+      description: 'Retention: stored responses (with the stream events used to resume), the event index, resolved
+        approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days`
+        in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. After the
+        retention period GET returns 404 not_found.'
     ResponseStreamEvent:
       type: object
       required:
@@ -558,9 +636,10 @@ components:
       description: 'SSE events of `POST /v1/responses` (stream=true) and `GET /v1/responses/{id}?stream=true`. Each
         SSE `event:` line carries the type and each `data:` line is this object as JSON. `sequence_number` increases
         only within this turn''s stream and is used by `starting_after`; it is unrelated to the event stream''s
-        `seq`. Not sent: `response.reasoning_*`, `response.refusal.*`, `response.output_text.annotation.added`,
-        `response.web_search_call.*`, `response.file_search_call.*`, `response.code_interpreter_call.*`, `response.image_generation_call.*`.
-        Clients skip `crew.*` events they do not know.'
+        `seq`. `response.reasoning_summary_*` is sent only when the request carries reasoning.summary (phase 2).
+        Not sent: `response.reasoning_text.*`, `response.refusal.*`, `response.output_text.annotation.added`, `response.web_search_call.*`,
+        `response.file_search_call.*`, `response.code_interpreter_call.*`, `response.image_generation_call.*`. Clients
+        skip `crew.*` events they do not know.'
       properties:
         type:
           enum:
@@ -581,6 +660,10 @@ components:
           - response.mcp_call.in_progress
           - response.mcp_call.completed
           - response.mcp_call.failed
+          - response.reasoning_summary_part.added
+          - response.reasoning_summary_part.done
+          - response.reasoning_summary_text.delta
+          - response.reasoning_summary_text.done
           - error
           - crew.notice
         sequence_number:
@@ -615,6 +698,9 @@ components:
           - info
           - warning
           description: Only on crew.notice.
+        summary_index:
+          type: integer
+          description: Only on response.reasoning_summary_*.
       x-crew-sse-events:
       - response.created
       - response.queued
@@ -633,6 +719,10 @@ components:
       - response.mcp_call.in_progress
       - response.mcp_call.completed
       - response.mcp_call.failed
+      - response.reasoning_summary_part.added
+      - response.reasoning_summary_part.done
+      - response.reasoning_summary_text.delta
+      - response.reasoning_summary_text.done
       - error
       - crew.notice
     Conversation:
@@ -741,7 +831,7 @@ components:
             kind:
               enum:
               - agent
-              - mate
+              - bot
               - connector
             name:
               type: string
@@ -771,8 +861,8 @@ components:
           properties:
             current:
               type: string
-            min_supported:
-              type: string
+          description: current is this Kiro Crew's Crew API minor version, for display and troubleshooting only.
+            Clients decide what they can use from features and agents, not by comparing version numbers.
         features:
           type: object
           additionalProperties:
@@ -794,6 +884,9 @@ components:
               type: boolean
             webhooks:
               type: boolean
+            file_uploads:
+              type: boolean
+              description: Whether POST /v1/files can be used (phase 2).
         agents:
           type: object
           additionalProperties:
@@ -806,9 +899,24 @@ components:
               input_modalities:
                 type: array
                 items:
-                  type: string
+                  enum:
+                  - text
+                  - image
+                  - file
+                description: The inputs this agent accepts; only text in phase 1.
               resumable_elsewhere:
                 type: boolean
+              structured_output:
+                type: boolean
+                description: 'Whether text.format: json_schema can be used.'
+              reasoning_summary:
+                type: array
+                items:
+                  enum:
+                  - auto
+                  - concise
+                  - detailed
+                description: The reasoning summary levels it can give; empty means none.
         limits:
           type: object
           properties:
@@ -822,6 +930,12 @@ components:
               type: integer
         quota:
           $ref: '#/components/schemas/Quota'
+        retention_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: This crew's retention in days (30 by default). It decides how far back cursors, stream resumption
+            and files reach.
     Quota:
       type: object
       description: This grant's quota and usage.
@@ -844,16 +958,24 @@ components:
       type: object
       required:
       - id
+      - form
       properties:
         id:
           type: string
+        form:
+          enum:
+          - local
+          - self_hosted
+          - managed
+          - team
         display_name:
           type: string
         timezone:
           type: string
         api_version:
           type: string
-      description: 503 instance_unavailable when the crew is offline.
+      description: Whether the crew is online is answered in front of the gateway (503 instance_unavailable when
+        it is offline).
     Event:
       type: object
       required:
@@ -867,7 +989,9 @@ components:
       properties:
         seq:
           type: integer
-          description: Strictly increasing within the stream; gaps are allowed (filtered events still take a number).
+          description: Strictly increasing within this stream. A conversation stream has one numbering per conversation;
+            the instance stream is numbered separately for each grant, so an app cannot read activity elsewhere
+            from the numbers. Gaps can still occur within one stream, and a client must not treat a gap as a loss.
         event_id:
           type: string
           pattern: ^evt_
@@ -880,11 +1004,15 @@ components:
           - turn.started
           - message.created
           - tool.called
+          - tool.completed
+          - plan.updated
           - approval.requested
           - approval.decided
           - turn.completed
           - grant.revoked
           - notice
+          - bot.reply
+          - bot.turn.completed
           description: Open enum.
         conversation:
           type:
@@ -937,10 +1065,57 @@ components:
           data:
             type: object
             properties:
+              call_id:
+                type: string
+                description: The id of this tool call; tool.completed uses the same id.
               tool:
                 type: string
               summary:
                 type: string
+        tool.completed:
+          stream: conversation stream
+          data:
+            type: object
+            properties:
+              call_id:
+                type: string
+              tool:
+                type: string
+              status:
+                enum:
+                - completed
+                - failed
+                description: The status words are the same as ACP's. The tool's returned content is not included.
+              reason:
+                enum:
+                - cancelled
+                - refused
+                - unknown
+                description: Present only when failed and the crew log recorded one of these three; this mapping
+                  is a proposal.
+        plan.updated:
+          stream: conversation stream
+          data:
+            type: object
+            properties:
+              items:
+                type: array
+                description: The agent's whole task list for this turn; the full list is sent every time and the
+                  client replaces its copy.
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    text:
+                      type: string
+                    status:
+                      enum:
+                      - pending
+                      - in_progress
+                      - completed
+                      description: Only pending and completed occur today; in_progress is kept for engines that
+                        can report it later.
         approval.requested:
           stream: conversation stream, plus a hint on the instance stream
           data:
@@ -957,6 +1132,9 @@ components:
                 $ref: '#/components/schemas/Timestamp'
               answerable_by_you:
                 type: boolean
+              approval_url:
+                type: string
+                format: uri
         approval.decided:
           stream: conversation stream, plus a hint on the instance stream
           data:
@@ -1013,6 +1191,46 @@ components:
                 - warning
               text:
                 type: string
+        bot.reply:
+          stream: instance stream, only to the grant that woke this turn
+          data:
+            type: object
+            properties:
+              bot:
+                type: string
+              wake_ref:
+                type: string
+              item_id:
+                type: string
+                description: Read the body with GET /v1/conversations/{id}/items, which needs conversations:read;
+                  the event's conversation is this Bot's app-room conversation.
+        bot.turn.completed:
+          stream: instance stream, only to the grant that woke this turn
+          data:
+            type: object
+            properties:
+              bot:
+                type: string
+              wake_ref:
+                type: string
+              result:
+                enum:
+                - completed
+                - failed
+                - cancelled
+                - incomplete
+              usage:
+                type: object
+                properties:
+                  input_tokens:
+                    type: integer
+                  output_tokens:
+                    type: integer
+                  credits:
+                    type:
+                    - number
+                    - 'null'
+                    description: null when the engine does not bill in credits.
     EventPage:
       type: object
       required:
@@ -1094,6 +1312,11 @@ components:
               type: string
         answerable_by_you:
           type: boolean
+        approval_url:
+          type: string
+          format: uri
+          description: Address of the approval page (a proposal). The app hands it to the user, who signs in in
+            a small window under the Kiro Crew host name and answers there. The app itself cannot answer.
     ApprovalList:
       allOf:
       - $ref: '#/components/schemas/ListEnvelope'
@@ -1113,18 +1336,23 @@ components:
           enum:
           - allow
           - deny
-    Mate:
+    Bot:
       type: object
       required:
       - id
       - object
       - name
+      - status
+      description: 'Roster and status, these fields only. It is the cut-down view apps get of the Owner tier''s
+        BotRosterRow (GET /v1/crew/owner/bots): only id, name, description, avatar and status, and only the grant''s
+        Bot range. Private chat (including the last line), briefing, rules, conversations and private memory are
+        never here, and no Public operation returns them.'
       properties:
         id:
           type: string
           description: Also the model value for /v1/responses.
         object:
-          const: mate
+          const: bot
         name:
           type: string
         description:
@@ -1133,7 +1361,88 @@ components:
           type:
           - string
           - 'null'
-    MateList:
+        status:
+          type: string
+          enum:
+          - idle
+          - working
+          description: working means this Bot has a turn running right now (in whichever conversation). Open enum;
+            a client treats an unknown value as idle.
+        created_by_app:
+          type: boolean
+          description: 'true: this app created the Bot (bundle.kind bot or bots:create), so it is in the app_created
+            range.'
+    BotWakeRequest:
+      type: object
+      required:
+      - ref
+      additionalProperties: false
+      description: 'Only ref. There is no text field: the gateway writes the reminder.'
+      properties:
+        ref:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,64}$
+          description: The number of that message in the app's own ledger. This character set cannot hold a sentence.
+    BotWakeUsage:
+      type: object
+      description: Usage at the time of the wake, without this turn itself (that arrives with bot.turn.completed).
+        Phase 1 has no grant quota, so credits_used_today and daily_credits are null.
+      required:
+      - bot_wakes_this_hour
+      - bot_wake_limit_per_hour
+      - grant_wakes_this_hour
+      - grant_wake_limit_per_hour
+      properties:
+        bot_wakes_this_hour:
+          type: integer
+          description: How many times this grant woke this Bot in this hour, including this one.
+        bot_wake_limit_per_hour:
+          type: integer
+          description: 20 by default (a proposal); the user can lower it.
+        grant_wakes_this_hour:
+          type: integer
+        grant_wake_limit_per_hour:
+          type: integer
+          description: 120 by default (a proposal); the user can lower it.
+        credits_used_today:
+          type:
+          - number
+          - 'null'
+        daily_credits:
+          type:
+          - number
+          - 'null'
+    BotWake:
+      type: object
+      required:
+      - object
+      - id
+      - bot
+      - ref
+      - status
+      - usage
+      properties:
+        object:
+          const: bot.wake
+        id:
+          type: string
+          pattern: ^wake_
+        bot:
+          type: string
+        ref:
+          type: string
+          description: This wake's ref. After a merge, the Bot sees the latest ref when it wakes.
+        status:
+          type: string
+          enum:
+          - queued
+          - coalesced
+          - deferred
+          description: 'queued: a new turn was queued; coalesced: merged into a turn already queued; deferred: the
+            Bot is not online and runs it when it is back.'
+        usage:
+          $ref: '#/components/schemas/BotWakeUsage'
+    BotList:
       allOf:
       - $ref: '#/components/schemas/ListEnvelope'
       - type: object
@@ -1141,7 +1450,7 @@ components:
           data:
             type: array
             items:
-              $ref: '#/components/schemas/Mate'
+              $ref: '#/components/schemas/Bot'
     KeyResult:
       type: object
       required:
@@ -1176,14 +1485,14 @@ components:
                 $ref: '#/components/schemas/Timestamp'
               value:
                 type: string
-    MateGoals:
+    BotGoals:
       type: object
       required:
-      - mate
+      - bot
       - goals
       - key_results
       properties:
-        mate:
+        bot:
           type: string
         goals:
           type: array
@@ -1200,14 +1509,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/KeyResult'
-    MateReport:
+    BotReport:
       type: object
       required:
       - id
       - kind
       - title
       - created_at
-      description: mates:read is enough to read report bodies; artifacts:read is not needed.
+      description: bots:read is enough to read report bodies; artifacts:read is not needed.
       properties:
         id:
           type: string
@@ -1226,7 +1535,7 @@ components:
         content:
           type: string
           description: Returned with include=content.
-    MateReportList:
+    BotReportList:
       allOf:
       - $ref: '#/components/schemas/ListEnvelope'
       - type: object
@@ -1234,7 +1543,7 @@ components:
           data:
             type: array
             items:
-              $ref: '#/components/schemas/MateReport'
+              $ref: '#/components/schemas/BotReport'
     ArtifactKind:
       enum:
       - markdown
@@ -1243,6 +1552,8 @@ components:
       - svg
       - json
       - text
+      description: html and widget artifacts created by third parties are shown in the Kiro panel inside a frame
+        that cannot run scripts, always labelled "from <app name>".
     Artifact:
       type: object
       required:
@@ -1399,8 +1710,8 @@ components:
       type: object
       required:
       - title
-      description: Goes to the dashboard notification bell only, labeled with the app name. Other channels such
-        as chat apps need the owner.
+      description: Dashboard bell only; the panel always labels it "from <app name>" and the app cannot change that
+        label. Channels such as Slack need the owner.
       properties:
         title:
           type: string
@@ -1517,13 +1828,15 @@ components:
       - model
       - message
       - schedule
-      description: Runs only an agent message; scripts and shell commands are not available.
+      description: Runs only an agent message; scripts and shell commands are not available (the script and command
+        modes of today's cron are not opened).
       properties:
         name:
           type: string
         model:
           type: string
-          description: The connector's agent id or an allowed mate.
+          description: The agent id of this app's capability bundle, or a Bot id the grant allows. With a Bot, every
+            trigger runs under the rules for conversations that use a Bot as the model.
         message:
           type: string
         schedule:
@@ -1746,7 +2059,425 @@ components:
           type: string
         deleted:
           const: true
+    ToolError:
+      type: object
+      required:
+      - isError
+      - content
+      - structuredContent
+      description: 'Not an HTTP response: the MCP tool result the crew''s MCP proxy returns when a capability bundle
+        was removed, the site took its token back or the grant is paused.'
+      properties:
+        isError:
+          const: true
+        content:
+          type: array
+          items:
+            type: object
+            required:
+            - type
+            - text
+            properties:
+              type:
+                const: text
+              text:
+                type: string
+        structuredContent:
+          type: object
+          required:
+          - error
+          properties:
+            error:
+              type: object
+              required:
+              - type
+              - code
+              properties:
+                type:
+                  $ref: '#/components/schemas/ErrorType'
+                code:
+                  enum:
+                  - tools_removed
+                  - tools_revoked_by_app
+                  - grant_paused
+      example:
+        isError: true
+        content:
+        - type: text
+          text: Removed from this crew; nothing was sent to Notely.
+        structuredContent:
+          error:
+            type: not_found_error
+            code: tools_removed
+    Entitlement:
+      enum:
+      - memory.read
+      - memory.global
+      - knowledge.read
+      - workflows.run
+      - schedules.manage
+      - notifications.send
+      - quota.elevated
+      - bots.create
+      description: 'What Kiro allows an app to ask for. It is a second gate beside scope: an entitlement decides
+        whether the app may ask, a scope whether the user granted it. The crew checks ent from phase 1 on; phase
+        1 has only local-development entitlements, which an owner sets for apps they registered themselves; review
+        by Kiro starts in phase 2. Open enum.'
+      x-crew-meanings:
+        memory.read: May request the scope memory:read
+        memory.global: May let the user set the grant's memory_global to true (memory.read and memory:read are also
+          needed)
+        knowledge.read: May request the scope knowledge:read
+        workflows.run: May request the scope workflows:run
+        schedules.manage: May request the scope schedules:manage
+        notifications.send: May request the scope notifications:send (push notifications)
+        quota.elevated: The elevated tier, at most 500 credits a day (the manifest's requested_quota)
+        bots.create: The bundle may have kind bot and create a Bot with private memory in the user's crew.
+    InputImage:
+      type: object
+      description: Image input (phase 2). Exactly one of `image_url` and `file_id`. When the agent's `input_modalities`
+        does not include image, 422 capability_unavailable.
+      oneOf:
+      - type: object
+        required:
+        - type
+        - image_url
+        properties:
+          type:
+            const: input_image
+          detail:
+            enum:
+            - auto
+            - low
+            - high
+            default: auto
+          image_url:
+            type: string
+            description: 'An https address or a data: URI; the gateway fetches it itself and does not follow internal
+              addresses.'
+      - type: object
+        required:
+        - type
+        - file_id
+        properties:
+          type:
+            const: input_image
+          detail:
+            enum:
+            - auto
+            - low
+            - high
+            default: auto
+          file_id:
+            type: string
+            pattern: ^file_
+            description: A file uploaded with POST /v1/files; only one this grant uploaded.
+    InputFile:
+      type: object
+      required:
+      - type
+      - file_id
+      description: File input (phase 2). Only file_id is accepted. When the agent's `input_modalities` does not
+        include file, 422 capability_unavailable.
+      properties:
+        type:
+          const: input_file
+        file_id:
+          type: string
+          pattern: ^file_
+          description: A file uploaded with POST /v1/files; only one this grant uploaded.
+    InputContentPart:
+      oneOf:
+      - $ref: '#/components/schemas/InputText'
+      - $ref: '#/components/schemas/InputImage'
+      - $ref: '#/components/schemas/InputFile'
+      discriminator:
+        propertyName: type
+        mapping:
+          input_text: '#/components/schemas/InputText'
+          input_image: '#/components/schemas/InputImage'
+          input_file: '#/components/schemas/InputFile'
+    ReasoningItem:
+      type: object
+      required:
+      - type
+      - id
+      - summary
+      description: Reasoning summary (phase 2). Present only when the request carries reasoning.summary.
+      properties:
+        type:
+          const: reasoning
+        id:
+          type: string
+        status:
+          enum:
+          - in_progress
+          - completed
+          - incomplete
+        summary:
+          type: array
+          items:
+            type: object
+            required:
+            - type
+            - text
+            properties:
+              type:
+                const: summary_text
+              text:
+                type: string
+    File:
+      type: object
+      required:
+      - id
+      - object
+      - bytes
+      - created_at
+      - expires_at
+      - filename
+      - purpose
+      properties:
+        id:
+          type: string
+          pattern: ^file_
+        object:
+          const: file
+        bytes:
+          type: integer
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        filename:
+          type: string
+        mime_type:
+          type: string
+        purpose:
+          const: user_data
+    CreateFileRequest:
+      type: object
+      required:
+      - file
+      - purpose
+      properties:
+        file:
+          type: string
+          format: binary
+          description: One file, at most 20 MB.
+        purpose:
+          const: user_data
+    BotRoster:
+      type: object
+      required:
+      - members
+      description: The full Bot roster as the owner sees it (GET /v1/crew/owner/bots, which wraps GET /api/members).
+        One row per global Bot, with its private chat with the owner, its configuration and its live state. The
+        Public GET /v1/crew/bots is the cut-down view apps get (Bot).
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/BotRosterRow'
+          description: Field names follow what GET /api/members returns today; the wrapper does not change the shape.
+    BotRosterRow:
+      type: object
+      required:
+      - name
+      - slug
+      - slot_key
+      - running
+      additionalProperties: true
+      description: One roster row. The fields are the ones GET /api/members returns today; the Owner tier is experimental,
+        so fields can be added later. Free text other than name and slug goes through the gateway's redaction and
+        can be replaced as a whole.
+      properties:
+        name:
+          type: string
+          description: The Bot's name; every per-Bot route uses it as the key.
+        slug:
+          type: string
+          description: The path-safe form of the name.
+        slot_key:
+          type: string
+          description: The session key of the private chat with the owner; an empty string while that chat has not
+            been opened.
+        running:
+          type: boolean
+          description: The private chat has a turn running right now.
+        display_name:
+          type: string
+        description:
+          type: string
+        kiro_agent:
+          type: string
+        workspace:
+          type: string
+        memory_store:
+          type: string
+        memory_version:
+          type:
+          - integer
+          - 'null'
+        memory_owner:
+          type: string
+        model:
+          type: string
+        reasoning_effort:
+          type: string
+        approval_mode:
+          type: string
+        worker_model:
+          type: string
+        worker_reasoning_effort:
+          type: string
+        dynamic_capabilities:
+          type: boolean
+        avatar:
+          type: object
+        source:
+          type: string
+        starred:
+          type: boolean
+        star_order:
+          type: integer
+        dashboard_created:
+          type: boolean
+        last_active_ts:
+          type: number
+        last_message:
+          type: string
+          description: The last line of the private chat. Owner tier only; the Public Bot never has it.
+        has_dm_message:
+          type: boolean
+        projections:
+          type: object
+    GrantSelf:
+      type: object
+      required:
+      - id
+      - object
+      - client_id
+      - kind
+      - scopes
+      - status
+      - created_at
+      description: 'The app''s view of its own grant: which scopes it has, which Bots it may use, its quota and
+        status, and the reason when it is paused. Only this grant; other apps are not visible.'
+      properties:
+        id:
+          type: string
+          pattern: ^grt_
+        object:
+          const: grant
+        client_id:
+          type: string
+        kind:
+          enum:
+          - remote
+          - local
+          description: 'remote: issued by the Kiro authorization service; local: local authorization, issued by
+            this gateway.'
+        scopes:
+          type: array
+          items:
+            type: string
+        entitlements:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entitlement'
+        bots:
+          type: object
+          properties:
+            mode:
+              enum:
+              - selected
+              - app_created
+              - all
+            ids:
+              type: array
+              items:
+                type: string
+        status:
+          enum:
+          - active
+          - throttled
+          - paused
+          description: After a revocation the token stops working and this object cannot be read (401 token_revoked).
+        pause:
+          type:
+          - object
+          - 'null'
+          description: 'Only when paused: who paused it, a reason a person can read, and when. The app uses it to
+            tell the user why it stopped.'
+          properties:
+            by:
+              enum:
+              - monitor
+              - user
+              - reconsent
+              - entitlement
+            reason:
+              type: string
+            at:
+              $ref: '#/components/schemas/Timestamp'
+        quota:
+          $ref: '#/components/schemas/Quota'
+        memory_global:
+          type: boolean
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    CreateBotRequest:
+      type: object
+      required:
+      - template
+      additionalProperties: false
+      description: Create a helper Bot. The prompt and tools come from a template in the manifest that the user
+        consented to; the request cannot carry prompt text or choose a model.
+      properties:
+        template:
+          type: string
+          description: A template name in the manifest's bundle.bot_templates.
+        name:
+          type: string
+          maxLength: 80
+          description: Display name; the template's name when omitted.
+    RecallRequest:
+      type: object
+      required:
+      - query
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          maxLength: 2000
+          description: Search query.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+    KnowledgeSearchRequest:
+      type: object
+      required:
+      - query
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          maxLength: 2000
+          description: Search query.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
   headers:
+    WWW-Authenticate:
+      description: Sent on every 401. The value is `Bearer error="invalid_token"` (RFC 6750). It tells the client
+        to get a new credential, as opposed to lacking permission.
+      schema:
+        type: string
+        example: Bearer error="invalid_token"
     X-Request-Id:
       description: One id per request, supplied by the caller or an intermediary, or generated by the gateway. Also
         written to the audit log and the error body.
@@ -1777,10 +2508,10 @@ components:
     X-Crew-Signature:
       description: 'Callback signature: sha256=<hex>, where <hex> is the lowercase hex HMAC-SHA256 of timestamp
         + "." + raw_body (timestamp is the X-Crew-Timestamp value, raw_body the exact request body) under the app''s
-        webhook secret. The secret is issued once when the app is registered and can be rotated; how it is issued
-        is out of scope for this API.'
+        webhook secret. The secret is issued once when the app is registered and can be rotated.'
       schema:
         type: string
+        pattern: ^sha256=[0-9a-f]{64}$
     X-Crew-Timestamp:
       description: Callback time in Unix seconds. Receivers reject anything older than 5 minutes.
       schema:
@@ -1794,8 +2525,8 @@ components:
       name: Crew-API-Version
       in: header
       required: false
-      description: The minor version the client declares. Without it, the server's lowest supported minor version
-        is assumed.
+      description: The minor version the client was written for. Without it, the server answers with 1.0 behaviour.
+        The server never refuses a request because this version is old.
       schema:
         type: string
         example: '1.3'
@@ -1826,8 +2557,9 @@ components:
       name: Idempotency-Key
       in: header
       required: false
-      description: Accepted on POSTs that spend credits. Within one grant, a retry with the same key within 24 hours
-        returns the first result and is not charged again; the same key with a different body gets 422 idempotency_key_reused.
+      description: Accepted by every Public POST. Within one grant, a retry with the same key within 24 hours returns
+        the first result (the same object id) and is neither run again nor charged again; the same key with a different
+        body is 422 idempotency_key_reused.
       schema:
         type: string
         minLength: 1
@@ -1843,8 +2575,8 @@ components:
         default: desc
   responses:
     BadRequest:
-      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type, unsupported_api_version.
-        Carries X-Crew-Quota-* on delegated-credential requests.'
+      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type. Carries X-Crew-Quota-* on
+        delegated-credential requests.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -1888,21 +2620,9 @@ components:
                   message: An unsupported tool type.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
-            unsupported_api_version:
-              summary: The client's declared minor version is below the lowest the server supports.
-              value:
-                error:
-                  type: invalid_request_error
-                  code: unsupported_api_version
-                  message: The client's declared minor version is below the lowest the server supports.
-                  param: null
-                  request_id: req_01JBXQ4K7Y2M
-                  supported:
-                    min: '1.2'
-                    max: '1.4'
     BadRequestNoQuota:
-      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type, unsupported_api_version.
-        For embed-credential endpoints: no quota headers.'
+      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type. For embed-credential endpoints:
+        no quota headers.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -1940,18 +2660,6 @@ components:
                   message: An unsupported tool type.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
-            unsupported_api_version:
-              summary: The client's declared minor version is below the lowest the server supports.
-              value:
-                error:
-                  type: invalid_request_error
-                  code: unsupported_api_version
-                  message: The client's declared minor version is below the lowest the server supports.
-                  param: null
-                  request_id: req_01JBXQ4K7Y2M
-                  supported:
-                    min: '1.2'
-                    max: '1.4'
     Unauthorized:
       description: '401: invalid_token, token_revoked, third_party_disabled. Carries X-Crew-Quota-* on delegated-credential
         requests.'
@@ -1960,6 +2668,8 @@ components:
           $ref: '#/components/headers/X-Request-Id'
         Crew-API-Version:
           $ref: '#/components/headers/Crew-API-Version'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWW-Authenticate'
         X-Crew-Quota-Limit:
           $ref: '#/components/headers/X-Crew-Quota-Limit'
         X-Crew-Quota-Remaining:
@@ -2006,6 +2716,8 @@ components:
           $ref: '#/components/headers/X-Request-Id'
         Crew-API-Version:
           $ref: '#/components/headers/Crew-API-Version'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWW-Authenticate'
       content:
         application/json:
           schema:
@@ -2039,8 +2751,9 @@ components:
                   param: null
                   request_id: req_01JBXQ4K7Y2M
     Forbidden:
-      description: '403: insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed,
-        use_responses_api. Carries X-Crew-Quota-* on delegated-credential requests.'
+      description: '403: grant_paused, entitlement_required, insufficient_scope, approval_requires_first_party,
+        tool_not_registered, connector_definition_changed, use_responses_api. Carries X-Crew-Quota-* on delegated-credential
+        requests.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -2057,13 +2770,25 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           examples:
+            entitlement_required:
+              summary: The app lacks the entitlement this capability needs; the entitlement field of the error body
+                names it. Checked before insufficient_scope.
+              value:
+                error:
+                  type: permission_error
+                  code: entitlement_required
+                  message: The app lacks the entitlement this capability needs; the entitlement field of the error
+                    body names it. Checked before insufficient_scope.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  entitlement: memory.read
             insufficient_scope:
-              summary: Missing scope, or a delegated credential called a non-Public endpoint.
+              summary: Missing scope; the message names it.
               value:
                 error:
                   type: permission_error
                   code: insufficient_scope
-                  message: Missing scope, or a delegated credential called a non-Public endpoint.
+                  message: Missing scope; the message names it.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             approval_requires_first_party:
@@ -2085,12 +2810,14 @@ components:
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             connector_definition_changed:
-              summary: The manifest's security-relevant part changed and the user has not re-consented.
+              summary: The manifest changed its security part and the user has not consented again (grant pause.by
+                reconsent); lead the user back to the consent page.
               value:
                 error:
                   type: permission_error
                   code: connector_definition_changed
-                  message: The manifest's security-relevant part changed and the user has not re-consented.
+                  message: The manifest changed its security part and the user has not consented again (grant pause.by
+                    reconsent); lead the user back to the consent page.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             use_responses_api:
@@ -2102,9 +2829,19 @@ components:
                   message: A delegated credential called /v1/chat/completions.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
+            grant_paused:
+              summary: This grant is paused and the user has to resume it; do not retry automatically.
+              value:
+                error:
+                  type: permission_error
+                  code: grant_paused
+                  message: This grant is paused and the user has to resume it; do not retry automatically.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
     ForbiddenNoQuota:
-      description: '403: insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed,
-        use_responses_api. For embed-credential endpoints: no quota headers.'
+      description: '403: grant_paused, entitlement_required, insufficient_scope, approval_requires_first_party,
+        tool_not_registered, connector_definition_changed, use_responses_api. For embed-credential endpoints: no
+        quota headers.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -2115,13 +2852,25 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           examples:
+            entitlement_required:
+              summary: The app lacks the entitlement this capability needs; the entitlement field of the error body
+                names it. Checked before insufficient_scope.
+              value:
+                error:
+                  type: permission_error
+                  code: entitlement_required
+                  message: The app lacks the entitlement this capability needs; the entitlement field of the error
+                    body names it. Checked before insufficient_scope.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  entitlement: memory.read
             insufficient_scope:
-              summary: Missing scope, or a delegated credential called a non-Public endpoint.
+              summary: Missing scope; the message names it.
               value:
                 error:
                   type: permission_error
                   code: insufficient_scope
-                  message: Missing scope, or a delegated credential called a non-Public endpoint.
+                  message: Missing scope; the message names it.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             approval_requires_first_party:
@@ -2143,12 +2892,14 @@ components:
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             connector_definition_changed:
-              summary: The manifest's security-relevant part changed and the user has not re-consented.
+              summary: The manifest changed its security part and the user has not consented again (grant pause.by
+                reconsent); lead the user back to the consent page.
               value:
                 error:
                   type: permission_error
                   code: connector_definition_changed
-                  message: The manifest's security-relevant part changed and the user has not re-consented.
+                  message: The manifest changed its security part and the user has not consented again (grant pause.by
+                    reconsent); lead the user back to the consent page.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             use_responses_api:
@@ -2158,6 +2909,15 @@ components:
                   type: permission_error
                   code: use_responses_api
                   message: A delegated credential called /v1/chat/completions.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            grant_paused:
+              summary: This grant is paused and the user has to resume it; do not retry automatically.
+              value:
+                error:
+                  type: permission_error
+                  code: grant_paused
+                  message: This grant is paused and the user has to resume it; do not retry automatically.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
     NotFound:
@@ -2517,8 +3277,8 @@ components:
                   param: null
                   request_id: req_01JBXQ4K7Y2M
     TooManyRequests:
-      description: '429: rate_limited, concurrency_limit, quota_exhausted, grant_paused, notification_limited. Carries
-        X-Crew-Quota-* on delegated-credential requests.'
+      description: '429: rate_limited, concurrency_limit, quota_exhausted, notification_limited. Carries X-Crew-Quota-*
+        on delegated-credential requests.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -2538,23 +3298,37 @@ components:
             $ref: '#/components/schemas/Error'
           examples:
             rate_limited:
-              summary: Too many requests from this app; slow down and retry after Retry-After.
+              summary: Too many requests from this app; the request did not reach the gateway. Retry after Retry-After.
               value:
                 error:
                   type: rate_limit_error
                   code: rate_limited
-                  message: Too many requests from this app; slow down and retry after Retry-After.
+                  message: Too many requests from this app; the request did not reach the gateway. Retry after Retry-After.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             concurrency_limit:
-              summary: The grant's or instance's third-party concurrency and queue are both full.
+              summary: Running and queued third-party turns are both full for this grant or this instance (limit
+                turns); retry after Retry-After.
               value:
                 error:
                   type: rate_limit_error
                   code: concurrency_limit
-                  message: The grant's or instance's third-party concurrency and queue are both full.
+                  message: Running and queued third-party turns are both full for this grant or this instance.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
+                  retry_after: 5
+                  limit: turns
+            concurrency_limit_event_streams:
+              summary: Too many event streams (limit event_streams); close the ones not in use first.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: concurrency_limit
+                  message: Too many event streams.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  retry_after: 5
+                  limit: event_streams
             quota_exhausted:
               summary: The grant's quota is used up.
               value:
@@ -2562,15 +3336,6 @@ components:
                   type: rate_limit_error
                   code: quota_exhausted
                   message: The grant's quota is used up.
-                  param: null
-                  request_id: req_01JBXQ4K7Y2M
-            grant_paused:
-              summary: The grant is paused and stays paused until the user resumes it.
-              value:
-                error:
-                  type: rate_limit_error
-                  code: grant_paused
-                  message: The grant is paused and stays paused until the user resumes it.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             notification_limited:
@@ -2583,8 +3348,8 @@ components:
                   param: null
                   request_id: req_01JBXQ4K7Y2M
     TooManyRequestsNoQuota:
-      description: '429: rate_limited, concurrency_limit, quota_exhausted, grant_paused, notification_limited. For
-        embed-credential endpoints: no quota headers.'
+      description: '429: rate_limited, concurrency_limit, quota_exhausted, notification_limited. For embed-credential
+        endpoints: no quota headers.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/X-Request-Id'
@@ -2598,23 +3363,37 @@ components:
             $ref: '#/components/schemas/Error'
           examples:
             rate_limited:
-              summary: Too many requests from this app; slow down and retry after Retry-After.
+              summary: Too many requests from this app; the request did not reach the gateway. Retry after Retry-After.
               value:
                 error:
                   type: rate_limit_error
                   code: rate_limited
-                  message: Too many requests from this app; slow down and retry after Retry-After.
+                  message: Too many requests from this app; the request did not reach the gateway. Retry after Retry-After.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             concurrency_limit:
-              summary: The grant's or instance's third-party concurrency and queue are both full.
+              summary: Running and queued third-party turns are both full for this grant or this instance (limit
+                turns); retry after Retry-After.
               value:
                 error:
                   type: rate_limit_error
                   code: concurrency_limit
-                  message: The grant's or instance's third-party concurrency and queue are both full.
+                  message: Running and queued third-party turns are both full for this grant or this instance.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
+                  retry_after: 5
+                  limit: turns
+            concurrency_limit_event_streams:
+              summary: Too many event streams (limit event_streams); close the ones not in use first.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: concurrency_limit
+                  message: Too many event streams.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  retry_after: 5
+                  limit: event_streams
             quota_exhausted:
               summary: The grant's quota is used up.
               value:
@@ -2622,15 +3401,6 @@ components:
                   type: rate_limit_error
                   code: quota_exhausted
                   message: The grant's quota is used up.
-                  param: null
-                  request_id: req_01JBXQ4K7Y2M
-            grant_paused:
-              summary: The grant is paused and stays paused until the user resumes it.
-              value:
-                error:
-                  type: rate_limit_error
-                  code: grant_paused
-                  message: The grant is paused and stays paused until the user resumes it.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
             notification_limited:
@@ -2709,12 +3479,96 @@ components:
             $ref: '#/components/schemas/Error'
           examples:
             instance_unavailable:
-              summary: The crew is offline or unreachable.
+              summary: The crew is offline; usually answered before the request reaches the gateway.
               value:
                 error:
                   type: server_error
                   code: instance_unavailable
-                  message: The crew is offline or unreachable.
+                  message: The crew is offline; usually answered before the request reaches the gateway.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    OwnerUnauthorized:
+      description: '401: invalid_token, stale_session_reauth. For the Owner tier: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWW-Authenticate'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_token:
+              summary: No credential, or a bad signature or expiry.
+              value:
+                error:
+                  type: authentication_error
+                  code: invalid_token
+                  message: No credential, or a bad signature or expiry.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            stale_session_reauth:
+              summary: This session signed in before an owner was configured; sign in again.
+              value:
+                error:
+                  type: authentication_error
+                  code: stale_session_reauth
+                  message: This session signed in before an owner was configured; sign in again.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    OwnerForbidden:
+      description: '403: owner_only. A delegated credential, an embed credential, a local app token and a dashboard
+        session that is not the owner''s all get this on the Owner tier; /v1 does not hide routes behind 404.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            owner_only:
+              summary: This endpoint is only for the owner's own clients.
+              value:
+                error:
+                  type: permission_error
+                  code: owner_only
+                  message: This endpoint is only for the owner's own clients.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    OwnerUnavailable:
+      description: '503: instance_unavailable, prune_in_progress. For the Owner tier: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            instance_unavailable:
+              summary: The crew is offline; usually answered before the request reaches the gateway.
+              value:
+                error:
+                  type: server_error
+                  code: instance_unavailable
+                  message: The crew is offline; usually answered before the request reaches the gateway.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            prune_in_progress:
+              summary: The Bot roster is being tidied; retry later.
+              value:
+                error:
+                  type: server_error
+                  code: prune_in_progress
+                  message: The Bot roster is being tidied; retry later.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
     InstanceUnavailableNoQuota:
@@ -2730,11 +3584,11 @@ components:
             $ref: '#/components/schemas/Error'
           examples:
             instance_unavailable:
-              summary: The crew is offline or unreachable.
+              summary: The crew is offline; usually answered before the request reaches the gateway.
               value:
                 error:
                   type: server_error
                   code: instance_unavailable
-                  message: The crew is offline or unreachable.
+                  message: The crew is offline; usually answered before the request reaches the gateway.
                   param: null
                   request_id: req_01JBXQ4K7Y2M
