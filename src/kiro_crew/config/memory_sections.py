@@ -44,6 +44,9 @@ RELEVANCE_RULE_MODES = ("off", "shadow", "enforce")
 #: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
 MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.dream`` values; :mod:`kiro_crew.memory_dream` says what each does.
+DREAM_MODES = ("off", "propose")
+
 #: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
 #: backend in :mod:`kiro_crew.embeddings_ollama`.
 OLLAMA_HTTP_PROVIDER = "ollama_http"
@@ -511,6 +514,19 @@ class MemoryConfig:
             enum=list(RELEVANCE_RULE_MODES),
         ),
     )
+    dream: str = field(
+        default="off",
+        metadata=_meta(
+            "Dreaming",
+            "Whether an offline pass looks over stored lessons and facts for "
+            "copies, near-copies, work status and old untagged rules while no chat "
+            "turn is running. 'off' (default) schedules and reads nothing. 'propose' "
+            "runs at most once a day per store, 200 rows and 10 minutes at a time, "
+            "and writes an approval list (kirocrew memory dream list); nothing in "
+            "it is applied, and lessons you taught are never proposed for change.",
+            enum=list(DREAM_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -641,6 +657,13 @@ def relevance_rule_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in RELEVANCE_RULE_MODES:
         return raw
     return str(field_default(MemoryConfig, "relevance_rule"))
+
+
+def dream_mode_from(raw: object) -> str:
+    """A stored ``memory.dream``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in DREAM_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "dream"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:
