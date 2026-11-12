@@ -10205,7 +10205,7 @@
       "retry": "Riprova",
       "save_failed": "salvataggio non riuscito",
       "star_as_artifact": "Aggiungi ai preferiti come artefatto",
-      "starred_as_click_to_remove": "Aggiunto ai preferiti come \"{{name}}\" — clicca per rimuoverlo",
+      "popout_blocked": "Non è stato possibile aprire questo widget in una nuova scheda. La finestra è stata bloccata.",
       "open_artifact_named": "Apri l’artefatto «{{slug}}»"
     },
     "widgetPlaceholder": {

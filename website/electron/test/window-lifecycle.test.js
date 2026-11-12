@@ -1296,12 +1296,31 @@ describe("dashboard window wiring order", () => {
       assert.equal(navigate(contents, "http://127.0.0.1:5476/"), true);
       assert.equal(navigate(contents, "https://example.com/"), true);
       assert.equal(navigate(contents, "file:///etc/passwd"), true);
-      assert.equal(navigate(contents, "blob:http://localhost:5476/x"), true);
+      assert.equal(navigate(contents, "blob:http://localhost:5477/x"), true);
       assert.equal(navigate(contents, "not a url"), true);
       // The dashboard's own routes, and the token prompt's hand-off, still work.
       assert.equal(navigate(contents, "http://localhost:5476/chat?x=1"), false);
       assert.equal(navigate(contents, "http://localhost:5476/?token=t"), false);
     }
+    // A window that runs the dashboard refuses its own origin's blob: too.
+    assert.equal(navigate(viewContents, "blob:http://localhost:5476/x"), true);
+    assert.equal(navigate(popout.webContents, "blob:http://localhost:5476/x"), true);
+    // Only a window opened on that blob (a widget's "Open in new tab") loads
+    // it, whether the dashboard or one of its pop-outs opened the window.
+    const child = () => ({ webContents: { ...recordingEmitter("child", []), setWindowOpenHandler() {} } });
+    const fromView = child();
+    viewContents.emit("did-create-window", fromView, { url: "blob:http://localhost:5476/x" });
+    const fromPopout = child();
+    popout.webContents.emit("did-create-window", fromPopout, { url: "blob:http://localhost:5476/x" });
+    for (const contents of [fromView.webContents, fromPopout.webContents]) {
+      assert.equal(navigate(contents, "blob:http://localhost:5476/x"), false);
+      assert.equal(navigate(contents, "blob:http://localhost:5477/x"), true);
+      assert.equal(navigate(contents, "https://example.com/"), true);
+    }
+    // A route window opened from a blob window is back on the strict guard.
+    const routeFromBlob = child();
+    fromView.webContents.emit("did-create-window", routeFromBlob, { url: "http://localhost:5476/chat" });
+    assert.equal(navigate(routeFromBlob.webContents, "blob:http://localhost:5476/x"), true);
     assert.deepEqual(openedExternally, [], "a refused navigation opens nothing");
   });
 

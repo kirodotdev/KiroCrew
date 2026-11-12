@@ -294,11 +294,19 @@ function createWindowOpenHandler(deps) {
  * dashboard holds. Main-process `loadURL`/`loadFile` calls do not emit this
  * event, so boot, reconnect and token-retry loads are unaffected.
  *
+ * `allowOwnBlob` is for a window that was opened on a blob only. The
+ * window-open handler allows a `blob:` URL the dashboard's own origin minted
+ * (`classifyNavigation`), and the child window it creates loads that URL
+ * through this guard: refusing here what was allowed there leaves the window
+ * open and blank. A window that runs the dashboard never navigates to a blob,
+ * so its guard keeps refusing one.
+ *
  * Deny-only by design: it never opens the target elsewhere, so it adds no new
  * way for a page to reach the OS. Fails closed on any error.
  *
  * @param {object} deps
  * @param {() => string} deps.getAppOrigin resolves the dashboard origin (REQUIRED)
+ * @param {boolean} [deps.allowOwnBlob] also allow a `blob:` URL of the app origin
  * @param {(msg: string) => void} [deps.log] diagnostic sink
  * @returns {(event: {preventDefault: () => void}, url: string) => void}
  */
@@ -311,7 +319,8 @@ function createNavigationGuard(deps) {
     let allowed = false;
     try {
       const target = new URL(url);
-      allowed = WEB_SCHEMES.includes(target.protocol)
+      allowed = (WEB_SCHEMES.includes(target.protocol)
+          || (deps.allowOwnBlob === true && ORIGIN_INHERITING_SCHEMES.includes(target.protocol)))
         && classifyNavigation(url, deps.getAppOrigin()) === "allow";
     } catch {
       allowed = false;

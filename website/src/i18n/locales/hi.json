@@ -9974,7 +9974,7 @@
       "retry": "पुन: प्रयास करें",
       "save_failed": "सहेजना विफल",
       "star_as_artifact": "आर्टिफ़ैक्ट के रूप में स्टार करें",
-      "starred_as_click_to_remove": "\"{{name}}\" के रूप में स्टार किया गया — हटाने के लिए क्लिक करें",
+      "popout_blocked": "यह विजेट नए टैब में नहीं खुल सका। विंडो ब्लॉक कर दी गई।",
       "open_artifact_named": "आर्टिफ़ैक्ट “{{slug}}” खोलो"
     },
     "widgetPlaceholder": {

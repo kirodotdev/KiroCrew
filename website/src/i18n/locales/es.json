@@ -10205,7 +10205,7 @@
       "retry": "Reintentar",
       "save_failed": "error al guardar",
       "star_as_artifact": "Destacar como artefacto",
-      "starred_as_click_to_remove": "Destacado como \"{{name}}\" — haz clic para quitarlo",
+      "popout_blocked": "No se pudo abrir este widget en una pestaña nueva. La ventana fue bloqueada.",
       "open_artifact_named": "Abrir el artefacto “{{slug}}”"
     },
     "widgetPlaceholder": {

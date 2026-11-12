@@ -9974,7 +9974,7 @@
       "retry": "আবার চেষ্টা করুন",
       "save_failed": "সেভ ব্যর্থ হয়েছে",
       "star_as_artifact": "আর্টিফ্যাক্ট হিসেবে স্টার দাও",
-      "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো",
+      "popout_blocked": "এই উইজেটটি নতুন ট্যাবে খোলা যায়নি। উইন্ডোটি ব্লক করা হয়েছে।",
       "open_artifact_named": "আর্টিফ্যাক্ট “{{slug}}” খোলো"
     },
     "widgetPlaceholder": {

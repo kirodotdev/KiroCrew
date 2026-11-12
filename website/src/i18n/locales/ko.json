@@ -9743,7 +9743,7 @@
       "retry": "다시 시도",
       "save_failed": "저장 실패",
       "star_as_artifact": "아티팩트로 즐겨찾기",
-      "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다",
+      "popout_blocked": "이 위젯을 새 탭에서 열 수 없습니다. 창이 차단되었습니다.",
       "open_artifact_named": "아티팩트 ‘{{slug}}’ 열기"
     },
     "widgetPlaceholder": {

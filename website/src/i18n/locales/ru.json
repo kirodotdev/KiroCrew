@@ -10436,7 +10436,7 @@
       "retry": "Повторить",
       "save_failed": "не удалось сохранить",
       "star_as_artifact": "В избранное как артефакт",
-      "starred_as_click_to_remove": "В избранном как «{{name}}» — нажми, чтобы убрать",
+      "popout_blocked": "Не удалось открыть этот виджет в новой вкладке. Окно было заблокировано.",
       "open_artifact_named": "Открыть артефакт «{{slug}}»"
     },
     "widgetPlaceholder": {

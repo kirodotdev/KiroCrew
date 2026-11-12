@@ -3811,10 +3811,10 @@
       "cannot_star_widget_has_no_slug_or_message_contex": "Cannot star: widget has no slug or message context",
       "expand": "Expand",
       "minimize": "Minimize",
+      "popout_blocked": "Couldn't open this widget in a new tab. The window was blocked.",
       "remove_artifact_from_library": "Remove artifact {{name}} from library",
       "rendering": "Rendering…",
-      "star_as_artifact": "Star as artifact",
-      "starred_as_click_to_remove": "Starred as \"{{name}}\" — click to remove"
+      "star_as_artifact": "Star as artifact"
     },
     "workspacePicker": {
       "create": "Create",
