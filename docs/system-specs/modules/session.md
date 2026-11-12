@@ -5678,8 +5678,9 @@ them to `kiro_pids.txt` as `child_pid:parent_pid[:start-id]` entries —
 `AcpRuntime` rewrites its root's whole block with `_replace_child_pids` (see
 below); the third field is the
 child's process-start identity (`_pid_start_token`, colon-free, in-process
-and non-blocking on every platform), omitted only when unreadable at track
-time.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
+and non-blocking on every platform) as the snapshot captured it, never read
+again at write time (`_recorded_start_token`), and omitted when the snapshot
+could not read it.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
 `_snapshot_descendants()`, called repeatedly for a reason the one-shot client
 scan does not face: the runtime's registered PID is the sandbox launcher, and
 the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
