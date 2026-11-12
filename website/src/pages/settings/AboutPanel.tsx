@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Download, Copy } from 'lucide-react'
@@ -30,6 +30,7 @@ import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../../hooks/useInstallDispatch'
+import { agentInstallDispatchQuery, agentInstallLatchQuery, armAgentInstall, releaseAgentInstall } from '../../hooks/useAgentInstallLatch'
 import { editionBuildVersion, foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
@@ -231,9 +232,14 @@ export function AboutPanel() {
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
   const {
-    installMutation, dispatched: installDispatched, dispatchInstall,
+    installMutation, dispatched: ownInstallDispatched, dispatchInstall,
     armed: updateArmed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
   } = useInstallDispatch(updateState)
+  // The install an agent request's click dispatches when its download lands
+  // runs in useAgentInstallLatch; the panel shows it as its own.
+  const { data: agentInstallDispatch } = useQuery(agentInstallDispatchQuery)
+  const installDispatched = ownInstallDispatched || !!agentInstallDispatch?.dispatched
+  const installRefused = installMutation.isError || !!agentInstallDispatch?.failed
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -252,14 +258,10 @@ export function AboutPanel() {
   // ordinary card uses. With a stage already present, install; otherwise
   // download and let the `downloaded` state's Install button (or the
   // deferred-on-quit install) finish it — exactly as a manual click would.
-  const [agentInstallArmed, setAgentInstallArmed] = useState(false)
-  const agentInstallArmedRef = useRef(false)
-  // The armed click has seen its download START (`downloading`, which the main
-  // process emits at once for a click it re-checks). What makes a later
-  // `checking` or `not-available` mean "that download was dropped" rather than
-  // the state the click was made from (see agentDownloadDropped).
-  const [agentArmSawDownload, setAgentArmSawDownload] = useState(false)
-  const agentArmSawDownloadRef = useRef(false)
+  // The click armed for a download is held app-wide and finished by
+  // useAgentInstallLatch (shell/appShell.tsx), so it survives leaving this tab.
+  const { data: agentInstallLatch } = useQuery(agentInstallLatchQuery)
+  const agentInstallArmed = !!agentInstallLatch
   // Before dispatching the install, retire the request by the id the card
   // showed. The install quits the app; on relaunch into the new version, a
   // request left on disk would put the card straight back up asking for a
@@ -277,95 +279,19 @@ export function AboutPanel() {
       retireAgentRequest()
       dispatchInstall()
     } else {
-      agentArmSawDownloadRef.current = false
-      agentInstallArmedRef.current = true
-      setAgentArmSawDownload(false)
-      setAgentInstallArmed(true)
+      armAgentInstall(queryClient, pendingAgentRequest?.request_id)
       downloadMutation.mutate()
     }
   }
-  // Query-cache listeners run for every updater payload, before React Query
-  // batches observer renders. The refs preserve the event order for one armed
-  // click even when `downloading` and its cancellation share a render.
-  //
-  // Read in that order, a payload also says when a click's request ended
-  // before any download started. For a click made with nothing found, the
-  // main process checks first: `not-available` and a failed check end the
-  // request there, and so does `found` on the feed lane with auto-download
-  // off, where it waits for a Download click. The managed lane follows its
-  // `found` with `downloaded` at once, and with auto-download on the download
-  // starts; the feed lane says which on the `found` itself, and a shell too old
-  // to say leaves the cached preference to answer. Left armed, the click keeps both request actions disabled and
-  // installs whatever a later download brings, with nobody clicking. The
-  // rendered state cannot say this: a click is also made FROM each of them.
-  useEffect(() => queryClient.getQueryCache().subscribe(event => {
-    if (event.type !== 'updated'
-      || event.query.queryKey.length !== 1
-      || event.query.queryKey[0] !== 'update-state') return
-    const pushed = event.query.state.data as UpdateState | null | undefined
-    if (!agentInstallArmedRef.current) return
-    if (pushed?.state === 'downloading') {
-      agentArmSawDownloadRef.current = true
-      setAgentArmSawDownload(true)
-      return
-    }
-    const info = queryClient.getQueryData<UpdateInfo | null>(updateInfoQuery.queryKey)
-    const ended = agentArmSawDownloadRef.current
-      ? pushed?.state === 'not-available' || pushed?.state === 'checking'
-      : pushed?.state === 'not-available'
-        || (pushed?.state === 'error' && pushed.phase === 'check')
-        || (pushed?.state === 'found' && (pushed.autoDownload ?? info?.autoDownload) === false && !info?.updateCommand)
-    if (!ended) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-  }), [queryClient])
-  const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
-  useEffect(() => {
-    // The download the request card started has landed: finish it. One shot —
-    // `agentInstallArmed` is cleared so a later, unrelated download does not
-    // ride this click.
-    if (!agentDownloadLanded || installDispatched) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-    retireAgentRequest()
-    dispatchInstall()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentDownloadLanded, installDispatched])
   // A download the card started that then FAILED — the updater's own
   // download-phase error, or the IPC rejecting — must release the click, or
-  // both request actions stay disabled with no way forward.
+  // both request actions stay disabled with no way forward. The IPC is this
+  // panel's own mutation, so its release is here; the rest is the latch's.
   const agentDownloadFailed = agentInstallArmed
     && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
-  // A download the card asked for that the main process then DROPS must release the
-  // click too: it re-checks the feed first, and a retraction (`not-available`) or a
-  // channel switch (a fresh `checking`) ends that click without an error. A click
-  // left armed keeps both request actions disabled and installs the next build that
-  // downloads, hours later, with nobody clicking.
-  //
-  // Only AFTER the click's `downloading`: both states are also ones a click is made
-  // FROM (the card stays enabled through them), and from there the main process
-  // discovers first and then downloads. Read off the current state alone, that
-  // click would be released on the next render and its download would land with
-  // nothing left to install it.
   useEffect(() => {
-    if (!agentInstallArmed || updateState?.state !== 'downloading') return
-    agentArmSawDownloadRef.current = true
-    setAgentArmSawDownload(true)
-  }, [agentInstallArmed, updateState?.state])
-  const agentDownloadDropped = agentInstallArmed && agentArmSawDownload
-    && (updateState?.state === 'not-available' || updateState?.state === 'checking')
-  const agentDownloadEnded = agentDownloadFailed || agentDownloadDropped
-  useEffect(() => {
-    if (!agentDownloadEnded) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-  }, [agentDownloadEnded])
+    if (agentInstallArmed && downloadMutation.isError) releaseAgentInstall(queryClient)
+  }, [agentInstallArmed, downloadMutation.isError, queryClient])
   // Failures the request card must SHOW (errors-use-error-notice): a poll that
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
@@ -665,7 +591,7 @@ export function AboutPanel() {
           testId="update-download-request-error"
         />
       )}
-      {!cardFailed && installMutation.isError && (
+      {!cardFailed && installRefused && (
         <ErrorNotice
           variant="inline"
           message={i18nT('pages.settings.aboutPanel.install_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.installUnknown) })}
