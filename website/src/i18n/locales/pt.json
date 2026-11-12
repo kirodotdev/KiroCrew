@@ -8083,6 +8083,7 @@
       "sign_in_failed_body": "Algo deu errado enquanto aguardávamos a aprovação",
       "no_kiro_profile_body": "Esta conta não tem perfil do Kiro, então não pode executar chats. Entre com uma conta que tenha uma assinatura do Kiro.",
       "profile_lookup_failed_body": "Não conseguimos consultar seu perfil do Kiro. Comece de novo para tentar outra vez.",
+      "connection_lost_body": "Perdemos a conexão com o {{productName}}, que pode ter reiniciado. Comece de novo para fazer login outra vez.",
       "sign_in_status_unavailable": "Não foi possível verificar o status do login",
       "sign_in_to_kiro": "Fazer login no Kiro",
       "signing_in_with": "Fazendo login com {{provider}}",

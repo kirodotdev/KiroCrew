@@ -19,6 +19,8 @@ import {
   type KasLoginStatus,
 } from '../api/client'
 import { ApiError, apiErrorCode } from '../api/apiError'
+import { isUnansweredRead } from '../api/queryClient'
+import { reportForError, type ErrorReport } from '../utils/errorReport'
 import {
   PANEL_CLASS,
   SCRIM_CLASS,
@@ -680,10 +682,13 @@ function DeviceWaiting({
 // verbatim when the backend sent one. An Identity Center sign-in whose Kiro
 // profile could not be found gets its own plain sentence per `code`: "no
 // profile" only when the lookup answered with none, never when the lookup
-// itself failed.
+// itself failed. A poll the gateway never answered gets one too, since the
+// browser's own text for it ("Failed to fetch") names no cause and no remedy.
 function SignInProblem({
   expired,
   code,
+  connectionLost,
+  report,
   detail,
   busy,
   notice,
@@ -692,6 +697,10 @@ function SignInProblem({
 }: {
   expired: boolean
   code?: string
+  /** The poll got no answer from the gateway: it restarted, or the link dropped. */
+  connectionLost: boolean
+  /** The poll failure's own report, so the hand-off keeps it under a reworded sentence. */
+  report?: ErrorReport
   detail: string
   /** True while the old attempt's cancel is settling: both actions are disabled. */
   busy: boolean
@@ -706,11 +715,13 @@ function SignInProblem({
   // eyebrow-plus-headline shape.
   const coded = expired
     ? ''
-    : code === 'no_kiro_profile'
-      ? i18nT('components.kasLogin.no_kiro_profile_body')
-      : code === 'profile_lookup_failed'
-        ? i18nT('components.kasLogin.profile_lookup_failed_body')
-        : ''
+    : connectionLost
+      ? i18nT('components.kasLogin.connection_lost_body')
+      : code === 'no_kiro_profile'
+        ? i18nT('components.kasLogin.no_kiro_profile_body')
+        : code === 'profile_lookup_failed'
+          ? i18nT('components.kasLogin.profile_lookup_failed_body')
+          : ''
   return (
     <ViewShell
       aside={{
@@ -750,6 +761,7 @@ function SignInProblem({
         className="mt-3 max-w-lg"
         askAgent={chrome.card}
         message={coded || detail || null}
+        report={report}
         testId="kas-login-problem-detail"
       />
       <ErrorNotice
@@ -1215,6 +1227,10 @@ function KasLoginFlow({
         <SignInProblem
           expired={effective === 'expired'}
           code={pollQuery.error ? undefined : pollQuery.data?.code}
+          // A coded refusal is the gateway's own answer (its 502 when the auth
+          // service is unreachable), so it keeps its text.
+          connectionLost={isUnansweredRead(pollQuery.error) && !apiErrorCode(pollQuery.error)}
+          report={reportForError(pollQuery.error)}
           detail={detail}
           busy={settling}
           notice={settleError}
