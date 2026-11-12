@@ -2815,7 +2815,8 @@ whose new version widens user-session control
 `permissions.memberThreads` when the grant was already held) and
 returns `notice: "session_approval_reconsent"`; the detail page shows that notice
 and the user re-enables the app after seeing the grant and, when declared, its
-Bot-thread scope. `register_external_app`
+Bot-thread scope. Update All names each such app with a button that opens its
+detail page without updating it again. `register_external_app`
 does the same for self-managed apps (a registration that newly declares the flag
 or the scope is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
@@ -3511,9 +3512,13 @@ local grant. When the install fails or raises, the local marker is put back
 restored, so its backend starts admitted. A failure before the take-down puts
 the grant back and then starts the old backend again, because the health watch
 can stop it while the repository grant does not cover its local code. The detail page's banner for this
-refusal opens the consent dialog on that repository and sends this request; the
-App Store's Update on a path install that a registry row offers a newer version
-of runs the registry update (the detail page's Update), never a folder re-copy.
+refusal opens the consent dialog on that repository and sends this request,
+and the page hides its plain Update while that banner is up, since pressing it
+would rerun the refused update. The App Store's Update on a path install that a
+registry row offers a newer version of runs the registry update (the detail
+page's Update), never a folder re-copy. Update All names each such refused app
+with a button to its detail page, and an Updates row or a trust retry that meets
+the refusal opens that page.
 A still-installed app with
 positively local provenance retains migration compatibility; an unknown/fresh
 same-name local source does not inherit that old grant. The commit is deliberately

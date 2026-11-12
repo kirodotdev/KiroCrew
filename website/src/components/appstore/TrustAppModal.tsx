@@ -717,8 +717,11 @@ export default function TrustAppModal({
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.scope', { app: name })}
           </p>
-          <p className="text-text leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.intro', { app: name })}
+          {/* The take-back line sits at the top on every path: on a phone the
+              bottom of the dialog is a scroll away, and this line is what
+              makes the consent safe to give. */}
+          <p className="text-muted leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.revocable')}
           </p>
           {/* The switch changes where the app comes from: the local-folder copy
               is replaced by the repository's, and its trust follows the
@@ -728,6 +731,9 @@ export default function TrustAppModal({
               {i18nT('components.appstore.trustAppModal.local_source_switch', { app: name })}
             </p>
           )}
+          <p className="text-text leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.intro', { app: name })}
+          </p>
           {/* Explicit color-mix rather than a `bg-card/88` opacity modifier:
               theme colors are raw `var(--x)`, so the translucency depends on
               the config's opacity shim rather than on Tailwind's own alpha
@@ -894,9 +900,6 @@ export default function TrustAppModal({
             </p>
           )}
           <p className="text-muted leading-relaxed">{copy.exit}</p>
-          <p className="text-muted leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.revocable')}
-          </p>
           {/* Two failure strings, because the two cases need different advice: if
               the grant landed and only the enable failed, the user has state to
               clean up; if nothing was written, telling them to go check Settings

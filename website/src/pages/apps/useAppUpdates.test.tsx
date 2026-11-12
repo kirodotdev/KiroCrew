@@ -229,6 +229,28 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     await expect(retryUpdate('radar')).rejects.toThrow('boom')
   })
 
+  it('the trust retry hands a local-only refusal to the detail page instead of failing', async () => {
+    const onTrustDenied = vi.fn()
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('app execution denied'), {
+      code: 'app_execution_denied',
+    }))
+    const { result, updateAppNav, setError, announce } = setup({ rowUpdatesInPlace: true, onTrustDenied })
+    await act(async () => { await result.current.runUpdate('notes') })
+    const [, retryUpdate] = onTrustDenied.mock.calls[0]
+
+    // The grant the dialog just saved covers the folder copy only, so the
+    // registry update it retries is refused as local-only. That is the next
+    // consent step, offered on the detail page, not a failed retry.
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+      body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+    }))
+    await act(async () => { await expect(retryUpdate('notes')).resolves.toBeUndefined() })
+    expect(apiUpdateApp).toHaveBeenLastCalledWith('notes', 'registry:notes')
+    expect(updateAppNav).toHaveBeenCalledWith('notes')
+    expect(announce).toHaveBeenCalled()
+    expect(setError).not.toHaveBeenCalledWith(expect.stringContaining('local source'))
+  })
+
   it('the trust retry opens detail when the update needs new consent', async () => {
     const onTrustDenied = vi.fn()
     apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('denied'), {
@@ -429,6 +451,51 @@ describe('useAppUpdates — Update All', () => {
     // No mid-batch hand-off to the detail page, and no success toast.
     expect(updateAppNav).not.toHaveBeenCalled()
     expect(setSuccess).not.toHaveBeenCalled()
+    // The page gets the apps that notice names, keyed on its exact text, so it
+    // can offer each app's details from the notice itself.
+    expect(result.current.trustHandoff).toEqual({ message: notice, apps: [{ name: 'notes', label: 'Notes', rerunUpdate: true }] })
+  })
+
+  it('links a chat-control consent app to its details without rerunning its update', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+      }))
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const { result, setError } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    // Both lines tell the reader to open the app's details, so both apps get a
+    // link. Docs is already updated: its link opens the page, not another update.
+    const notice = setError.mock.lastCall?.[0] as string
+    expect(notice).toBe(
+      'pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}\n'
+      + 'pages.appsPage.update_needs_repository_trust {"name":"Notes"}',
+    )
+    expect(result.current.trustHandoff).toEqual({
+      message: notice,
+      apps: [
+        { name: 'docs', label: 'Docs', rerunUpdate: false },
+        { name: 'notes', label: 'Notes', rerunUpdate: true },
+      ],
+    })
+  })
+
+  it('names no trust hand-off for a batch that met no local-only refusal', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+      }))
+      .mockResolvedValueOnce(undefined)
+    const { result } = setup()
+    await act(async () => { await result.current.updateAll() })
+    expect(result.current.trustHandoff).not.toBeNull()
+
+    // A later batch starts clean: its notice names no app needing repository trust.
+    apiUpdateApp.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(undefined)
+    await act(async () => { await result.current.updateAll() })
+    expect(result.current.trustHandoff).toBeNull()
   })
 
   it('blocks runUpdate and a second updateAll while a batch is running', async () => {

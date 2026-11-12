@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   apiUpdateApp: vi.fn(),
   setError: vi.fn(),
   updateAppNav: vi.fn(),
+  openDetail: vi.fn(),
   announce: vi.fn(),
 }))
 
@@ -45,23 +46,30 @@ vi.mock('../pages/apps/useAppsData', async importOriginal => {
 })
 
 // Action plumbing (detail navigation, trust consent, enable) is
-// useAppActions' contract, pinned elsewhere. The page only needs the shape.
-vi.mock('../pages/apps/useAppActions', () => ({
-  useAppActions: () => ({
-    setError: mocks.setError,
-    displayError: '',
-    dismissError: vi.fn(),
-    openDetail: vi.fn(),
-    getApp: vi.fn(),
-    updateApp: mocks.updateAppNav,
-    trustTarget: vi.fn(),
-    runEnable: vi.fn(),
-    trust: {
-      target: null, pending: false, failed: false, granted: false,
-      open: vi.fn(), cancel: vi.fn(), confirm: vi.fn(),
+// useAppActions' contract, pinned elsewhere. The page only needs the shape,
+// plus a real error slot, so the page's own notice renders what it is given.
+vi.mock('../pages/apps/useAppActions', async () => {
+  const { useState } = await import('react')
+  return {
+    useAppActions: () => {
+      const [error, setErrorState] = useState('')
+      return {
+        setError: (next: string | ((prev: string) => string)) => { mocks.setError(next); setErrorState(next) },
+        displayError: error,
+        dismissError: () => setErrorState(''),
+        openDetail: mocks.openDetail,
+        getApp: vi.fn(),
+        updateApp: mocks.updateAppNav,
+        trustTarget: vi.fn(),
+        runEnable: vi.fn(),
+        trust: {
+          target: null, pending: false, failed: false, granted: false,
+          open: vi.fn(), cancel: vi.fn(), confirm: vi.fn(),
+        },
+      }
     },
-  }),
-}))
+  }
+})
 
 vi.mock('../api/client', () => ({
   api: { updateApp: (...a: unknown[]) => mocks.apiUpdateApp(...a) },
@@ -79,10 +87,15 @@ vi.mock('../i18n/t', async importOriginal => {
 // Chrome the sub-tab tests never drive: the Sources popover owns its own
 // tests, and the trust modal renders null for a null target anyway.
 vi.mock('../components/appstore/SourcesPopover', () => ({ default: () => null }))
-vi.mock('../components/appstore/TrustAppModal', () => ({
-  default: () => null,
-  isTrustDeniedError: () => false,
-}))
+vi.mock('../components/appstore/TrustAppModal', async importOriginal => {
+  const orig = await importOriginal<typeof import('../components/appstore/TrustAppModal')>()
+  return {
+    default: () => null,
+    isTrustDeniedError: () => false,
+    // The real reader: the batch branches on the refusal body's code.
+    localOnlyTrustRepository: orig.localOnlyTrustRepository,
+  }
+})
 
 import DiscoverPage from '../pages/apps/DiscoverPage'
 
@@ -287,6 +300,41 @@ describe('Updates sub-page — list rendering', () => {
     expect(screen.getByText('pages.appsPage.updated_app {"count":2}')).toBeInTheDocument()
     expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(1, 'notes', 'registry:notes')
     expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(2, 'docs', 'registry:docs')
+  })
+
+  it("Update All's repository-trust line offers each named app's details from the notice", async () => {
+    mocks.apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+      }))
+      .mockResolvedValueOnce(undefined)
+    renderDiscover('/apps/-/updates')
+
+    fireEvent.click(updateAllButton())
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('pages.appsPage.update_needs_repository_trust {"name":"Notes"}')
+    // The line says to open the app's details; the notice carries that step,
+    // for the refused app only, and it opens the detail page that offers trust.
+    const open = within(notice).getByRole('button', { name: 'pages.appsPage.open_app_details {"name":"Notes"}' })
+    expect(within(notice).queryByRole('button', { name: /open_app_details \{"name":"Docs"\}/ })).toBeNull()
+    fireEvent.click(open)
+    expect(mocks.updateAppNav).toHaveBeenCalledWith('notes')
+  })
+
+  it("Update All's consent line opens that app's details without another update", async () => {
+    mocks.apiUpdateApp
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    renderDiscover('/apps/-/updates')
+
+    fireEvent.click(updateAllButton())
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}')
+    // The line says to review the permission in the app details; Docs is
+    // already updated, so its button opens the page and starts nothing.
+    fireEvent.click(within(notice).getByRole('button', { name: 'pages.appsPage.open_app_details {"name":"Docs"}' }))
+    expect(mocks.openDetail).toHaveBeenCalledWith('docs')
+    expect(mocks.updateAppNav).not.toHaveBeenCalled()
   })
 })
 
