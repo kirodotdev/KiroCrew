@@ -880,6 +880,29 @@ class TestUpdateSubprocessHardening:
         assert "git status timed out" in capsys.readouterr().out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
+    def test_status_failure_refuses_the_reset(self, monkeypatch, git_checkout, capsys) -> None:
+        """A non-zero status prints nothing, which must not read as a clean tree
+        and skip the discard prompt."""
+        stub = _GitStub()
+
+        def _run(argv, **kw):
+            if list(argv[:2]) == ["git", "status"]:
+                stub.calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 128, "", "fatal: not a git repository\n")
+            return stub(argv, **kw)
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        monkeypatch.setattr(
+            "builtins.input", lambda *_a: pytest.fail("prompted on an unreadable status")
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "git status exited 128" in out
+        assert "fatal: not a git repository" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
     def test_kiro_cli_update_timeout_degrades_best_effort(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
