@@ -1547,6 +1547,15 @@ class TestRuntimeRootTrackingOffLoop:
     inside the pair (a late append would re-add a dead pid), then reaps.
     """
 
+    @pytest.fixture(autouse=True)
+    def _private_subprocess_pool(self, _floor_monkeypatch):
+        # spawn() hops onto ``subprocess_executor`` before the tracking hop, and that
+        # pool is shared by every test on this xdist worker: an earlier test still
+        # holding all of its workers keeps the spawn from ever reaching the hop.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            _floor_monkeypatch.setattr(runtime_mod, "subprocess_executor", lambda: pool)
+            yield
+
     @staticmethod
     def _bare_spawn(monkeypatch, tmp_path):
         mock_proc = MagicMock()
