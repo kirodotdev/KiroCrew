@@ -86,6 +86,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _kirocrew_mcp_invocation,
     _launcher_works,
     _migrations_dir,
+    _refresh_windows_forwarder,
     _resolve_kirocrew_bin,
     _stale_mcp_purge_marker,
     _through_stable_link,
