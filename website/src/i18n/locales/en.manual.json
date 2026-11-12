@@ -5608,6 +5608,17 @@
       "clear_context_cleared_roles": "Cleared for {{roles}}."
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "Only the dashboard owner can change project hooks. Sign in as the owner, then try again.",
+        "err_full": "Crew has saved the most folder choices it can, so this one was not saved. Remove old entries from project_hooks_consent.json, then try again.",
+        "err_write": "Crew could not save your choice for this folder. Check the gateway log, then try again.",
+        "err_folder": "Crew could not find this folder, so your choice was not saved. Reload the page, then try again.",
+        "err_other": "Crew did not save your choice. Reload the page, then try again.",
+        "read_failed": "Crew could not check whether project hooks are on. Reload the page to see their current state.",
+        "details": "Details",
+        "save_failed": "Couldn't change project hooks",
+        "show_commands": "Show commands"
+      },
       "workflowRunCard": {
         "cancel": "Cancel",
         "save_help": "Keep the exact workflow from this completed run in your global library.",

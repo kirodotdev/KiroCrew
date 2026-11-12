@@ -17,6 +17,8 @@
  *  every row through the window's `ReadOnlyCodeCtx`. */
 import { i18nT } from '../../../i18n/t'
 import { parseFileRecord } from '../../../lib/fileRecord'
+import NoticeCard from '../NoticeCard'
+import { isProjectHooksNotice } from '../projectHooksNoticeMatch'
 import { formatTs, quoteMessageFor, renderAssistantBubble, type MessageRenderer } from '../../../app-sdk/messageRenderers'
 import UserMessage from '../UserMessage'
 import { renderUserContent } from '../ChatPageMessageContent'
@@ -61,6 +63,15 @@ export function createCrewWindowRenderers(o: {
 }): readonly MessageRenderer[] {
   const shared = createTranscriptRenderers({ slot: crewWindowSlot(o.instanceId, o.key) })
   return [
+    {
+      // The SDK default draws a Turn on / Turn off link that writes THIS hub's
+      // project-hooks choice, never the peer's; same id, so it replaces that
+      // row with the peer's notice text alone, read-only.
+      id: 'project_hooks',
+      roles: ['*'],
+      match: isProjectHooksNotice,
+      render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    },
     {
       id: 'user',
       roles: ['user'],

@@ -12694,6 +12694,17 @@
       "topic": "Assunto"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "Só o proprietário do painel pode alterar os hooks do projeto. Entre como proprietário e tente de novo.",
+        "err_full": "O Crew já salvou o máximo de escolhas de pasta, então esta não foi salva. Remova entradas antigas de project_hooks_consent.json e tente de novo.",
+        "err_write": "O Crew não conseguiu salvar sua escolha para esta pasta. Verifique o log do gateway e tente de novo.",
+        "err_folder": "O Crew não encontrou esta pasta, então sua escolha não foi salva. Recarregue a página e tente de novo.",
+        "err_other": "O Crew não salvou sua escolha. Recarregue a página e tente de novo.",
+        "read_failed": "O Crew não conseguiu verificar se os hooks do projeto estão ativados. Recarregue a página para ver o estado atual.",
+        "details": "Detalhes",
+        "save_failed": "Não foi possível alterar os hooks do projeto",
+        "show_commands": "Mostrar comandos"
+      },
       "activityViewer": {
         "activity": "Atividade",
         "approval_needed": "Aprovação necessária",

@@ -12694,6 +12694,17 @@
       "topic": "Argomento"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "Solo il proprietario della dashboard può modificare gli hook del progetto. Accedi come proprietario e riprova.",
+        "err_full": "Crew ha salvato il numero massimo di scelte per cartella, quindi questa non è stata salvata. Rimuovi le voci vecchie da project_hooks_consent.json e riprova.",
+        "err_write": "Crew non è riuscito a salvare la tua scelta per questa cartella. Controlla il log del gateway e riprova.",
+        "err_folder": "Crew non ha trovato questa cartella, quindi la tua scelta non è stata salvata. Ricarica la pagina e riprova.",
+        "err_other": "Crew non ha salvato la tua scelta. Ricarica la pagina e riprova.",
+        "read_failed": "Crew non è riuscito a verificare se gli hook del progetto sono attivi. Ricarica la pagina per vedere lo stato attuale.",
+        "details": "Dettagli",
+        "save_failed": "Impossibile modificare gli hook del progetto",
+        "show_commands": "Mostra comandi"
+      },
       "activityViewer": {
         "activity": "Attività",
         "approval_needed": "Approvazione necessaria",

@@ -12694,6 +12694,17 @@
       "topic": "Sujet"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "Seul le propriétaire du tableau de bord peut modifier les hooks du projet. Connecte-toi en tant que propriétaire, puis réessaie.",
+        "err_full": "Crew a enregistré le nombre maximal de choix de dossier, donc celui-ci n'a pas été enregistré. Supprime d'anciennes entrées de project_hooks_consent.json, puis réessaie.",
+        "err_write": "Crew n'a pas pu enregistrer ton choix pour ce dossier. Consulte le journal de la passerelle, puis réessaie.",
+        "err_folder": "Crew n'a pas trouvé ce dossier, donc ton choix n'a pas été enregistré. Recharge la page, puis réessaie.",
+        "err_other": "Crew n'a pas enregistré ton choix. Recharge la page, puis réessaie.",
+        "read_failed": "Crew n'a pas pu vérifier si les hooks du projet sont activés. Recharge la page pour voir leur état actuel.",
+        "details": "Détails",
+        "save_failed": "Impossible de modifier les hooks du projet",
+        "show_commands": "Afficher les commandes"
+      },
       "activityViewer": {
         "activity": "Activité",
         "approval_needed": "Approbation requise",

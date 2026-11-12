@@ -413,7 +413,7 @@ def test_a_stale_check_reads_the_providers_own_session(monkeypatch):
 
     asked: list[str] = []
 
-    def spec(agent_id, project_dir=None, session_key=""):
+    def spec(agent_id, project_dir=None, session_key="", *, kas_checkout=None):
         asked.append(session_key)
         return {"hooks": {"preToolUse": [HOOK]}}
 

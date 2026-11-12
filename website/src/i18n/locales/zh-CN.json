@@ -12158,6 +12158,17 @@
       "topic": "主题"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "只有仪表板所有者才能更改项目 hooks。请以所有者身份登录后重试。",
+        "err_full": "Crew 能保存的文件夹选择已达上限，这次的选择没有保存。请从 project_hooks_consent.json 中删除旧条目后重试。",
+        "err_write": "Crew 无法保存你对这个文件夹的选择。请查看网关日志后重试。",
+        "err_folder": "Crew 找不到这个文件夹，你的选择没有保存。请刷新页面后重试。",
+        "err_other": "Crew 没有保存你的选择。请刷新页面后重试。",
+        "read_failed": "Crew 没能确认项目钩子是否已开启。请重新加载页面，查看当前状态。",
+        "details": "详情",
+        "save_failed": "无法更改项目 hooks",
+        "show_commands": "显示命令"
+      },
       "activityViewer": {
         "activity": "动态",
         "approval_needed": "需要审批",

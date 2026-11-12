@@ -938,6 +938,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         outbox_dir,
         overlay_entry,
         overlay_pins,
+        project_hooks_consent_path,
         read_config_text,
         read_endorsed_config_text,
         read_local_secret,
