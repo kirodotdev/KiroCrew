@@ -7,9 +7,10 @@
  * exercise the component's actual branching, not just bump statement counts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import DesignTweak from './DesignTweakPage'
 import { renderWithProviders } from '../../test/helpers'
+import { confirmAction } from '../../test/confirmAction'
 import { i18nT } from '../../i18n/t'
 
 vi.mock('./api', async (importOriginal) => ({
@@ -153,8 +154,6 @@ describe('DesignTweakPage — history, archive, states', () => {
     vi.useFakeTimers({ now: FROZEN_NOW, shouldAdvanceTime: true })
     vi.clearAllMocks()
     mockNavigate.mockClear()
-    // Suppress window.confirm for delete tests
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
 
   afterEach(() => {
@@ -394,15 +393,17 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('p')).toHaveTextContent(i18nT('apps.designTweak.requests.delete_confirm', { number: 1 }))
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).toHaveTextContent(/^Delete request$/)
+    await confirmAction('Delete request')
 
-    // window.confirm was mocked to return true
     await waitFor(() => {
       expect(mockedDeleteRequest).toHaveBeenCalledWith('req-1')
     })
   })
 
   it('does not delete when the user cancels the confirmation dialog', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
 
@@ -421,10 +422,59 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Cancel')
 
-    // Confirm was called but returned false — deleteRequest must NOT fire
-    expect(window.confirm).toHaveBeenCalled()
     expect(mockedDeleteRequest).not.toHaveBeenCalled()
+  })
+
+  it('deletes the captured request after its project and queue disappear', async () => {
+    mockedDeleteRequest.mockResolvedValue({ ok: true })
+    setupHappyPath()
+    const { queryClient } = renderWithProviders(<DesignTweak />)
+    openMenu(await screen.findByLabelText(i18nT('apps.designTweak.requests.more_actions', { number: 1 })))
+    fireEvent.click(await screen.findByText('Delete request'))
+    await screen.findByRole('dialog')
+    act(() => {
+      queryClient.setQueryData(['design-tweak', 'projects'], { projects: [], activeId: '' })
+      queryClient.setQueryData(['design-tweak', 'queue'], { pending: [] })
+    })
+    await waitFor(() => expect(screen.queryByLabelText(i18nT('apps.designTweak.requests.more_actions', { number: 1 }))).not.toBeInTheDocument())
+    await confirmAction('Delete request')
+    await waitFor(() => expect(mockedDeleteRequest).toHaveBeenCalledWith('req-1'))
+  })
+
+  it('ignores the same request pressed twice during confirmation', async () => {
+    mockedDeleteRequest.mockResolvedValue({ ok: true })
+    setupHappyPath()
+    renderWithProviders(<DesignTweak />)
+    const trigger = await screen.findByLabelText(i18nT('apps.designTweak.requests.more_actions', { number: 1 }))
+    openMenu(trigger)
+    fireEvent.click(await screen.findByText('Delete request'))
+    const dialog = await screen.findByRole('dialog')
+    openMenu(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete request' }))
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(mockedDeleteRequest).not.toHaveBeenCalled()
+    await confirmAction('Delete request')
+    await waitFor(() => expect(mockedDeleteRequest).toHaveBeenCalledTimes(1))
+  })
+
+  it('deletes a different request while the first API call is pending', async () => {
+    let finish!: (value: { ok: boolean }) => void
+    const pending = new Promise<{ ok: boolean }>(resolve => { finish = resolve })
+    mockedDeleteRequest.mockImplementation((id: string) => id === 'req-1' ? pending : Promise.resolve({ ok: true }))
+    setupHappyPath({ pending: [makeRequest(), makeRequest({ id: 'req-2', number: 2 })] })
+    renderWithProviders(<DesignTweak />)
+    openMenu(await screen.findByLabelText(i18nT('apps.designTweak.requests.more_actions', { number: 1 })))
+    fireEvent.click(await screen.findByText('Delete request'))
+    await confirmAction('Delete request')
+    await waitFor(() => expect(mockedDeleteRequest).toHaveBeenCalledWith('req-1'))
+    openMenu(await screen.findByLabelText(i18nT('apps.designTweak.requests.more_actions', { number: 2 })))
+    fireEvent.click(await screen.findByText('Delete request'))
+    expect((await screen.findByRole('dialog')).querySelector('p')).toHaveTextContent(i18nT('apps.designTweak.requests.delete_confirm', { number: 2 }))
+    await confirmAction('Delete request')
+    await waitFor(() => expect(mockedDeleteRequest.mock.calls).toEqual([['req-1'], ['req-2']]))
+    await act(async () => finish({ ok: true }))
   })
 
   it('shows an error status when delete fails', async () => {
@@ -447,6 +497,7 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Delete request')
 
     await waitFor(() => {
       expect(

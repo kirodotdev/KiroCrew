@@ -4,8 +4,7 @@
  * The page file stays the Design Tweak route's one import path (`builtinRegistry`
  * lazy-loads it, and the capture harness and the specs import it by that id) and
  * renders the rail and the preview; its state, effects and actions live in
- * `useDesignTweakPageState`, bar `deleteReq`, whose native `confirm()` keeps it
- * in the page. These pins keep that shape honest:
+ * `useDesignTweakPageState`. These pins keep that shape honest:
  *
  *  - the page still exports what it exported as one file;
  *  - the owner never imports the page, and nothing outside the page under
