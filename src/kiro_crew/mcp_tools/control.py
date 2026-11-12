@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from kiro_crew import _facade_mirror, mcp_core, platform_compat
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts.directive import (
     chat_tag,
@@ -136,6 +137,9 @@ def wait(name: str, args: dict[str, Any]) -> "str | DeferredTool":
 class _WaitStep(DeferredTool):
     """The parked half of :func:`wait`: one keepalive POST per step."""
 
+    #: The word its heartbeat carries (the keepalive and the MCP progress note).
+    phase = "waiting"
+
     def __init__(self, *, seconds: int, reason_safe: str, identified: bool) -> None:
         self.seconds = seconds
         self.reason_safe = reason_safe
@@ -187,6 +191,10 @@ class _WaitStep(DeferredTool):
                 "/api/session-keepalive",
                 (
                     {
+                        # The call this sleep runs under, so the gateway
+                        # restarts that call's own silence timer. An
+                        # unidentified sleep names nothing: its key is a guess.
+                        **heartbeat_fields(self.phase),
                         "wait_id": self.wait_id,
                         "seconds": self.seconds,
                         "remaining": max(0, int(remaining)),
@@ -526,6 +534,9 @@ class _AskStep(DeferredTool):
     the step pool is full; the request carries no slice of its own.
     """
 
+    #: The word its heartbeat carries: the call waits on a person.
+    phase = "waiting_for_answer"
+
     def __init__(self, sk: str, ask_id: str, *, confirmed: bool) -> None:
         self.sk = sk
         self.ask_id = ask_id
@@ -543,10 +554,12 @@ class _AskStep(DeferredTool):
 
     def step(self) -> str | None:
         try:
-            # Resets the stall watchdog and the staleness reaper, exactly as the
-            # ``wait`` tool's ping does. Best-effort: a missed ping costs nothing
-            # the next slice does not repair.
-            mcp_core._post("/api/session-keepalive", {}, session_key=self.sk)
+            # Resets the call's silence timer and the staleness reaper, exactly
+            # as the ``wait`` tool's ping does. Best-effort: a missed ping costs
+            # nothing the next slice does not repair.
+            mcp_core._post(
+                "/api/session-keepalive", heartbeat_fields(self.phase), session_key=self.sk
+            )
         except Exception:
             pass
         reply = mcp_core._post(

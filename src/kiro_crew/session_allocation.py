@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import keepalive_route as _keepalive_route
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -529,10 +530,16 @@ class SessionAllocationService:
         return self._deps.canonical_key(key)
 
     def advance_ownership_generation(self, key: str) -> int:
-        """Advance and return *key*'s monotonic ownership generation."""
+        """Advance and return *key*'s monotonic ownership generation.
+
+        Every publication and removal of *key* passes here, so this is also where
+        the registry ``/api/session-keepalive`` reads marks a provider it just
+        published (``kiro_crew.keepalive_route``).
+        """
         bucket = self._generation_key(key)
         generation = self._ownership_generations.get(bucket, 0) + 1
         self._ownership_generations[bucket] = generation
+        _keepalive_route.mark_published(self._owner, self._sessions.get(key))
         return generation
 
     def session_generation(self, key: str) -> int:

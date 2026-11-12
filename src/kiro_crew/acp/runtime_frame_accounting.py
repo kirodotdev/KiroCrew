@@ -1,6 +1,7 @@
 """What the reader drops or truncates, counted instead of logged per frame.
 
-The backend subagent roster and its overflow episodes, and the unroutable-frame drop summaries.
+The backend subagent roster and its overflow episodes, whether a roster child's frames reach a
+session and how many never reached one, and the unroutable-frame drop summaries.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -8,7 +9,8 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_announced_children``, ``_announced_overflow``, ``_dropped_frames_flushed_at``,
 ``_roster_overflow_peak``, ``_roster_overflow_repeats``, ``_roster_overflow_summary_at``,
-``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``.
+``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
+``_unrouted_child_frames``.
 
 Instance fields read: ``_dropped_frames``, ``_session_queues``.
 """
@@ -183,6 +185,41 @@ def _snapshot_subagent_sessions(self: AcpRuntime, params: dict) -> None:
     self._subagent_owner = (
         next(iter(self._session_queues)) if len(self._session_queues) == 1 else None
     )
+
+
+def routes_roster_children_to(self: AcpRuntime, session_id: str) -> bool:
+    """Whether a frame a roster child sends under its own ``sessionId`` reaches *session_id* now.
+
+    ``_reader_loop`` routes such a frame only to the ONE registered session, and
+    only when the roster that named the child arrived while that session was
+    alone (``_subagent_owner``); beside another registered session the frame
+    names no owner and is dropped. With no child named yet, a session alone on
+    the runtime owns the next roster. The session handle asks this before it
+    judges a native sub-agent call by its sub-agent's silence, which it can read
+    only off frames that reach it.
+    """
+    if list(self._session_queues) != [session_id]:
+        return False
+    if self._subagent_sessions:
+        return self._subagent_owner == session_id
+    return self._subagent_owner in (None, session_id)
+
+
+def unrouted_child_frames(self: AcpRuntime) -> int:
+    """How many frames naming a session have reached no session's queue so far.
+
+    Counted for an update (either session-update spelling) or a permission
+    request, the frames a native sub-agent sends under its own ``sessionId``:
+    one the roster route dropped or answered because another session was
+    registered beside its owner, one for a child no roster has named yet, and
+    one whose session is gone. The count only grows, so a session that reads
+    it at the start of a turn and again later knows whether any such frame was
+    lost in between, however briefly the route was closed: the answer of
+    ``routes_roster_children_to`` holds only at the instant it is asked. The
+    owner of a lost frame is not always known, so every session on the runtime
+    reads the same count.
+    """
+    return self._unrouted_child_frames
 
 
 def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> bool:
@@ -383,6 +420,10 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
         _mclass = "update"
     else:
         _mclass = "other"
+    if session_id != _DROP_NO_SESSION and _mclass != "other":
+        # A frame of the kind a native sub-agent streams, lost on its way to a
+        # session (``unrouted_child_frames``).
+        self._unrouted_child_frames += 1
     emit_counter(DROPPED_FRAMES, {"method_class": _mclass})
     now = time.monotonic()
     if self._dropped_frames_flushed_at == 0.0:

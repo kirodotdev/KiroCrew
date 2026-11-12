@@ -179,6 +179,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.turn_stream import (  # noqa: F401
         _UNFINISHED_TURN_STOP_REASONS,
+        _join_continued,
         stream_and_collect,
         stream_and_collect_json,
         unfinished_turn_error,
@@ -230,9 +231,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TIMEOUT,
+        STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
         engine_served_model,
         same_model,
+        timed_out_continuation,
         tracker_of,
         walk_outcome,
     )

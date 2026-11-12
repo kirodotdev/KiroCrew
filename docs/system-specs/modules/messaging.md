@@ -236,7 +236,7 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_TOOL_RESULT` | `TOOL_RESULT` when the result carries a terminal `tool_status` (`acp.types.TERMINAL_TOOL_STATUSES`) and a `tool_call_id`, carrying that status so a renderer can finalize the call's card honestly; a non-terminal update renders nothing. Also decodes + applies a session-directive marker via the injected `directive_consumer` (inert without one) |
 | `EVENT_PERMISSION_REQUEST` | `PROMPT_CHOICE` (interactive w/ decider only) then approve/reject; the PreToolUse script hooks gate it first (see Script hooks) |
 | `EVENT_COMPACTION_STATUS` | `COMPACTION`; a `completed` status also sets `TurnDriver.compaction_completed` (cleared at the start of each `run()`), which the dispatcher's settle reads to arm the one-shot re-injection flag |
-| `EVENT_COMPLETE` | `DONE` |
+| `EVENT_COMPLETE` | `DONE`. A completion that ended the prompt because a call's own silence timer ran out is not the turn's: `run` streams the provider through `acp.timed_out_continuation.continue_timed_out_calls`, which sends the same session the timed-out continuation and goes on with its events, at most `STOP_RECOVERY_MAX_RETRIES` times a turn, so the reply carries the model's answer after the timeout and the `DONE` is the continuation's, its usage summed over both prompts (see [acp-client](acp-client.md), "Per-call silence timer") |
 
 An optional structured-monitor completion hook is orthogonal to rendering. It
 revalidates the persisted `(monitor_id, fingerprint)` claim after

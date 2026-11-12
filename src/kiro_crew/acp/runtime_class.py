@@ -250,6 +250,8 @@ class AcpRuntime:
     _answer_ownerless_request = _rt_host._answer_ownerless_request
     # What the reader drops, counted: ``kiro_crew.acp.runtime_frame_accounting``.
     _snapshot_subagent_sessions = _rt_frames._snapshot_subagent_sessions
+    routes_roster_children_to = _rt_frames.routes_roster_children_to
+    unrouted_child_frames = _rt_frames.unrouted_child_frames
     _note_announced_child = _rt_frames._note_announced_child
     _note_roster_overflow = _rt_frames._note_roster_overflow
     _flush_roster_overflow = _rt_frames._flush_roster_overflow
@@ -715,6 +717,12 @@ class AcpRuntime:
         # dict needs no lock — asyncio.ensure_future(self._reader_loop()) is
         # called exactly once, in spawn(), and never re-entered.
         self._dropped_frames: dict[tuple[str, str], int] = {}
+        # Every frame that named a session and reached no session's queue, an
+        # update or a permission request: a native sub-agent's frame the roster
+        # route could not deliver, or one whose owner is unknown. Only grows,
+        # so a session reads it twice and knows whether one was lost between
+        # (``unrouted_child_frames``). Written by the reader alone.
+        self._unrouted_child_frames: int = 0
         # In-flight SEL audit tasks for auto-rejected permission requests;
         # held only to keep them alive (see _answer_unroutable_permission).
         self._audit_tasks: set[asyncio.Task] = set()

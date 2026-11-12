@@ -56,6 +56,10 @@ class _FakeHandle:
     _answer_kas_hook_execute = AcpSessionHandle._answer_kas_hook_execute
     _send_hook_error = AcpSessionHandle._send_hook_error
 
+    def _sync_silence_hold(self) -> bool:
+        """The per-call silence timer's hold a running hook keeps open: not read here."""
+        return bool(self._hook_tasks)
+
 
 class _CapturingRuntime:
     """The runtime surface the answer path reads: two methods, one identity."""

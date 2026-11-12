@@ -690,6 +690,10 @@ class TurnDriver:
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
+        # Bound here, not at module scope: ``kiro_crew.acp`` imports this package
+        # while it initialises (``acp.prompt_blocks`` reads ``messaging.raster``).
+        from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+
         accumulated = ""
         self.empty_turn_notice = ""
         # Set when the terminal is one of UNFINISHED_STOP_REASONS; the dispatcher
@@ -952,7 +956,11 @@ class TurnDriver:
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
-        async for event in self.provider.stream(message, **gated):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model in this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: self.provider.stream(prompt, **gated), message
+        ):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)

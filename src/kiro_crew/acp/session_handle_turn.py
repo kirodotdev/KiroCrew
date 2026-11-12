@@ -393,6 +393,7 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    self._reset_tool_silence()
     # A new turn starts a new batch window (``acp.batch_guard``).
     batch_window = getattr(self, "_batch_window", None)
     if batch_window is not None:

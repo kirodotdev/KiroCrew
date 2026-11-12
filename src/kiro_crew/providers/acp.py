@@ -272,6 +272,8 @@ class AcpProvider(LLMProvider):
         self._child_fidelity_aware: bool = False
         # Same shape for the MCP elicitation opt-in (see accepts_elicitation).
         self._accepts_elicitation: bool = False
+        # And for the mark the keepalive route's registry sets (mark_keepalive_routed).
+        self._keepalive_routed: bool = False
         # Canonical Kiro Crew identity (a cfg.agents key), resolved by the
         # factory at provider-creation time — ``agent`` above is the bound kiro
         # template, a different namespace. Threaded into the kiro-shared
@@ -1338,6 +1340,32 @@ class AcpProvider(LLMProvider):
         session on that process active, not just this one.
         """
         self._client.touch_activity()
+
+    def note_tool_heartbeat(
+        self, tool_call_id: str = "", *, activity_at: float | None = None
+    ) -> int:
+        """Hand a Kiro Crew tool's heartbeat to the live inner client.
+
+        This provider is what ``/api/session-keepalive`` finds in the registry, and
+        the per-call silence timer lives on the inner client's session handle
+        (``AcpSessionProvider.note_tool_heartbeat``). Returns how many calls it
+        stamped: none on a client with no such timer (the placeholder ``AcpClient``).
+        """
+        note = getattr(self._client, "note_tool_heartbeat", None)
+        return int(note(tool_call_id, activity_at=activity_at)) if callable(note) else 0
+
+    def mark_keepalive_routed(self) -> None:
+        """The registry ``/api/session-keepalive`` reads holds this provider.
+
+        Set by that registry (``kiro_crew.keepalive_route``). Stored here and
+        forwarded to the live inner client for the reason ``child_fidelity_aware``
+        is: the kiro backend's placeholder client is replaced at runtime startup,
+        and the stored mark is re-applied then.
+        """
+        self._keepalive_routed = True
+        mark = getattr(self._client, "mark_keepalive_routed", None)
+        if callable(mark):
+            mark()
 
     @property
     def session_id(self) -> str:

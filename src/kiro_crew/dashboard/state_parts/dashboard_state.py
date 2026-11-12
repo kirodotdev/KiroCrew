@@ -39,6 +39,7 @@ from kiro_crew.dashboard.state_parts.dashboard_services import (
 from kiro_crew.dashboard.state_parts.notification_log import _load_notifications
 from kiro_crew.dashboard.state_parts.session_events import _record_crew_log_class
 from kiro_crew.dashboard.state_parts.slots_frame import _SLOTS_BROADCAST_INTERVAL_S
+from kiro_crew.keepalive_route import serve_keepalive_route
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
@@ -301,6 +302,9 @@ class DashboardState:
         owner_id: str = "",
     ):
         self.sessions = sessions
+        # ``/api/session-keepalive`` looks a session up in this registry, so the
+        # providers it publishes are the ones a Kiro Crew tool's heartbeat reaches.
+        serve_keepalive_route(sessions)
         # The decisions seam's LLM lane needs ONE callable that runs a prompt on a
         # tool-less background session, and ``decisions/`` deliberately imports
         # nothing above itself -- so the wiring happens here, where the session

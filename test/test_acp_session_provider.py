@@ -1246,6 +1246,25 @@ class TestNewConversation:
 
         assert new_handle.delete_delay_secs == 1800.0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("routed", [True, False])
+    async def test_the_fresh_conversation_keeps_the_keepalive_routes_mark(self, routed):
+        """The registry ``/api/session-keepalive`` reads holds the provider, not the
+        handle: a fresh conversation still times its calls on Kiro Crew's servers
+        exactly when the old one did."""
+        old = _make_handle(session_id="old-session-1")
+        old.keepalive_routed = False
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.keepalive_routed = False
+        provider = AcpSessionProvider(old, runtime)
+        if routed:
+            provider.mark_keepalive_routed()
+            assert old.keepalive_routed is True
+
+        await provider.new_conversation()
+
+        assert new_handle.keepalive_routed is routed
+
     def test_the_workflow_provider_passes_the_delete_delay_to_its_session(self):
         """A workflow worker holds an ``AcpProvider``; only its shared-runtime client
         can release a session, and the per-session client ends its sessions as before."""

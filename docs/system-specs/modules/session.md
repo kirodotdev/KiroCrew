@@ -456,7 +456,13 @@ state are composed behind that facade:
   it passed in (`localns`). A class an owner defines keeps
   `kiro_crew.session_allocation` as its `__module__`.
   `test/test_session_allocation_bindings.py` pins the member inventory, the
-  binding and the reach
+  binding and the reach. Every publication and removal of a key passes
+  `advance_ownership_generation`, which is also where the registry the
+  gateway's `DashboardState` holds marks a provider it just published
+  (`kiro_crew.keepalive_route`): `/api/session-keepalive` reads that registry,
+  so only such a provider's handle times calls on Kiro Crew's own servers, and a
+  manager no `DashboardState` holds (`kirocrew run`, `kirocrew eval`) marks none
+  ([acp-client](acp-client.md), "Per-call silence timer")
 - `session_pool.py` — warm-provider spawn, inventory, claim, health, and discard
 - `session_background.py` — persistent and multiplexed background runtimes
 - `session_compaction.py` — context gates, compaction execution, verdicts,

@@ -213,6 +213,10 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         tool_stall_hard_cap_secs=section.read("tool_stall_hard_cap_secs", _safe_float),
         model_silent_probe_secs=section.read("model_silent_probe_secs", _safe_float),
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
+        builtin_tool_silence_secs=section.read("builtin_tool_silence_secs", _safe_float),
+        mcp_network_silence_secs=section.read("mcp_network_silence_secs", _safe_float),
+        mcp_stdio_silence_secs=section.read("mcp_stdio_silence_secs", _safe_float),
+        subagent_silence_secs=section.read("subagent_silence_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
 

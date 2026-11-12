@@ -333,6 +333,61 @@ class WatchdogConfig:
             "windows.",
         ),
     )
+    builtin_tool_silence_secs: float = field(
+        default=300.0,
+        metadata=_meta(
+            "Built-in tool silence (s)",
+            "Seconds a non-shell built-in tool call (a file edit, a read, a search, a "
+            "fetch) may go with no frame for it before it is cancelled and the agent "
+            "is told it timed out, so it can retry. Counted from the call's dispatch "
+            "and restarted by any frame for that call; time spent waiting on a person "
+            "(an approval card, an MCP question) is not counted, and the answer "
+            "restarts it. A shell call keeps the liveness-oracle rules instead. This "
+            "and the three bounds below run only while Kiro Crew can see the call's "
+            "activity: a call whose activity may be out of sight (one a frame of an "
+            "unknown kind names, a sub-agent call whose sub-agent's frames may not have "
+            "reached the session) loses its timer, and no call is judged while a KAS "
+            "hook runs or another request is reading the session's frames; such a call "
+            "is left to the liveness oracle and tool_stall_hard_cap_secs. Default 5 "
+            "min; 0 turns the timer off for these calls. Never longer than "
+            "tool_stall_hard_cap_secs. Applies on kiro-cli and KAS, whose tool frames "
+            "say which calls an MCP server served.",
+        ),
+    )
+    mcp_network_silence_secs: float = field(
+        default=300.0,
+        metadata=_meta(
+            "MCP network tool silence (s)",
+            "The same per-call silence bound for a tool on an MCP server the session "
+            "declared with a url. Any frame the harness sends for that call restarts "
+            "it. Default 5 min; 0 turns it off.",
+        ),
+    )
+    mcp_stdio_silence_secs: float = field(
+        default=1800.0,
+        metadata=_meta(
+            "MCP stdio tool silence (s)",
+            "The same per-call silence bound for a tool on any other MCP server, Kiro "
+            "Crew's own included. Kiro Crew's own long tools (wait, ask_question, the "
+            "browser's hand-back) send a heartbeat about every 30 s, so they are never "
+            "cut short while they work. Kiro Crew's sub-agent tools (spawn_run, "
+            "spawn_continue, spawn_sub_agents) are bounded by subagent_silence_secs "
+            "instead. Default 30 min; 0 turns it off.",
+        ),
+    )
+    subagent_silence_secs: float = field(
+        default=600.0,
+        metadata=_meta(
+            "Sub-agent call silence (s)",
+            "The same per-call silence bound for a sub-agent call (the harness's own "
+            "sub-agent tool, spawn_run, spawn_continue, spawn_sub_agents), counted "
+            "from the sub-agent's own activity: its frames, and any tool call it has "
+            "open, which holds the timer while it runs. A kiro-cli sub-agent call has "
+            "no timer once any frame on its runtime may have missed the session this "
+            "turn: while another session shares the runtime, even for a moment, its "
+            "sub-agent's frames are dropped. Default 10 min; 0 turns it off.",
+        ),
+    )
     wellness_sample_secs: float = field(
         default=3.0,
         metadata=_meta(
