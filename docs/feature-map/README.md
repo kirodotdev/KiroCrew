@@ -224,13 +224,14 @@ Any one of those tabs can also be **promoted to its own top-level rail row**, so
 a sub-item someone uses daily is one click away instead of two. Each tab is
 registered as a `pinnable` surface (`surfaces/builtins.tsx`,
 `surfaces/registry.ts`), which keeps it OFF the rail until the user promotes it;
-the promoted set is a per-browser preference held under `mc-nav-pinned` and
+the promoted set is a browser preference held under `mc-nav-pinned` and
 owned by `lib/navPinned.ts` (the sibling of `lib/appNavHidden.ts`, which does
 the same job for app rows in the Apps group). Reach it from the pin control in
 the Customize page header (`components/PinSurfaceButton.tsx`), which
 resolves its subject from the current `?tab=` value. Promotions are capped at
 `NAV_PINNED_LIMIT`, and the rail applies the filter in `shell/nav/appRail.tsx`. No handler and
-no endpoint: the preference never leaves the browser.
+no endpoint of its own: the host settings backup (`DURABLE_PREF_KEYS`) carries it,
+and the Apps group's unpinned set, to a fresh browser profile.
 
 | Tab | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|

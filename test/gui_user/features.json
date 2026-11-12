@@ -1589,7 +1589,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Preference is browser-local under mc-nav-pinned (useNavPinned); clear between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
+        "notes": "Preference is held under mc-nav-pinned (useNavPinned) and backed up in ui-prefs.json; clear both between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
