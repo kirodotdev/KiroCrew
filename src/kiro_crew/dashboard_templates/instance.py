@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -720,6 +721,23 @@ def read(slug: str) -> Instance:
     record, and rollback is how a change is undone.
     """
     return _instance_from_raw(slug, _read_record(slug))
+
+
+def forget(slug: str) -> None:
+    """Remove a crewmate's dashboard instance: its versions, current copy and staged preview.
+
+    For the teardown of a crewmate that left the roster, so a later one deriving the
+    same slug starts with no page. A link in place of the directory is unlinked, never
+    followed. shortcut: a package page snapshot under ``crew-panels`` is left to its own
+    pruning; add its removal here if those pile up.
+    """
+    if is_session_key(slug):
+        raise InstanceError("a session dashboard is not a crewmate's")
+    directory = instance_dir(slug)
+    if directory.is_symlink():
+        directory.unlink()
+    elif directory.is_dir():
+        shutil.rmtree(directory)
 
 
 def _updated_ms(raw: dict[str, Any]) -> int:
