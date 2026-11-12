@@ -723,6 +723,15 @@ def test_one_unglobbable_entry_does_not_empty_the_others(tmp_path, trees):
         assert loaded.count(rule) == 1, rule
 
 
+def test_a_file_uri_spelled_absolute_entry_anchors_at_its_own_folder(tmp_path, trees):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute entry."""
+    from kiro_crew.context import _load_steering_resources
+
+    _write(tmp_path / "abs-rules" / "abs.md", "URI-RULE-5e1b")
+    _declare(["file:///" + (tmp_path / "abs-rules").as_posix().lstrip("/") + "/*.md"])
+    assert _load_steering_resources().count("URI-RULE-5e1b") == 1
+
+
 @pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="no symlinks")
 def test_a_project_steering_link_out_of_the_project_is_refused(tmp_path, trees):
     """A project document is admitted against the project, not the home."""

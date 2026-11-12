@@ -53,7 +53,9 @@ class Origin:
     """The sender of a delivery and what its row names.
 
     ``label`` is the cron job or app label the row shows; ``nudge`` is the
-    ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row carries.
+    ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row carries,
+    plus, for a steered wake, the loop's config generation under
+    :data:`WAKE_GENERATION`, which no row carries.
     Build one with :func:`cron`, :func:`app` or :func:`automation`.
     """
 
@@ -81,8 +83,17 @@ def app(label: str) -> Origin:
     return Origin(ORIGIN_APP, label=label)
 
 
-def automation(cycle: int, loop_id: str) -> Origin:
-    return Origin(ORIGIN_AUTOMATION, nudge={"cycle": cycle, "loop_id": loop_id})
+#: The key a steered wake's ``nudge`` holds its loop's config generation under. The
+#: steer keeps it so the turn that carries the wake can charge that loop's cycle
+#: (``steer_queue``); the steer's row and a requeued entry's meta drop it.
+WAKE_GENERATION = "generation"
+
+
+def automation(cycle: int, loop_id: str, *, generation: int | None = None) -> Origin:
+    nudge: dict[str, Any] = {"cycle": cycle, "loop_id": loop_id}
+    if generation is not None:
+        nudge[WAKE_GENERATION] = generation
+    return Origin(ORIGIN_AUTOMATION, nudge=nudge)
 
 
 def origin_row(origin: Origin) -> tuple[str, str, dict[str, Any]]:

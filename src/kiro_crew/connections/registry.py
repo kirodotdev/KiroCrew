@@ -54,7 +54,7 @@ class AuthConfig(TypedDict, total=False):
     registers a public client at runtime, RFC 7591) or ``"preregistered"``: the
     provider refuses dynamic registration, so an OPERATOR registers an OAuth app
     in the vendor console and hands Kiro Crew its client id (and, for a
-    confidential client, its secret) through Settings → OAuth Apps. Which
+    confidential client, its secret) through Settings → Connections. Which
     providers are which is a vendor fact, not a preference, so it lives in the
     registry rather than in config.
 
@@ -120,7 +120,7 @@ class Provider(_RequiredProviderFields, total=False):
     ``auth.mode`` is ``preregistered`` -- the value Kiro itself registered, if
     any. It is a PUBLIC identifier forwarded to the runtime as the remote
     entry's ``clientId``; the corresponding secret is never stored here. An
-    operator-configured client (Settings → OAuth Apps) always takes precedence
+    operator-configured client (Settings → Connections) always takes precedence
     over it, and no entry sets it today, which is why the field is optional
     rather than required — an entry without it simply carries no default.
 

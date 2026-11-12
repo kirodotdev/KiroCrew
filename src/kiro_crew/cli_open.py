@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from kiro_crew.platform_compat_trust import open_with_default_app
 
@@ -49,6 +49,11 @@ def build_deep_link(*, session: str | None = None) -> str:
     """
     if not session:
         return f"{SCHEME}://"
+    if "%" in session:
+        # The help points at the dashboard URL's ``?sid=`` value, which the dashboard
+        # writes percent-encoded. ``%`` is outside the key grammar, so decoding once
+        # changes nothing a valid key could mean; decoded junk still fails below.
+        session = unquote(session)
     if not _SLOT_KEY_RE.fullmatch(session):
         raise DeepLinkError(
             "session key may contain letters, digits, '.', '_', ':' and '-', "

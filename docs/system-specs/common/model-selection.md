@@ -184,11 +184,16 @@ advertised-store persist), so after an account switch made anywhere on the host
 -- the dashboard's sign-in card, or `kirocrew kas login` / `kas logout` in a
 shell, which writes the same vault from another process -- it answers cold, and
 the rows serve again if the vault comes back to that account. No in-process
-notice from the vault's writer is needed, so there is none. Only the **bundle route** reads
-it — `agent.acp_backend == "kas"`
+notice from the vault's writer is needed, so there is none. The **bundle route** —
+`agent.acp_backend == "kas"`
 AND `agent.kas_bundle`, the positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route`
-— because that route has no kiro-cli to print a catalog; the relay route's picker
-keeps reading `--list-models` exactly as below. The bundle route runs no
+— reads it, because that route has no kiro-cli to print a catalog; the relay route's picker
+keeps reading `--list-models` exactly as below, except on a relay that starts on
+Crew's sign-in alone (entered through `kiro-cli-chat`,
+`acp.kas_route.crew_sign_in_starts_spawn`) once kiro-cli's gate refuses:
+there `/api/models` serves the same recording and starts no cold probe, so a
+model-list read spawns nothing, and a cold read answers `auto` until the first
+chat spawns. The bundle route runs no
 entitlement narrowing on the recording: the select already lists what the
 signed-in account is served, and `_entitled_kiro_models` reads the newest live
 `acp`-namespace provider, which can be a retained kiro-cli session after a

@@ -31,6 +31,7 @@ from kiro_crew.crew_log.session_tree import (
 )
 from kiro_crew.crew_log.session_tree_projection import CHECKPOINT_NAME, SessionTreeProjection
 from kiro_crew.dashboard.session_memory import lineage_parents
+from kiro_crew.testing.wait import wait_until
 
 GATEWAY = "gateway"
 
@@ -452,7 +453,13 @@ def test_the_self_parented_filter_never_drops_a_spawn_from_the_held_set(_floor_m
     # Drop the live writer's cached handles first: Windows refuses to unlink a file a
     # handle still holds open, which is exactly the lease a live log handle keeps.
     emit.reset_caches()
-    shutil.rmtree(w2_dir)
+    # Windows refuses the unlink while ANY process has the file open, and a scanner on
+    # the runner can hold a freshly written log for a moment: wait for the removal.
+    wait_until(
+        lambda: shutil.rmtree(w2_dir) is None,
+        ignoring=(PermissionError,),
+        describe=lambda: sorted(p.name for p in w2_dir.iterdir()) if w2_dir.exists() else [],
+    )
     rooted = SessionTree().reading(with_edges=True)
     assert rooted.nodes["W2"].parent_slot == "L"
 
@@ -487,7 +494,7 @@ def test_a_capped_scan_is_never_cached_even_when_self_parented_suppresses_the_cu
     # Every evicted spawn is self-parented, so the reading is complete (not cut) ...
     assert first.reading().incomplete is False
     # ... but the capped unit must NOT be cached: the next boot has to re-read it.
-    assert "s-l" not in first._spawn_scans
+    assert "s-l" not in first._marks
 
 
 def test_a_cut_replay_is_not_cached_as_the_units_whole_answer(_floor_monkeypatch):
@@ -506,7 +513,7 @@ def test_a_cut_replay_is_not_cached_as_the_units_whole_answer(_floor_monkeypatch
     revived.ensure_seeded()
     assert revived.nodes()["W3"].parent_slot == "L"
     assert revived.reading().incomplete is True
-    assert "s-l" not in revived._spawn_scans
+    assert "s-l" not in revived._marks
 
 
 def test_eviction_past_the_cap_is_not_undone_by_the_replay_scan_cache(_floor_monkeypatch):
@@ -520,7 +527,7 @@ def test_eviction_past_the_cap_is_not_undone_by_the_replay_scan_cache(_floor_mon
     path = _checkpoint_path()
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["spawned"] = []
-    payload["spawn_scans"] = {}
+    payload["marks"] = {}
     path.write_text(json.dumps(payload), encoding="utf-8")
     _floor_monkeypatch.setattr(stp, "TREE_UNIT_CAP", 3)
 
@@ -534,7 +541,7 @@ def test_eviction_past_the_cap_is_not_undone_by_the_replay_scan_cache(_floor_mon
     assert evicted_units
     assert revived.reading().incomplete is True
     for sid in evicted_units:
-        assert sid not in revived._spawn_scans
+        assert sid not in revived._marks
 
 
 # ── session_control's call ─────────────────────────────────────────────────

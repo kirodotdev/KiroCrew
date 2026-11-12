@@ -64,7 +64,7 @@ export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
 export const MAC_CTRL_DIGITS_KEY = 'mc-mac-ctrl-digits'
 
 /** True on macOS where Option+number produces characters (UK: ⌥3→#, ⌥2→€). */
-function isMacPlatform(): boolean {
+export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad/.test(navigator?.platform ?? '') || /Macintosh/.test(navigator?.userAgent ?? '')
 }
 // Frozen at module load for the chord-shape decisions (modifier choice, gate

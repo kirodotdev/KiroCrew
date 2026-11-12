@@ -7,7 +7,7 @@ session; a server nobody curated is added by hand on the same page and behaves t
 same way afterwards. The page also reports whether each one is actually answering,
 which is usually the question you came with.
 
-Open it from the sidebar: **Customize → Connections**. The older
+Open it from the sidebar: **Settings → Connections**. The older
 `/connections` address still works and redirects there.
 
 The gallery ships on. To remove every Connections surface from an install, set
@@ -28,7 +28,7 @@ Of those, **15** render a card today. Two conditions decide which:
 | Entry state | Card | Why |
 |---|---|---|
 | Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Seven entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab, TickTick |
-| Needs an operator-registered OAuth app | **Configure OAuth app** | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
+| Needs an operator-registered OAuth app | **Set up <provider>** (e.g. **Set up GitHub**) | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
 | Launch gate not yet walked | hidden | The entry exists so the nightly metadata check covers it; nothing about it is claimed to you yet |
 | Vendor admits clients by allowlist or waitlist | hidden | No per-install app can satisfy it, which is a dead end rather than an instruction. Four entries: Figma, Canva, Dropbox, Square |
 
@@ -272,7 +272,7 @@ For the two vendors needing an operator-registered app, the split is:
 | Client ID | `config.json`, under `connections.oauth_clients.<slug>.client_id` |
 | Client secret | the encrypted vault, as `CONNECTIONS_<SLUG>_CLIENT_SECRET` |
 
-Enter both under **Settings → OAuth Apps**, which also shows the exact redirect URI
+Enter both under **Settings → Connections**, which also shows the exact redirect URI
 to register in the vendor console. The panel is write-only for the secret: it never
 reads one back, so a screenshot of it leaks nothing. An environment pair
 (`KIROCREW_CONNECTIONS_<SLUG>_CLIENT_ID` and `_CLIENT_SECRET`) overrides both, for
@@ -398,7 +398,7 @@ reset control — do not edit the user's MCP config to work around it.
 ## Sharing MCP servers across chats
 
 Each chat normally starts its own copy of every stdio MCP server. **MCP
-Management**, under the server list on **Customize → Connections → MCP Servers**,
+Management**, at the top of **MCP Servers** above the server list,
 lets all your chats use one copy of a server instead, which saves memory when many
 chats are open. A shared copy runs outside each chat's sandbox, with your access, so
 share a server only if you added it yourself and its command is what you expect.
@@ -417,7 +417,8 @@ them in a dialog, each with **Approve** (one copy runs it for all chats, outside
 their sandbox) and **Skip** (it keeps running inside each chat). There is no
 approve-all.
 
-**Advanced** holds the rest. In **Per-server sharing**, each row has a switch in
+The **Sharing** view, beside **Servers** under the card, holds the rest. In
+**Per-server sharing**, each row has a switch in
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with

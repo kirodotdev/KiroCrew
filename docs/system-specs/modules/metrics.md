@@ -250,7 +250,13 @@ exporter's header updates change the edition's object. The legacy entry gets the
 load itself (the OTel credential-provider one, else a plain one); that loader is
 private to the SDK, and if it is missing the legacy destination keeps exporting
 through a plain no-redirect session, with one WARNING (naming the credential-provider
-variable, when one is set, whose session was therefore not loaded).
+variable, when one is set, whose session was therefore not loaded). Every session
+the exporter gets has an `auth`: its own (an edition's, or the credential-provider
+session's) is kept, and one without gets an `auth` that applies only the endpoint
+URL's own `user:password@` (what `requests` does with no `auth`), so `requests`
+never reads `$NETRC` or `~/.netrc` for the collector's host. That login would
+otherwise replace a configured `Authorization` header, or add one where none was
+set. Proxy and CA settings from the environment still apply.
 
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
@@ -1290,6 +1296,7 @@ Each row (`_build_token_record`) carries:
 | `delivered` | bool | whether the turn streamed any reply text (`_saw_text_chunk` at EVENT_COMPLETE), so a billed tool-only turn reads apart from one that answered. A backend control notice streamed as text (the claude adapter's `Compacting...`) counts as text; a quiet end on a terminal directive records `false`. Written by the dashboard's two write sites: the complete path (`turn_stats._on_complete`) and the abnormal-end seam (`_persist_abnormal_turn_usage`, from the same `_saw_text_chunk`). Every other writer leaves the key off, which means unknown, not undelivered |
 | `transcript` | str | the key of the transcript the dashboard tab writes to (`slot_history_key(slot)`). A tab linked to another session (a task review, a workflow, a cron run) writes under a key its slot name cannot reach, and the row is the one record that outlives the tab, so this is how the Telemetry card finds a closed tab's transcript. Written by the dashboard's two write sites (the complete path and the abnormal-end seam); every other writer leaves the key off, and rows written before the field have none |
 | `harness` | str | the effective harness of the session the turn ran on, in the `kirocrew.harness` vocabulary (`metrics.harness.harness_of(model_source)`, the same value that labels the turn samples): `kiro`, `kas`, `codex`, …, or `claude_code` on the Claude Code seam. It is what tells a Codex turn from a kiro-cli one, since both record `provider: acp`; Session Activity counts sessions by it (`usage_store._SHARD_COUNTED_HARNESSES`). Written by every writer that passes `model_source`; a writer that passes none, an unresolved harness (`unknown`), and rows written before the field leave the key off |
+| `acp_session_id` | str | the ACP session the turn ran in (`crew_log.emit_state.session_id_of(model_source)`): one per conversation, where a cron job, a heartbeat or a channel thread reuses one `slot` for every run. Session Activity keys a row-counted session by it first (`usage_sessions._shard_sessions`). Written by every writer that passes `model_source`; a provider with no session yet, a writer that passes none, and rows written before the field leave the key off |
 
 The `surface` / `agent` / `context_used` / `context_window` / `context_sum` fields and
 `stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
@@ -1819,8 +1826,9 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns and sub-agent runs recorded to a local sink. There is no OTLP export
-and no surface trigger span yet. Tests: `test/tracing/`.
+session turns and sub-agent runs recorded to a local sink, and exported over
+OTLP/HTTP when a collector is named. There is no surface trigger span yet. Tests:
+`test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -1830,8 +1838,8 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days` or `max_total_mb`, the worker thread applying it
-re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
+moves `traces_enabled`, `retention_days`, `max_total_mb` or a `traces_otlp_*` key, the worker
+thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
 the same tracer is served again with the new caps set on its sink. That keeps one
@@ -1843,11 +1851,56 @@ thread: the namespace and key are read before the processor exists. Off means no
 `opentelemetry.sdk.trace` import, no `TracerProvider` and no thread: each hook
 costs one call returning `None`, pinned by
 `test_off_imports_no_sdk_and_starts_no_thread`. On means one `TracerProvider`
-(scope `kiro_crew`, resource `service.name=kirocrew` plus `kirocrew.trace_ns`) with
-a `BatchSpanProcessor` into `tracing/exporter.py::JsonlSpanExporter`:
+(scope `kiro_crew`, resource `service.name` = `OTEL_SERVICE_NAME` or `kirocrew`,
+plus `kirocrew.trace_ns`; metrics keep `kirocrew`) with a `BatchSpanProcessor` into
+`tracing/exporter.py::JsonlSpanExporter`:
 `<data home>/traces/spans-YYYY-MM-DD-<pid>.jsonl`, one `ReadableSpan.to_json` line
 per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. It is not
-the process's global tracer provider.
+the process's global tracer provider. Both span processors run on
+`provider.BATCH_LIMITS` (queue 2,048, batch 512, 5 s delay), so no `OTEL_BSP_*`
+variable changes them.
+
+**Export** (`tracing/otlp.py`). Only while the switch is on. The endpoint is
+`telemetry.traces_otlp_endpoint`, else `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
+`OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces`; an LTS build ignores all three
+(`edition_locks`, control `telemetry.otlp_hosts`). The URL must be `https://` unless
+its host is loopback, and carries no userinfo, query or fragment. Headers follow
+their endpoint's source: a config endpoint sends `traces_otlp_headers_secret`
+(header → vault entry name, read with `SecretVault.get` at exporter build) and
+`traces_otlp_headers_env` (header → variable), never the process-wide OTel header
+variables; an environment endpoint sends `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, else
+`OTEL_EXPORTER_OTLP_HEADERS`. A header that cannot be read, or a config value that
+is not an entry name (a literal), turns export off with one warning that names the
+header and never a value or vault reference. The host passes the metrics signal's
+policy path: `metrics/provider.py::trace_destination_permitted` at build
+(`otlp_governance.governed_destinations`, SEL-audited) and `gate_trace_exporter` on
+every export (`gate_exporter`, refused batches return `SpanExportResult.FAILURE`).
+The first collector adds a second `BatchSpanProcessor` over `otlp.RemoteSpans`,
+which drops `kirocrew.local.*` keys from spans and links and forwards to an
+`OTLPSpanExporter` (http/protobuf, the `otlp` extra, 10 s timeout, its own
+`requests.Session` with `max_redirects = 0`, so a 307/308 fails the export instead
+of resending spans and headers to a host the gate never checked; built through
+`metrics/otlp_session.export_session`, and with a no-op `auth` so `requests` never
+reads `~/.netrc` for the collector's host). Header names, values and references are
+checked against character sets and length bounds (no regex) that refuse anything
+`requests` would refuse, and
+`OTEL_EXPORTER_OTLP_*HEADERS` is parsed by `otlp._otel_env_headers`, not the SDK's
+parser, because both of those log a rejected value verbatim. Behind that check,
+the session (`otlp._export_session`) re-raises every `requests` error as the same
+class with fixed text and replaces each response's reason phrase with the standard
+one, so neither the SDK's failure log nor a collector echoing a header can put a
+header value in a log line. Known limitation: a collector that echoes credentials
+can cause them to appear in local logs. urllib3 logs a malformed response header
+line verbatim, as a WARNING with its traceback, from inside the request, before
+the session sees anything; closing that would need a process-wide filter on
+urllib3's loggers, which every other HTTP client in the process shares, so it is
+not done. The credential stays on this host and only a collector the operator
+named can cause it. A config write swaps or clears that exporter without a new
+thread; switched off, batches are dropped. A refused destination is retried on the
+next write. The exit flush shuts the local processor down first.
+`BatchProcessor` restarts both threads in every fork child; the sandbox probe runs
+in a fresh interpreter, pinned with export on by
+`test_the_sandbox_probe_stays_single_threaded_with_trace_export_on`.
 
 **Where spans open.** `tracing/turns.py::traced` wraps the event stream in the two
 functions every model turn passes through, `acp/session_provider.py::AcpSessionProvider.stream`
@@ -1970,6 +2023,26 @@ Ids are shape-checked rather than run through `validate_attrs`, whose entropy te
 would blank a backend's random tool call ids; every other string goes through
 `validate_attrs`. Never on a span: prompt or completion text, tool arguments or
 output, file paths, MCP server or tool names, exception messages, span events.
+
+### Abnormal turn log (`tracing/turn_anomalies.py`)
+
+Always on and independent of `telemetry.traces_enabled`. `watched` wraps the same
+two stream functions as `traced` and times the turn from Crew's side: start, first
+event, first model output (text, thought or tool call), the longest silence while
+no tool runs and no user ask is open, and the end. A normal turn writes nothing. A
+turn logs one WARNING line, `turn-anomaly <json>`, when its first
+output took over `FIRST_OUTPUT_SLOW_SECS` (30 s) or never came on a turn that ran
+that long, its longest model silence was over `MODEL_GAP_SLOW_SECS` (60 s), the
+stream carried a `retry_wait` status, a model fallback or an MCP start failure, it
+stopped on `timeout`, `stale_recover` or an `error:` reason, or the stream raised. A
+line holds the session key, backend, model, the reasons, the timings in seconds,
+event and tool-call counts, notice counts, the stop reason and the exception class
+name; never prompt text, tool data or an exception message. The line goes through
+the normal logger, so in the gateway it lands in `gateway.log` (`grep turn-anomaly`
+finds it), and that log's own rollover and owner-only mode bound and guard it; the
+diagnostics bundle carries it with `gateway.log` when logs are included. One session
+writes at most 5 lines a minute; its next line after that carries `suppressed: <n>`.
+Tests: `test/tracing/test_turn_anomalies.py`.
 
 ## Circular-import rule
 

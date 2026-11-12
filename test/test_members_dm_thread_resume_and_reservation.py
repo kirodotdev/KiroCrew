@@ -758,6 +758,7 @@ class TestOpenAiCompatPin:
         state.get_or_create_slot = MagicMock(return_value=slot)
         state._slots = {slot.key: slot}
         state._background_tasks = set()
+        state.session_still_loading = AsyncMock(return_value=False)
 
         request = MagicMock()
         request.json = AsyncMock(

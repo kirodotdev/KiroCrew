@@ -335,7 +335,10 @@ from kiro_crew.dashboard.handlers.agents_session_commands import (
     menu_backend,
     menu_with_session_commands,
 )
-from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
+from kiro_crew.dashboard.handlers.models_kas_bundle import (
+    api_models_kas_bundle,
+    api_models_kas_crew_relay,
+)
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
@@ -1457,7 +1460,8 @@ async def api_models(request: web.Request) -> web.Response:
         if cached is None or not await kiro_latched_ready(request):
             blocked = await reject_if_kiro_unverified(request)
             if blocked is not None:
-                return blocked
+                crew_relay = await api_models_kas_crew_relay(request, backend)
+                return blocked if crew_relay is None else crew_relay
         if cached is not None:
             # Serve the last good catalog straight away; a stale one is refreshed
             # behind the reply (stale-while-revalidate). Entitlement narrowing

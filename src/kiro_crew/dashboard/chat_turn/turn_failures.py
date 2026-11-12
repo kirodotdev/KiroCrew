@@ -12,9 +12,10 @@ A new arm that ends the turn goes here; one that retries, resets or replays it g
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_capabilities import CapabilityError
+from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
 from kiro_crew.security import redact
 from kiro_crew.session_capabilities import CapabilityStartupError
@@ -33,7 +34,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.account_identity import _mark_kiro_signed_out
     from kiro_crew.dashboard.chat_turn.eager_spawn import _is_pre_spawn_refusal
-    from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _deliver_linked_slack_message,
+        _mirror_echo_owed,
+        _prompt_typed_in_dashboard,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import (
         _note_cycle_failure,
         _note_cycle_start_failure,
@@ -467,16 +473,16 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
             slot._last_turn_structural_terminal_loop_id = _directive_loop_id
             slot._last_turn_structural_terminal_loop_gen = _directive_loop_gen
         # A cycle that never obtained a model session. Only the loop's own
-        # cycle counts, a recovery it queued for itself included
-        # (``_wake_cycle``); a human turn that happened to be starved would
-        # otherwise spend an unrelated loop's stand-down budget. The streak
+        # cycle counts, a recovery it queued for itself or a turn carrying its
+        # steered wake included (``_wake_cycle``); any other human turn that
+        # happened to be starved would otherwise spend an unrelated loop's
+        # stand-down budget. The streak
         # itself lives on the loop (``notify_cycle_start_failed``), which backs
         # the loop off and eventually stands it down instead of firing cycle
         # after cycle that can only fail the same way. Read with getattr: the
         # two ACP exception families tag this fact independently and share no base.
-        _wake_cycle = turn._wake_cycle
-        _wake_id, _wake_gen = _wake_cycle or ("", 0)
-        _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
+        _wake_id, _wake_gen = turn._wake_cycle or ("", 0)
+        _note_cycle_start_failure(slot.key, exc, self_wake=turn._wake_cycle is not None)
         # A cycle that DID reach a model session and dispatched but then
         # died terminally here -- a backend error after retries were spent,
         # a persistent tool error, a prompt timeout. The gate (self-wake
@@ -490,7 +496,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         await _note_cycle_failure(
             slot.key,
             exc,
-            self_wake=_wake_cycle is not None,
+            self_wake=turn._wake_cycle is not None,
             loop_id=_wake_id,
             expected_generation=_wake_gen,
         )
@@ -652,11 +658,61 @@ def _chat_harness_name(session_key: str) -> str:
     return harness_label(backend_to_stored(backend))
 
 
+def _unsent_resend(turn: _ChatTurn) -> tuple[str, dict[str, Any]] | None:
+    """The text and queue meta Resume may resend for this failed turn, or None.
+
+    Recorded with a ``memory_unavailable`` error row in the slot's
+    ``_unsent_resends`` so the Continue endpoint resends that message instead of
+    asking the agent to finish "the most recent request", which in its own
+    session is the one before. Only a person's own dashboard prompt qualifies,
+    or a verbatim replay of one that Resume queued, because the resend runs as
+    the presser's own turn. A turn the agent already consumed records nothing.
+
+    Everything is taken from what this process handed the runner, never from a
+    transcript row: the text is ``_incoming_message``, the ``message`` argument
+    bound before the turn's first await, and the attachment lists are the
+    runner's own ``_attachment_meta`` / ``_attachments`` arguments, which the
+    send handler and the queue drain build from the request and the queue entry.
+    A row can be rewritten, or rebuilt from disk under the same ``mid``; these
+    cannot.
+    """
+    if turn._consumed_reported or turn._commands_off or turn._prompt_depth != 0:
+        return None
+    slot = turn.slot
+    if getattr(slot, "_handoff_generation", None) == getattr(slot, "_turn_generation", None):
+        # The prompt stream already opened, so the agent's session may hold it.
+        return None
+    verbatim_user_resend = (
+        turn._synthetic_recovery_turn
+        and not turn._synthetic_payload
+        and turn._directive_user_origin
+        and not turn._directive_channel_origin
+        and turn._crew_log_actor == "user"
+        and not turn._turn_provenance_restored
+    )
+    if not (verbatim_user_resend or _prompt_typed_in_dashboard(turn)):
+        return None
+    text = getattr(turn, "_incoming_message", None)
+    # A turn with no triggering row (an expanded /prompts body) is not one message's words.
+    if getattr(turn, "_current_replay_message", None) is None:
+        return None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if turn._attachment_meta:
+        meta: dict[str, Any] = dict(attachment_meta(turn._attachment_meta))
+    else:
+        meta = dict(attachment_meta({"files": list(turn._attachments or ())}))
+    if _mirror_echo_owed(turn):
+        # Without the echo flag the linked channel gets the answer with no question.
+        meta[MIRROR_ECHO_OWED_META_KEY] = True
+    return text, meta
+
+
 async def _on_error(turn: _ChatTurn, exc) -> None:
     """Any other error the turn raised."""
-    # As in _on_acp_error_card: a recovery the loop's cycle queued is that cycle.
-    _wake_cycle = turn._wake_cycle
-    _wake_id, _wake_gen = _wake_cycle or ("", 0)
+    # As in _on_acp_error_card: a recovery the loop's cycle queued, or a turn that
+    # carries its steered wake, is that cycle.
+    _wake_id, _wake_gen = turn._wake_cycle or ("", 0)
     slot = turn.slot
     state = turn.state
     _memory_preparation_admitted = turn._memory_preparation_admitted
@@ -682,8 +738,10 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F811
 
     _err_meta: dict | None = None
+    _unsent: tuple[str, dict[str, Any]] | None = None
     if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
         _err_meta = {"code": "memory_unavailable"}
+        _unsent = _unsent_resend(turn)
     elif isinstance(exc, CapabilityError) and exc.code in _SESSION_START_REFUSAL_TEXT:
         # A session-start capability refusal a retry repeats unchanged. The
         # row names the code's own fix, and the card offers that fix (or
@@ -732,7 +790,9 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         # returns False and counts nothing. Every other exception reaching
         # this arm carries none of the tags and keeps its plain row.
         _err_meta = _terminal_error_meta(exc)
-    slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
+    _err_row = slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
+    # Bound to this exact row object: a window rebuilt from disk holds new ones.
+    slot._unsent_resends = None if _unsent is None else (_err_row, *_unsent)
     # Ring the dead-turn bell for a GENUINE runtime death that lands here -- a
     # shared-runtime prompt timeout / session-start timeout (AcpRequestTimeout /
     # AcpSessionStartTimeout, which descend from AcpRuntimeError, not AcpError,
@@ -749,7 +809,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     # AcpError, so they land here -- and a member slot is exactly the
     # population that runs there. Reporting only in the AcpError branch would
     # leave the loops this bound exists for never backing off.
-    _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
+    _note_cycle_start_failure(slot.key, exc, self_wake=turn._wake_cycle is not None)
     # The SIBLING of the failed-cycle report in the AcpError branch (_on_acp_error_card),
     # for the same reason the start-failure report is duplicated here: a
     # cycle that reached a session and dispatched but then died does not
@@ -773,7 +833,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     await _note_cycle_failure(
         slot.key,
         exc,
-        self_wake=_wake_cycle is not None,
+        self_wake=turn._wake_cycle is not None,
         loop_id=_wake_id,
         expected_generation=_wake_gen,
         err_meta=_err_meta,

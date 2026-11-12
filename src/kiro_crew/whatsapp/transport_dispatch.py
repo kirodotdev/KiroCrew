@@ -683,12 +683,17 @@ class WhatsAppDispatcher:
         # waiting on. They still get the busy receipt below; they just cannot
         # change what is running.
         may_steer_session = self.transport is not None and self.transport.is_operator(inbound)
+        # A steer returns before the turn reads it, and the transport deletes this
+        # message's media as soon as this call returns: text naming one of those
+        # files gets the resend receipt instead. A voice transcript names none.
+        names_media = any(path in inbound.text for path in inbound.attachments)
         provider = self.sessions.get_provider(session_key)
         steer = getattr(provider, "steer", None)
         has_active = getattr(provider, "has_active_turn", None)
         live = has_active is None or bool(has_active())
         ok = bool(
             may_steer_session
+            and not names_media
             and live
             and getattr(provider, "supports_steer", False)
             and steer is not None

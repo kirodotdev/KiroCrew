@@ -2847,11 +2847,15 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   it does today, so the goal is still written by the Bot and approved by the
   user, and no route changes. Only a `dispatched` or `queued` receipt closes the
   modal and a floating profile card, so the reply is in view; a docked one
-  stays. A refusal keeps the modal open with the failure notice; `unknown`,
-  `response-late` and `transport-error` keep it open with the shared
-  unconfirmed-delivery notice: check the conversation before sending again. No
-  outcome automatically resends; the button is disabled with no thread to send
-  to. The editor page stays for an EXISTING goal: its row opens the text, Save
+  stays. A refusal keeps the modal open with the failure notice and the button
+  for another try; `unknown`, `response-late` and `transport-error` keep it
+  open with its own unconfirmed notice (`goals_new_goal_unconfirmed`: open the
+  chat and check the conversation before sending again; no composer claim, the
+  modal has none), and the button becomes **Open chat**: it sends nothing and
+  leaves the way a delivered send does, so pressing it again never sends the
+  message the first press may already have posted. No outcome automatically
+  resends; Send is disabled with no thread to send to, Open chat never is. The
+  editor page stays for an EXISTING goal: its row opens the text, Save
   and Remove goal. Create a goal ALWAYS opens the modal, with no branch on the
   Bot's tools: every Bot's chat holds `set_goal` (a Bot on its
   own file chats on the conductor, which the gateway builds with

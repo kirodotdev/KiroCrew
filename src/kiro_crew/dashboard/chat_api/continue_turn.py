@@ -394,6 +394,16 @@ async def continue_slot_turn(
                 "turn_not_failed",
             )
         resume = _MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG
+        resume_payload = ""
+        resend_meta: dict[str, Any] = {}
+        unsent = unsent_resend(slot.messages, slot._unsent_resends) if interrupted else None
+        if unsent is not None:
+            # Function-local: this owner runs on chat_handlers' globals, which do
+            # not carry this name.
+            from kiro_crew.dashboard.chat_utils import RecoveryPayload
+
+            resume, resend_meta = unsent
+            resume_payload = RecoveryPayload.ORIGINAL
         # ``dispatch_guard`` (when given) is entered around the final check, the
         # containment snapshot and the insert -- all synchronous -- and may raise
         # SlotContinueRefusal on entry (a caller that must not wait on a lock the
@@ -427,7 +437,13 @@ async def continue_slot_turn(
                 0,
                 resume,
                 kind=SYNTHETIC_RECOVERY_KIND,
-                meta={**containment_meta(state, slot), **(extra_meta or {}), **_card_meta},
+                payload=resume_payload,
+                meta={
+                    **containment_meta(state, slot),
+                    **(extra_meta or {}),
+                    **resend_meta,
+                    **_card_meta,
+                },
                 directive_user_origin=directive_user_origin and not _card_meta,
                 directive_channel_origin=directive_channel_origin,
             )
@@ -502,6 +518,35 @@ def session_start_failure_streak(messages: list[dict]) -> int:
         if role in ("user", "assistant") and m.get("content") and not is_system_notice(role, meta):
             break
     return streak
+
+
+def unsent_resend(
+    messages: list[dict], record: tuple[dict[str, Any], str, dict[str, Any]] | None
+) -> tuple[str, dict[str, Any]] | None:
+    """The message the last turn failed to send, as text and queue meta, or None.
+
+    A ``memory_unavailable`` error is raised while the turn's context is still
+    being prepared, so the agent's own session never holds that message, and the
+    generic resume body would have it finish the request before this one. When
+    it is a person's own dashboard prompt the agent did not consume, the failing
+    turn records its error row with the text and attachment lists it was handed
+    in the slot's ``_unsent_resends`` (``turn_failures._unsent_resend``).
+
+    The resend is that record's text, never a row's: a row can be rewritten in
+    place or rebuilt from disk under the same ``mid``. It is offered only while
+    the newest turn-anchor row IS the recorded error row object, so a rebuilt
+    window, a later turn or a restart keeps Resume's usual body.
+    """
+    if record is None:
+        return None
+    error_row, text, meta = record
+    # Rows that open, answer or end a turn. Any other row (a preparation chip, a
+    # skill load, a wire-only marker) is passed over on the way back.
+    anchor_roles = ("user", "inject", "nudge", "subagent", "assistant", "tool", "error")
+    anchor = next((m for m in reversed(messages) if m.get("role") in anchor_roles), None)
+    if anchor is not error_row:
+        return None
+    return text, dict(meta)
 
 
 def _is_stop_event(m: dict) -> bool:

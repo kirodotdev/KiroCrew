@@ -487,8 +487,8 @@ def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:
 
     if mcp_server_muted_in_any_store(name, spec):
         raise RuntimeError(
-            f"MCP server '{name}' is disabled; turn it on under Customize > Connections > "
-            "MCP Servers to call it from a script cron"
+            f"MCP server '{name}' is disabled; turn it on under MCP Servers "
+            "to call it from a script cron"
         )
     if mcp_entry_is_registry_governed(spec):
         raise RuntimeError(

@@ -702,9 +702,11 @@ composer and source strip, which an app page does not have.
 ## Issue Search
 
 `POST /api/source/issues` lists or searches the issues of one GitHub repository
-(`owner/repo`), GitLab project (`group/sub/project`) or Jira project (`PROJ`), through
-the gateway's own `gh`/`glab` sign-in or the Jira API token in `dashboard.jira_auth`
-(the one the Issues panel reads Jira with). It answers the owner's dashboard session only: an app token is
+(`owner/repo`), GitLab project (`group/sub/project`), Jira project (`PROJ`) or Linear
+team (`ENG`), through the gateway's own `gh`/`glab` sign-in, the Jira API token in
+`dashboard.jira_auth` (the one the Issues panel reads Jira with), or a Linear personal
+API key stored in Settings > Secrets as `LINEAR_API_KEY` (without one, the answer is a
+503 `provider_error` that says to add it). It answers the owner's dashboard session only: an app token is
 refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
 app page, `useAppApi()` allows the path only when the manifest declares
 `/api/source/issues` in `permissions.api`. The grant is separate from
@@ -717,17 +719,19 @@ The request and response types are `IssueSearchRequest` and `IssueSearchResponse
 
 | Field | Meaning |
 |---|---|
-| `provider`, `scope` | Required. `github`, `gitlab` or `jira`; `linear` answers 400 `provider_not_supported` |
-| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet) |
-| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center |
-| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`) or Jira JQL. Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY` |
+| `provider`, `scope` | Required. `github`, `gitlab`, `jira` or `linear` |
+| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet). Omitted for Linear |
+| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center. A Linear person is `me`, an email address or a display name |
+| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`), Jira JQL or a Linear `IssueFilter` JSON object (`{"priority":{"eq":1}}`). Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY`. A Linear filter may use `or`/`and`, and is ANDed under the team, so nothing in it can reach another team |
 | `sort`, `order`, `limit`, `cursor`, `refresh` | `updated`/`created`, `desc`/`asc`, 1 to 100 (25), the previous page's `nextCursor`, and a cache bypass (results are kept 30 seconds) |
 
 Each `IssueSummary` carries a url built from the validated scope, a display `key`,
 labels, people, counts, a plain-text `excerpt` and `linkedChanges` (`[]` from every list
 API). GitHub pull requests never appear. `total` is `null` when the provider does not
-report one (Jira Cloud never does); GitHub search stops at its 1,000-result window. Jira
-fills `priority` and reports `commentCount` as 0, because its search API returns no count.
+report one (Jira Cloud and Linear never do); GitHub search and Linear stop at a
+1,000-result window. Jira fills `priority` and reports `commentCount` as 0, because its
+search API returns no count, and a Linear `commentCount` is `0` because its list API
+reports none.
 
 ## Chat Marker Protocol
 
@@ -917,7 +921,7 @@ A failed approval decision, a refused tool-output copy and a failed MCP sign-in 
 `ErrorNotice` with the "Ask the agent" hand-off, which navigates to the main chat. A host holding unsaved local state that the
 navigation would drop passes `handOff={false}` to `ChatMessageList`: those notices then render
 without the button, and renderers see `ctx.handOff === false`. The failed sign-in banner then
-names where to sign in again (Customize → Connections → MCP Servers) as plain text, not a link,
+names where to sign in again (MCP Servers) as plain text, not a link,
 so it still offers a next step without navigating away. `ChatEmbed` does this because its
 composer draft lives only in the embed; `ChatPane` does too, for its staged message quote. `ToolCallPill` takes the same switch as `askAgent`.
 Default is `true`, so a host with nothing to lose keeps the hand-off.

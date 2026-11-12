@@ -129,6 +129,7 @@ const LibraryPage = lazy(() => import('./pages/apps/LibraryPage'))
 const NotificationsPage = lazyPage(() => import('./pages/NotificationsPage'))
 const WebhooksPage = lazyPage(() => import('./pages/WebhooksPage'))
 const CapabilitiesPage = lazyPage(() => import('./pages/CapabilitiesPage'))
+const McpPage = lazyPage(() => import('./pages/McpPage'))
 const ArtifactsPage = lazyPage(() => import('./pages/ArtifactsPage'))
 const RemoteArtifactDetailPage = lazyPage(() => import('./pages/RemoteArtifactDetailPage'))
 const ArtifactDeployPage = lazyPage(() => import('./pages/ArtifactDeployPage'))
@@ -408,6 +409,7 @@ export default function App() {
       }
       const settingsSurface = NAV_ITEMS.find(n => n.id === 'settings')!
       const capabilitiesSurface = NAV_ITEMS.find(n => n.id === 'capabilities')!
+      const mcpSurface = NAV_ITEMS.find(n => n.id === 'mcp')!
       const searchLabel = slotOwners['quick-search']
         ? i18nT('app.open_command_bar')
         : i18nT('app.search_sessions_files_and_commands')
@@ -486,6 +488,7 @@ export default function App() {
               />
             )}
             {railRow(capabilitiesSurface)}
+            {railRow(mcpSurface)}
             {/* The account modal (balance, sign-in state): the desktop opens it
                 from the readout capsule, which the phone does not render, so the
                 rail carries it -- on exactly the readings the desktop segment
@@ -892,7 +895,7 @@ export default function App() {
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
             <Route path="/crew-board" element={<ErrorBoundary><Suspense fallback={null}><CrewBoardPage /></Suspense></ErrorBoundary>} />
             <Route path="/schedule" element={<SchedulePage />} />
-            {/* Agents and Connections live in the Agent Capabilities panel. */}
+            {/* Agents live in the Agent Capabilities panel; Connections is a Settings tab. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/connections" element={<ConnectionsRedirect />} />
@@ -901,6 +904,7 @@ export default function App() {
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
+            <Route path="/mcp" element={<McpPage />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
             {/* Static segments (library, detail, migrate) MUST stay registered

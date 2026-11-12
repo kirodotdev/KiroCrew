@@ -420,6 +420,24 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
   })
 
+  it('words an arm made before the first update check finished as a retry, not the gateway sentence', async () => {
+    stubFetch({
+      armRefusal: {
+        code: 'update_check_pending',
+        error: 'The update check has not finished, so nothing was armed: try again',
+      },
+    })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    const err = await screen.findByTestId('arm-error')
+    expect(err.textContent).toMatch(/couldn't check for the latest version/i)
+    expect(err.textContent).toContain('“Update to v9.9.9”')
+    expect(err.textContent).not.toMatch(/nothing was armed/i)
+    expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
+  })
+
   for (const [code, line] of [
     ['arm_no_verdict', /no update is ready to install/i],
     ['arm_below_min_version', /older than the minimum version/i],

@@ -56,7 +56,11 @@ Two structural properties of the runner:
   it owned had been classified as an unknown.
 - **A script that cannot run is exit 2, not a finding.** A spawn error, a signal
   kill, or a stdout-buffer overflow means the table would be built from truncated
-  text a regex might read as a pass, so the runner bails out instead.
+  text a regex might read as a pass, so the runner bails out instead. The same goes
+  for a script still running after five minutes (`SCRIPT_TIMEOUT_MS` in
+  `scripts/lib/i18n-run-script.mjs`; the slowest takes about a minute): it is killed
+  and its `FATAL` line names it, so a hung script ends the step within minutes
+  instead of holding it silent until the job's 20-minute cap.
   Symmetrically, a script that exits 0 while printing nothing a row recognises is
   `MISSING` and **fails** the step: a check that quietly stopped measuring is the
   defect the runner exists to remove.

@@ -13,7 +13,7 @@ This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), whic
 
 - A Slack workspace where you can create and install apps. If app approval is turned on for the workspace, an admin must approve the app before it can be installed (see section 4).
 - Your Slack workspace must allow the app to use the MCP server. Slack states: "Only directory-published apps or internal apps may use MCP." An app you create in your own workspace and never distribute is an internal app, so a single-workspace install qualifies. Do **not** turn on public distribution: "unlisted apps are prohibited from using MCP."
-- Kiro Crew installed and its dashboard reachable, so you can open **Settings → OAuth Apps**.
+- Kiro Crew installed and its dashboard reachable, so you can open **Settings → Connections**.
 - Facts you will need to type exactly:
   - Redirect URI: `http://localhost:48106/callback`
   - MCP endpoint: `https://mcp.slack.com/mcp`
@@ -81,7 +81,7 @@ Scopes are additive per installation and cannot be removed from an existing toke
 
 ## 5. Enter the credentials in Kiro Crew
 
-1. Open the Kiro Crew dashboard and go to **Settings → OAuth Apps**.
+1. Open the Kiro Crew dashboard and go to **Settings → Connections**.
 2. Find the **Slack** card.
 3. Paste the **Client ID** from Basic Information → App Credentials into **Client ID**.
 4. Leave **Client secret** empty. Slack's PKCE guide says the client "should call the `oauth.v2.access` API method, but should not include `client_secret` in the parameters. Instead, the client should provide the code and the `code_verifier` secret it created earlier", and that for desktop redirects "Refreshes for those tokens do not require a `client_secret` because they are intended to be used on a public client." Kiro Crew sends the PKCE parameters on every Slack flow. If you do enter a secret, Kiro Crew includes it in the token exchange as well; Slack does not document how it treats a request carrying both, so this runbook recommends the documented shape and leaving the field empty.
@@ -92,7 +92,7 @@ Container or CI alternative: set the environment variable `KIROCREW_CONNECTIONS_
 
 ## 6. Verify the connection
 
-1. In the dashboard open **Customize → Connections**. The Slack card should have changed from "Needs configuration" to **Connect**.
+1. In the dashboard open **Settings → Connections**. The Slack card should have changed from "Needs configuration" to **Connect**.
 2. Click **Connect**. A browser tab opens Slack's consent page at `https://slack.com/oauth/v2_user/authorize` listing the user scopes from section 3. Pick the workspace if asked and click **Allow**.
 3. If the gateway runs on the same machine as the browser, the tab lands on the loopback callback and the card shows **Connected**. If the gateway is remote, copy the landing URL from the address bar and paste it into the dashboard prompt.
 4. Ask the agent something read-only, for example "search Slack for the last message in #general". A `missing_scope` error means a scope from section 3 was not added; add it and reinstall.

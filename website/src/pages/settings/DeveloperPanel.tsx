@@ -54,7 +54,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
   // An LTS build hides Debug tools (RFC D12); a link to it self-heals to the first page.
   const debugToolsLocked = useControlLocked(LOCKED_DEBUG_TOOLS)
 
-  // MCP Management lives in Customize → Connections → MCP Servers. Its old
+  // MCP Management lives on the MCP Servers page (`/mcp`). Its old
   // page key here survives in bookmarks and older links; without this the
   // SubNav would quietly show Feature Previews instead. REPLACE, so back
   // does not return to the redirecting URL; passive effect because

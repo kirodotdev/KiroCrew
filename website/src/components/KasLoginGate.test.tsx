@@ -842,6 +842,32 @@ describe('KasLoginGate', () => {
     })
   })
 
+  it('a poll the gateway never answered says the connection dropped, not "Failed to fetch"', async () => {
+    kasLoginPoll.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    await expectCodedProblem(
+      'We lost the connection to Kiro Crew, which may have restarted. Start over to sign in again.',
+    )
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument()
+  })
+
+  it('a poll the gateway answered with a coded 502 keeps its own text', async () => {
+    kasLoginPoll.mockRejectedValue(
+      new ApiError(
+        502,
+        'Kiro auth service is unreachable.',
+        '{"error": "Kiro auth service is unreachable.", "code": "auth_service_unreachable"}',
+      ),
+    )
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    expect(
+      await screen.findByRole('heading', { name: 'Something went wrong while waiting for approval' }),
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('kas-login-problem-detail')).toHaveTextContent('Kiro auth service is unreachable.')
+  })
+
   it('a dashboard not served from loopback uses the device flow even on a loopback shape', async () => {
     loopbackShape()
     const original = window.location

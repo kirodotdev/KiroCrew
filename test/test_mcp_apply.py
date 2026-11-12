@@ -164,16 +164,15 @@ class TestLoadJsonOrEmptyUndecodable:
         assert data == {}
 
     def test_write_to_non_utf8_file_leaves_it_untouched(self, tmp_path, monkeypatch):
-        """Reading the file as empty must not let a writer replace it with
-        just the new entry: the JSONC check before every write still cannot
-        decode it, so the write is refused and the user's bytes stay."""
+        """A writer must not replace an undecodable store with just the new
+        entry: the toggle's read refuses it as corrupt, and the user's bytes
+        stay."""
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         path = tmp_path / "mcp.json"
         path.write_bytes(_LATIN1_MCP_JSON)
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", path)
-        with pytest.raises(UnicodeDecodeError):
-            mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "c"})
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "c"}) == "corrupt"
         assert path.read_bytes() == _LATIN1_MCP_JSON
 
 

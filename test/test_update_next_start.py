@@ -12,6 +12,7 @@ import json
 import pytest
 
 from kiro_crew import update_next_start
+from kiro_crew.testing.clock import ManualClock
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +30,40 @@ def test_nothing_is_armed_until_a_click() -> None:
     assert fields["pending_apply_error"] is None
 
 
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_an_arm_without_a_version_is_refused_and_writes_nothing(_home, blank) -> None:
+    with pytest.raises(ValueError):
+        update_next_start.arm(blank)
+
+    assert not (_home / update_next_start.STATE_FILE).exists()
+
+
+def test_status_carries_when_the_update_was_armed(_home) -> None:
+    assert update_next_start.status_fields()["update_armed_at"] is None
+    armed = update_next_start.arm("9.9.9")
+
+    assert update_next_start.status_fields()["update_armed_at"] == armed.armed_at > 0
+
+
+def test_a_cancel_naming_a_stamp_disarms_only_that_record(monkeypatch) -> None:
+    clock = ManualClock(start=1000.0)
+    clock.install(monkeypatch, update_next_start)
+    old = update_next_start.arm("9.9.9")
+    clock.advance(500.0)
+    fresh = update_next_start.arm("9.9.9")
+
+    assert update_next_start.disarm(old.armed_at) is None
+    assert update_next_start.read().armed is True
+    assert update_next_start.disarm(fresh.armed_at) is True
+    assert update_next_start.read().armed is False
+
+
+def test_a_cancel_with_no_stamp_is_unconditional() -> None:
+    update_next_start.arm("9.9.9")
+
+    assert update_next_start.disarm() is True
+
+
 def test_arming_records_the_version_and_survives_a_new_reader(_home) -> None:
     update_next_start.arm("9.9.9")
 
@@ -40,14 +75,22 @@ def test_arming_records_the_version_and_survives_a_new_reader(_home) -> None:
     assert fields["update_armed_version"] == "9.9.9"
 
 
-def test_arming_again_keeps_the_first_time_and_clears_the_last_error() -> None:
+def test_arming_again_stamps_a_new_time_and_clears_the_last_error(monkeypatch) -> None:
+    """A user retry after a failed apply must read as new.
+
+    The desktop tells a fresh arm from the stale record of a given-up apply by
+    ``armed_at``, so a click on the version already armed has to move it.
+    """
+    clock = ManualClock(start=1000.0)
+    clock.install(monkeypatch, update_next_start)
     first = update_next_start.arm("9.9.9")
     update_next_start.finish(error="boom")
     assert update_next_start.read().pending_apply_error == "boom"
+    clock.advance(1000.0)
 
     again = update_next_start.arm("9.9.9")
 
-    assert again.armed_at == first.armed_at or again.armed_at > 0
+    assert (first.armed_at, again.armed_at) == (1000.0, 2000.0)
     assert update_next_start.read().pending_apply_error == ""
 
 

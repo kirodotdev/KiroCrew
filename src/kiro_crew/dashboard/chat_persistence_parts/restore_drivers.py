@@ -657,6 +657,14 @@ async def restore_open_slots_async(state: DashboardState) -> int:
         # copy of this line gives: the latch in the finally reads it, and so does the
         # report, which is a measured zero or an unknowable set depending on it.
         state.open_slots_knowable = known
+        # The tabs this restore still owes, published before any further await so a
+        # send naming one is told the session is loading instead of minting a fresh
+        # slot under its key (``session_still_loading``).
+        state.restoring_open_slot_keys = frozenset(
+            k for k in map(_sanitize_open_slot_key, keys) if k
+        )
+        if (known_event := getattr(state, "owed_slot_keys_known", None)) is not None:
+            known_event.set()
         if not keys:
             enumerated = True
             # Both ways, like the generator: a readable registry with no keys reports

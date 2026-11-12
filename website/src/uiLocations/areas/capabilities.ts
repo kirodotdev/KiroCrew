@@ -2,10 +2,10 @@
  * Registered UI locations under Customize (the Capabilities page). One area of
  * `UI_LOCATIONS`; see `../descriptors.ts` for the two-step contract.
  *
- * Customize > Connections opens on its Services sub-tab and Customize >
- * Knowledge on its List view (local state, not the URL), so the MCP server
- * controls hang under the MCP Servers sub-tab and Add Source under the Sources
- * view: the path names the click that reveals them.
+ * The MCP Servers page opens on its Servers view unless a link asks for
+ * Sharing, and Customize > Knowledge on its List view (local state, not the
+ * URL), so the MCP server controls hang under the Servers view and Add Source
+ * under the Sources view: the path names the click that reveals them.
  */
 import type { UiLocationArea } from '../types'
 
@@ -16,13 +16,13 @@ const ADD_MCP = {
 } as const
 
 export const LOCATIONS = {
-  'connections.mcp-servers-tab': {
+  'mcp.servers-view': {
     kind: 'tab',
     terms: {
       en: ['mcp', 'mcp list', 'tool servers', 'my mcp servers'],
       'zh-CN': ['MCP 列表', '工具服务器'],
     },
-    placements: [{ surface: 'capabilities', parent: 'tab.capabilities.mcp', entry: 'tab' }],
+    placements: [{ surface: 'mcp', parent: 'page.mcp', entry: 'tab' }],
   },
   // Paste or write a server's own config (opens McpCustomServerModal). The
   // guide action `mcp.open_add` already points at this element.
@@ -35,7 +35,7 @@ export const LOCATIONS = {
       ],
       'zh-CN': [...ADD_MCP['zh-CN'], '自定义 MCP 服务器', '手动添加 MCP', 'MCP 配置', 'MCP 环境变量', '带环境变量的 MCP 服务器'],
     },
-    placements: [{ surface: 'capabilities', parent: 'connections.mcp-servers-tab', entry: 'toolbar' }],
+    placements: [{ surface: 'mcp', parent: 'mcp.servers-view', entry: 'toolbar' }],
     guide: { action: 'mcp.open_add' },
   },
   // Install one from the catalog browser.
@@ -45,7 +45,7 @@ export const LOCATIONS = {
       en: [...ADD_MCP.en, 'install an mcp server', 'browse mcp servers', 'mcp store', 'mcp catalog', 'find mcp servers'],
       'zh-CN': [...ADD_MCP['zh-CN'], '安装 MCP', '安装 MCP 服务器', 'MCP 市场', '浏览 MCP 服务器'],
     },
-    placements: [{ surface: 'capabilities', parent: 'connections.mcp-servers-tab', entry: 'toolbar' }],
+    placements: [{ surface: 'mcp', parent: 'mcp.servers-view', entry: 'toolbar' }],
   },
   // The icon-only refresh beside the server filter: it re-probes every server.
   'mcp.probe': {
@@ -55,7 +55,7 @@ export const LOCATIONS = {
       en: ['test my mcp servers', 'check mcp servers', 'refresh mcp servers', 'reconnect mcp servers', 'are my mcp servers working'],
       'zh-CN': ['检测 MCP 服务器', '测试 MCP 服务器', '刷新 MCP 服务器', '检查 MCP 连接'],
     },
-    placements: [{ surface: 'capabilities', parent: 'connections.mcp-servers-tab', entry: 'toolbar' }],
+    placements: [{ surface: 'mcp', parent: 'mcp.servers-view', entry: 'toolbar' }],
   },
   // Customize > Skills header, drawn once the skill list has loaded. (The
   // loading skeleton draws a disabled copy of Create New Skill; it is not

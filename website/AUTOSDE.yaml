@@ -316,7 +316,7 @@ custom-rules:
 
       A caveat, which goes in the tip:
       - "Requires an Atlassian account with a Jira or Confluence site …"
-      - "<provider> needs a one-time setup. Configure OAuth app opens …"
+      - "<provider> needs a one-time setup. Set up <provider> opens …"
       - Anything phrased as what will happen, or what must be true, when the
         user acts.
 

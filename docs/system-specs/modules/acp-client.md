@@ -123,7 +123,7 @@ inventory, the binding, the reach and the import inventory.
 | `acp/session_handle_steering.py` | steering a live turn: `steer`, the codex steering-request protocol, settling abandoned answers, and the injected, proven and denied steer bookkeeping the dispatch loop reads |
 | `acp/session_handle_lifecycle.py` | the session outside its turn loop: awaited control requests and slash commands, cancel, death attribution, `destroy` and transcript cleanup |
 | `acp/session_handle_compaction.py` | compaction on every backend (`compact`, the KAS compaction verb, codex and claude inline compaction, `wait_for_compaction`) and the usage and metadata frames it is measured by |
-| `acp/session_handle_permissions.py` | permission requests and in-band refusals: the permission event, approve and reject, the spec-disabled deny and tripwire, the unidentifiable, unreadable and unretained MCP identity refusals, the reject audit (`_audit_handle_reject`) and session permission routing |
+| `acp/session_handle_permissions.py` | permission requests and in-band refusals: the permission event, approve and reject, the zero-tool deny and its session-start notice, the spec-disabled deny and tripwire, the unidentifiable, unreadable and unretained MCP identity refusals, the reject audit (`_audit_handle_reject`) and session permission routing |
 | `acp/session_handle_elicitation.py` | an MCP server's elicitation on the multiplexed handle: the same parse-or-decline, consumer gate, `answer_elicitation` and pending cancel as `client_elicitation.py`, over the shared runtime's `send_response` |
 | `acp/session_handle_updates.py` | `session/update` frames as `AcpEvent` values: tool calls and the per-tool-call caches they keep, child-tool frames and structured status frames |
 | `acp/session_handle_turn.py` | one turn end to end: `prompt`, `stream_command`, the per-turn reset and pre-turn drain in `_run_turn`, the abandoned-turn close and `wait_turn_done` |
@@ -3804,7 +3804,11 @@ message, and shows a failed fetch's own error text under its lead
   only the subprocess is skipped. Neither gate runs on the KAS bundle route,
   where no kiro-cli is spawned: `/api/models` dispatches to
   `models_kas_bundle.api_models_kas_bundle` first (see "The model picker follows
-  the route" below), and `/api/sessions/usage` takes its vault-owned path. On `/api/models` the gate is not the only
+  the route" below), and `/api/sessions/usage` takes its vault-owned path.
+  On KAS's relay started on Crew's sign-in alone, `/api/models` answers the
+  gate's refusal with the engine's recorded list instead
+  (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. On
+  `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
   classifies that output and answers the same `kiro_prerequisite_required`, so an
@@ -4956,7 +4960,9 @@ positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route` (`acp_backend ==
 "kas"` AND `agent.kas_bundle`) BEFORE the kiro-cli path, so on this route it never
 calls `reject_if_kiro_unverified` and never spawns `--list-models`
 (`dashboard/handlers/models_kas_bundle.py`; the kiro-cli path below is unchanged
-for every other configuration, the relay route included). Measured on the bundled
+for every other configuration, the relay route included, except that a relay
+started on Crew's sign-in alone answers the kiro-cli gate's refusal with the
+same recording, without a cold probe). Measured on the bundled
 engine (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`), `session/new`
 carries no `models` object: the list is the `configOptions` `model` select, each
 option with `_meta.kiro.rateMultiplier` and no structured context window. The

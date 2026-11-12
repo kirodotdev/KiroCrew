@@ -67,7 +67,7 @@ def test_ui_find_without_a_route_stays_on_the_current_page() -> None:
 
 
 def test_ui_find_accepts_a_bare_pathname_of_a_known_route() -> None:
-    # '/capabilities?tab=mcp' is a known route, so '/capabilities' is too.
+    # '/capabilities?tab=skills' is a known route, so '/capabilities' is too.
     assert _find(route="/capabilities", label="Add Custom")["params"]["route"] == "/capabilities"
 
 
@@ -930,8 +930,8 @@ def test_route_compatibility_compares_the_tab_the_route_names() -> None:
     assert ok("/capabilities", "/capabilities?tab=crews")
     assert ok("/apps/", "/apps")
     assert ok("/settings/voice", "/settings/voice?highlight=voice.engine")
-    assert not ok("/capabilities?tab=mcp", "/capabilities?tab=crews")
-    assert not ok("/capabilities?tab=mcp", "/capabilities")
+    assert not ok("/capabilities?tab=skills", "/capabilities?tab=crews")
+    assert not ok("/capabilities?tab=skills", "/capabilities")
     assert not ok("/apps", "/apps/library")
 
 
@@ -940,7 +940,7 @@ def test_a_control_on_another_tab_is_never_bound_or_walked() -> None:
         ("Edit default model", "agents.model"),
         ("Delete Bot", "agents.delete"),
     ):
-        asked = {"label": label, "route": "/capabilities?tab=mcp"}
+        asked = {"label": label, "route": "/capabilities?tab=skills"}
         assert ui_index.authoritative_find(dict(asked)) == asked
         assert ui_index.planned_find(dict(asked)) is None
         assert ui_index.planned_find({**asked, "location_id": lid}) is None
@@ -955,13 +955,13 @@ def test_an_index_match_on_another_tab_leaves_the_agents_params_alone(
 ) -> None:
     ref = {
         "action_id": "ui.find",
-        "params": {"label": "Add Server", "route": "/capabilities?tab=mcp"},
+        "params": {"label": "Add Server", "route": "/mcp"},
     }
     monkeypatch.setattr(ui_index, "find_ui", lambda *a, **k: {"results": [{"find_ref": ref}]})
     asked = {"label": "zzqx server", "route": "/capabilities?tab=crews"}
     assert ui_index.authoritative_find(dict(asked)) == asked
-    out = ui_index.authoritative_find({"label": "zzqx server", "route": "/capabilities?tab=mcp"})
-    assert out["label"] == "Add Server" and out["route"] == "/capabilities?tab=mcp"
+    out = ui_index.authoritative_find({"label": "zzqx server", "route": "/mcp"})
+    assert out["label"] == "Add Server" and out["route"] == "/mcp"
 
 
 def test_guide_start_turns_a_find_for_a_planned_control_into_its_walk(

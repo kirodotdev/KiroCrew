@@ -527,17 +527,13 @@ once per process. If you see process metrics from a host but no inventory metric
 the gateway on that host is not running or not exporting — that is the signal, not
 a gap in collection.
 
-### Traces are not exported
+### Traces have their own settings
 
-Kiro Crew exports the OpenTelemetry **metrics** signal only. Turning on
-`telemetry.traces_enabled` records spans of agent turns, but only to local JSONL
-files under `~/.kiro/crew/traces`; nothing sends them anywhere yet, and there are
-no log records. So a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
-vendor's trace view) receives nothing from Kiro Crew, and nothing in this page
-exports traces. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
-change that: the collector rejects every metric batch. The gateway logs a
-warning naming the destination when the endpoint's path is one of those routes.
-Trace support is tracked in issue #1643.
+This page covers the **metrics** signal. Traces are a separate switch and
+endpoint: see [telemetry-otlp-traces.md](telemetry-otlp-traces.md). Pointing
+`otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL sends metrics there, which the
+collector rejects; the gateway logs a warning naming the destination when the
+endpoint's path is one of those routes. There are no log records.
 
 ### What is deliberately not exported
 

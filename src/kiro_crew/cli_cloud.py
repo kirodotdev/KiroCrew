@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 
+from kiro_crew.cloud import aws
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
@@ -684,11 +685,25 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             ui.detail(f"Install it with: {install}")
             ui.detail("Then rerun `kirocrew cloud doctor`.")
         else:
-            ui.detail(ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor"))
+            ui.detail(
+                ssm.session_manager_plugin_install_hint(retry="rerun `kirocrew cloud doctor`")
+            )
     # AWS reachability.
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
         ui.ok(f"AWS reachable — account {reach['account']} · {region}")
+        # Only an unchosen default: --region, or a crew the last launch left there, chose it.
+        if (
+            not getattr(args, "region", "")
+            and region == DEFAULT_REGION
+            and not LaunchState.load().last_tag
+        ):
+            configured = aws.configured_region(profile)
+            if configured and configured != region:
+                ui.warn(
+                    f"Your AWS profile sets Region {configured}; Kiro Crew uses its default "
+                    f"{region} unless you pass --region {configured}."
+                )
         for svc in ("ec2", "cloudformation", "ssm"):
             key = f"{svc}_reachable"
             (ui.ok if reach[key] else ui.warn)(
@@ -716,17 +731,21 @@ def _ensure_session_manager_plugin() -> bool:
         ui.fail(ssm.session_manager_plugin_unavailable_message())
         return False
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
-    ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
-    if not ui.confirm("Install session-manager-plugin now?", default=True):
-        ui.detail("Install it later with: kirocrew cloud doctor")
-        return False
-    ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
-    result = ssm.install_session_manager_plugin()
-    if result.ok:
-        ui.ok(result.message or "session-manager-plugin installed")
-        return True
-    ui.fail("Could not install session-manager-plugin.")
-    ui.detail(result.message)
+    if not ssm.session_manager_plugin_can_install():
+        ui.detail("Kiro Crew has no built-in install for it on this system.")
+    else:
+        ui.detail("Kiro Crew can install AWS's official package. It needs admin rights.")
+        if ui.confirm("Install session-manager-plugin now?", default=True):
+            ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
+            result = ssm.install_session_manager_plugin()
+            if result.ok:
+                ui.ok(result.message or "session-manager-plugin installed")
+                return True
+            ui.fail("Could not install session-manager-plugin.")
+            ui.detail(result.message)
+    ui.fail("Cannot connect: it needs session-manager-plugin.")
+    for line in ssm.session_manager_plugin_next_step("kirocrew cloud connect"):
+        ui.detail(line)
     return False
 
 

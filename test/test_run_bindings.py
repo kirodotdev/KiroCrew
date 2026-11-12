@@ -234,7 +234,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_published_depth": ("function", "(self, parent_session_key: 'str') -> 'int'", "run"),
     "_publish_queue_depth": (
         "coroutine",
-        "(self, parent_session_key: 'str', depth: 'int', batch_id: 'str', *, forget_label: 'bool') -> 'None'",
+        "(self, parent_session_key: 'str', depth: 'int', batch_id: 'str') -> 'None'",
         "run",
     ),
     "_arm_queue_depth_retry": (

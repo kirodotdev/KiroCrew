@@ -248,6 +248,18 @@ port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
 
+A sign-in reuses the registration its own slot's stored token carries, as kiro-cli
+does, instead of calling `RegisterClient` again (`builder_id.stored_client`): only
+one from the same region whose `client_secret_expires_at` is more than
+`REUSE_MARGIN_SECS` (a week) away, because the new sign-in keeps that lapse and every
+refresh after it is refused. A lapsed one, one in its last week, one from another
+region, an entry stored before the expiry was kept, and an empty slot all register a
+new client. So does any `StartDeviceAuthorization` error on the stored client other
+than `StartUrlRejectedError`, so a registration AWS refuses never blocks a
+sign-in. Sign-out deletes the token and its registration with it; slots never share
+one. The registration's scopes are not recorded, so changing `OIDC_SCOPES` must also
+stop this reuse.
+
 An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 (`auth/service._canonical_start_url`, through the cloud login target's
 `normalize_start_url`, so the vault and a cloud target record the same string): a
@@ -651,7 +663,12 @@ engine instead ([aws-control.md](aws-control.md)).
   cancel does not settle, the signed-in view says so with a notice that offers
   Try again. "Use a different sign-in" is the smaller link back to the chooser.
   The code screen shows when the code stops working, from the begin answer's
-  `expires_at`.
+  `expires_at`. A poll the gateway never answered (a fetch rejection, or a
+  502/503/504 with no `code`, from a fronting proxy: a restart or a dropped link,
+  `api/queryClient.ts` `isUnansweredRead`) ends on the failure screen with a
+  sentence saying the connection to Kiro Crew was lost and to start over, never
+  the browser's "Failed to fetch"; a coded answer, such as the poll's 502
+  `auth_service_unreachable`, keeps its own text.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

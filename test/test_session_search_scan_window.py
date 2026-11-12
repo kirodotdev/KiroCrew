@@ -156,6 +156,16 @@ class TestStatelessCronRunsTakeNoWindowSlot:
         assert sorted(_keys(rows)) == ["dashboard_chat-1", "dashboard_chat-2"]
         assert search_coverage(rows) is None, "runs are not counted as unsearched sessions"
 
+    def test_a_title_only_search_leaves_the_runs_out_too(self, tmp_path: Path, monkeypatch) -> None:
+        """``title:`` skips the content scan, but not the rule that runs hold no slot."""
+        _session(tmp_path, "dashboard_chat-1", "poll design", "the platypus plan", 1000)
+        for offset, key in enumerate(_STATELESS_RUNS):
+            _session(tmp_path, key, "poll", "platypus poll found nothing", 3000 + offset)
+        _configure_window(monkeypatch, 2)
+        log = ConversationLog(base_dir=tmp_path)
+        assert _keys(log.search_sessions("title:poll")) == ["dashboard_chat-1"]
+        assert _keys(log.search_sessions("title:poll", limit=1)) == ["dashboard_chat-1"]
+
     def test_persistent_and_agent_sequence_cron_sessions_are_searched(
         self, tmp_path: Path, monkeypatch
     ) -> None:

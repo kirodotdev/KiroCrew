@@ -204,10 +204,19 @@ entirely, so claude closes the gap before any call exists: a session whose
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
 session-options floor is stopped before its first prompt. `codex` is served by
-`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`, which carries
-`spec_denied_tools` but no `zero_tools` and no equivalent refusal, so nothing
-closes the gap on a codex session. An agent spec relying on `tools: []` on codex
-is not enforced at all.
+`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
+`zero_tools` onto the handle on `session/new` and `session/load`, and
+`AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a
+session: a command, a file change, an MCP call and a native child's request.
+The refusal comes before any hook, trust grant or auto-approve can answer the
+request. On codex the ban is partial. In `mode=read-only` codex-acp asks nothing
+before a passive read, a hosted web search or a command its sandbox allows, so
+those calls still run.
+codex also starts the MCP servers in your own Codex `config.toml`, whatever Crew
+mounts, and runs a tool of theirs without asking when codex approves it itself
+(`readOnlyHint`, `default_tools_approval_mode` or a trusted entry).
+A new codex session with `tools: []` gets a notice that says so, and codex is
+not in `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -507,6 +516,14 @@ itself:
   exception and gets the short `_KAS_FALLBACK_PROMPT` brief for its one-shot text
   tasks.
 
+On Windows these Crew readers of a `file://` declaration take `file:///C:/...`,
+the form `Path.as_uri()` writes, as the absolute `C:/...`: the KAS and
+session-start prompt readers, the skill projection, the steering globs, the
+member essentials, an app's prompt policy and a local file link in a reply. Only
+the `/` before the drive is dropped and nothing is percent-decoded
+(`file_uri.file_uri_path_text`); each reader's own containment and
+sensitive-path checks are unchanged.
+
 The managed default (`kirocrew`) spec does NOT point `prompt` at the
 operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
 set it to `_NATIVE_PROMPT_STUB` (`agent_parts/spec_build.py`), a short authority-delegating
@@ -645,7 +662,7 @@ routinely holds tokens, and a remote entry's `headers` can hold a static
 author survives only when it is exactly `true` or `false` (any case), its key is
 not credential-shaped (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `accessKey` …), and the
 credential redactor would not rewrite it. So `FEATURE_X_ENABLED=true` reaches the
-server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in Customize → Connections → MCP Management. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
+server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in MCP Servers → Sharing. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
 survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference

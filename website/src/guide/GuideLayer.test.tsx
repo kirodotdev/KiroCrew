@@ -338,7 +338,7 @@ describe('arrow and targets', () => {
   })
 
   it('reports observed once the form reaches a later registered control', async () => {
-    await startCrewmate(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /><Target anchor={GUIDE_ANCHORS.mcpAddCustom} /></>, { actions: [MCP_OPEN] }, '/capabilities')
+    await startCrewmate(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /><Target anchor={GUIDE_ANCHORS.mcpAddCustom} /></>, { actions: [MCP_OPEN] }, '/mcp')
     await waitFor(() => expect(writes('/api/guide/progress').length).toBeGreaterThan(0))
     const [first] = writes('/api/guide/progress')
     expect(first.body).toMatchObject({ guide_id: 'g1', tab_id: TAB_ID, action_index: 0, step_index: 0, outcome: 'observed' })
@@ -1067,15 +1067,15 @@ describe('leaving a step and coming back', () => {
     }
     function RoutedWizard() {
       const loc = useLocation()
-      return loc.pathname === '/capabilities' ? <Wizard /> : null
+      return loc.pathname === '/mcp' ? <Wizard /> : null
     }
-    const now = await startTracked(<><RoutedWizard /><NavTo to="/settings/chat" /></>, { actions: [MCP_OPEN] }, '/capabilities')
+    const now = await startTracked(<><RoutedWizard /><NavTo to="/settings/chat" /></>, { actions: [MCP_OPEN] }, '/mcp')
     fireEvent.click(await screen.findByTestId(`target-${GUIDE_ANCHORS.mcpServersTab}`))
     await waitFor(() => expect(now()).toMatchObject({ status: 'active', step_index: 1 }))
     fireEvent.click(screen.getByTestId('nav-away'))
     expect(await screen.findByText(L('left_step'))).toBeTruthy()
     fireEvent.click(screen.getByTestId('guide-go-back'))
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/capabilities'))
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/mcp'))
     expect(await screen.findByTestId(`target-${GUIDE_ANCHORS.mcpServersTab}`)).toBeTruthy()
     vi.spyOn(Date, 'now').mockImplementation(() => T0 + GUIDE_EARLIER_STEP_WAIT_MS + 500)
     await waitFor(() => expect(outcomes()).toEqual(['observed', 'target_missing', 'target_found']))
@@ -1143,7 +1143,7 @@ describe('leaving a step and coming back', () => {
   it('an observed report that fails is offered again, so the guide does not stay a step behind', async () => {
     freezeClock()
     let failNext = true
-    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /></>, { actions: [MCP_OPEN] }, '/capabilities')
+    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /></>, { actions: [MCP_OPEN] }, '/mcp')
     server.use(
       http.post('/api/guide/progress', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>

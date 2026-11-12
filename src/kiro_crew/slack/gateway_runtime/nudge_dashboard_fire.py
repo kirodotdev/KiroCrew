@@ -770,12 +770,15 @@ async def _steer_work_ledger_wake(
     try:
         # The wake names itself as this loop's automation; the session turns
         # that into the steer and the nudge row. The cycle is the one this
-        # delivery charges.
+        # delivery charges, and the generation lets the turn that carries the
+        # wake charge that cycle's fault to this loop.
         outcome = await session_deliver.deliver(
             state,
             slot,
             text,
-            session_deliver.automation(loop.cycle_count + 1, loop.id),
+            session_deliver.automation(
+                loop.cycle_count + 1, loop.id, generation=loop.config_generation
+            ),
             admission=admission,
         )
     except Exception:

@@ -223,7 +223,7 @@ def _crew_get_session(crew: str, key: str, max_messages: int, session_key: str) 
     lines = [f"\U0001f4dc Conversation `{key}` on crew '{crew}':", ""]
     for m in msgs:
         role = str(m.get("role", "?")).title()
-        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append(f"**{role}:** {m.get('content') or ''}")
         lines.append("")
     return mcp_core._redact_history_output("\n".join(lines))
 
@@ -483,7 +483,7 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
     lines = [f"\U0001f4dc Conversation: **{title}**  ·  `{key}`", ""]
     for m in messages:
         role = str(m.get("role", "?")).title()
-        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append(f"**{role}:** {m.get('content') or ''}")
         lines.append("")
 
     output = mcp_core._redact_history_output("\n".join(lines))

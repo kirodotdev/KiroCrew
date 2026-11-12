@@ -629,10 +629,13 @@ class RunEventCoordinator(ManagerComponent):
                     answering |= retry.batch_ids
                     must_publish = True
                 self._disarm_queue_depth_retry(parent_session_key)
+                if depth <= 0 and not overlapped:
+                    # Whether or not this read is published. An overlapping
+                    # request may be the verdict which wrote the label, for a
+                    # row the read predates, so an overlapped 0 keeps it.
+                    self._manager._queue_wait.pop(parent_session_key, None)
                 if must_publish or depth != self._published_depth(parent_session_key):
-                    await self._publish_queue_depth(
-                        parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
-                    )
+                    await self._publish_queue_depth(parent_session_key, depth, _one_wave(answering))
             if not emit.again:
                 return
             # Asked during the read (past the withhold cap) or while the frame
@@ -644,7 +647,7 @@ class RunEventCoordinator(ManagerComponent):
         return self._manager._published_depths.get(parent_session_key)
 
     async def _publish_queue_depth(
-        self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool
+        self, parent_session_key: str, depth: int, batch_id: str
     ) -> None:
         # Imported here: this helper is not an ``_impl``, so it keeps this
         # module's namespace, where the facade's names are only type hints.
@@ -652,10 +655,6 @@ class RunEventCoordinator(ManagerComponent):
 
         manager = self._manager
         if depth <= 0:
-            # Not on a read a request overlapped: that request may be the
-            # verdict which wrote the label, for a row the read predates.
-            if forget_label:
-                manager._queue_wait.pop(parent_session_key, None)
             extra: dict[str, Any] = {"queued": depth}
         else:
             extra = {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}

@@ -39,12 +39,14 @@ if TYPE_CHECKING:
         _emit_agent_assignment,
         _forwards_harness_command,
         _history_key_for,
+        _loading_refusal,
         _maybe_auto_title,
         _normalize_slot_key,
         _person_crew_worker_root,
         _record_explicit_agent_selection,
         _redact_meta,
         _run_chat,
+        _send_writes_persona,
         _start_next_queued_turn,
         _wake_pending_reset_retry,
         app_slot_is_local_user_session,
@@ -140,15 +142,6 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
 def _send_binds_agent(agent: str, slot: Any) -> bool:
     """Whether a ``POST /api/chat`` naming *agent* writes it onto *slot*."""
     return bool(agent) and slot.agent in (None, "")
-
-
-def _send_writes_persona(body: dict) -> bool:
-    """Whether a ``POST /api/chat`` body writes the slot's persona fields.
-
-    ``color_theme`` carries the write; ``theme_consent`` and
-    ``theme_consent_sha`` are applied with it and never alone.
-    """
-    return "color_theme" in body
 
 
 async def _send_harness_command(message: str, state: DashboardState, slot: _ChatSlot) -> str:
@@ -528,6 +521,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         )
         if denied is not None:
             return denied
+    if _requested_key and (_refused := await _loading_refusal(request, state, _requested_key)):
+        return _refused
     # A tab restored as a sidebar row loads its window here, with the transcript
     # read off the loop, before anything below reads its rows. The live slot is
     # read again after the await, so a close or a replacement during the load is

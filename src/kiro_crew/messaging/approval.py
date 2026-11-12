@@ -616,11 +616,11 @@ class PendingApprovals:
         that arrived would find nothing pending, fall through to the mid-turn path,
         and be discarded — the user would watch their decision do nothing and the
         tool deny itself minutes later. Reserving first means the window is open
-        for the whole time the prompt is answerable.
+        for the whole time the prompt is answerable. It is also how ``decide``
+        knows a prompt was delivered: with no reservation it denies at once.
 
-        Never replaces a LIVE future, in either direction: a reservation that
-        follows ``decide`` (or a second reservation for the same address) keeps the
-        future already being awaited and only ensures a nonce exists for it.
+        Never replaces a LIVE future: a second reservation for the same address
+        keeps the future already being awaited and only ensures a nonce exists for it.
         Replacing it would orphan the object the waiter is blocked on, and a
         resolved answer would set a future nobody reads — the prompt would hang for
         its whole window and then deny.
@@ -639,7 +639,7 @@ class PendingApprovals:
     def discard_reservations(self, session_key: str) -> None:
         """Drop every reservation of *session_key* as its turn ends, answered or not.
 
-        A live ``decide`` holds its own future, so it is unaffected. An answer no
+        A live ``decide`` holds the future it awaits, so it is unaffected. An answer no
         wait adopted has no reader left, and the next request reuses its address
         (ACP ids restart at 1): kept, it would answer a prompt nobody was shown.
         """
@@ -651,8 +651,9 @@ class PendingApprovals:
     async def decide_with_cause(self, session_key: str, event: Any) -> tuple[bool, str]:
         """Await the user's decision for *event*; return ``(approved, cause)``.
 
-        The cause is ``""`` for a human's answer and
-        :data:`DENY_CAUSE_APPROVAL_TIMEOUT` when the window closed unanswered.
+        The cause is ``""`` for a human's answer,
+        :data:`DENY_CAUSE_APPROVAL_TIMEOUT` when the window closed unanswered, and
+        :data:`DENY_CAUSE_APPROVAL_UNDELIVERABLE` when no prompt was delivered.
         Returned rather than stored on this object because one registry serves
         every session of a channel, so an attribute here would race between
         concurrent turns; :class:`SessionApprovalDecider` (one per session) is
@@ -662,23 +663,25 @@ class PendingApprovals:
         # Adopt the renderer's reservation. It opened this window before the prompt
         # was sent, which is the whole point: the answer may ALREADY have arrived
         # and resolved it, in which case that decision is the answer and there is
-        # nothing left to await. Creating a fresh future in either case would
-        # discard a decision the user already made and then wait out the full
-        # window before denying.
+        # nothing left to await.
         reserved = self._pending.get(k)
-        if reserved is not None and reserved.done():
+        if reserved is None:
+            # No reservation means no prompt reached anybody -- the rule at
+            # ``open_approval``: a muted conversation's SilentRenderer drops it.
+            # Deny NOW rather than wait the window for an unasked question, and
+            # signal the stall: nobody can answer here, as on a timeout.
+            logger.debug("%s: no prompt was delivered; denying immediately", self._channel_type)
+            _notify_approval_stalled(session_key)
+            return False, DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        if reserved.done():
             _notify_approval_answered(session_key)
             try:
                 return bool(reserved.result()), ""
             finally:
                 self._pending.pop(k, None)
                 self._nonces.pop(k, None)
-        fut = reserved
-        if fut is None:
-            fut = asyncio.get_running_loop().create_future()
-            self._pending[k] = fut
         try:
-            answer = bool(await asyncio.wait_for(fut, APPROVAL_TIMEOUT_S))
+            answer = bool(await asyncio.wait_for(reserved, APPROVAL_TIMEOUT_S))
             _notify_approval_answered(session_key)
             return answer, ""
         except asyncio.TimeoutError:
@@ -698,7 +701,7 @@ class PendingApprovals:
 
 
 def _notify_approval_stalled(session_key: str) -> None:
-    """Tell AutoNudge that a prompt in *session_key* went unanswered.
+    """Tell AutoNudge that a prompt in *session_key* went unanswered or was never delivered.
 
     An unanswered prompt is the only evidence available that an UNATTENDED loop
     cannot act: without it a monitor loop bound to this conversation keeps

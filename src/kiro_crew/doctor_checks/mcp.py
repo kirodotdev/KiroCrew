@@ -576,9 +576,8 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
-        "until it is approved on the dashboard. Open Customize \u2192 Connections, the "
-        "MCP Servers sub-tab, and scroll to the MCP Management section "
-        "(/capabilities?tab=mcp&view=mcp-servers), approve each one, then run "
+        "until it is approved on the dashboard. Open MCP Servers, the "
+        "Sharing view (/mcp?view=sharing), approve each one, then run "
         "`kirocrew restart` so new chats use the shared copy.",
         keep=("`kirocrew restart`",),
     )

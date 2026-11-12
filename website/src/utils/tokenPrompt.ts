@@ -28,6 +28,8 @@ export interface TokenSlackContext {
   channel: string | null
   /** Originating Slack thread_ts (root message ts). */
   threadTs: string | null
+  /** ts of the Slack message that sent the user here; differs from threadTs for a thread reply. */
+  msgTs: string | null
 }
 
 /**
@@ -45,5 +47,6 @@ export function extractSlackContextFromToken(token: string): TokenSlackContext {
     sessionKey: pick('session_key'),
     channel: pick('channel'),
     threadTs: pick('thread_ts'),
+    msgTs: pick('msg_ts'),
   }
 }

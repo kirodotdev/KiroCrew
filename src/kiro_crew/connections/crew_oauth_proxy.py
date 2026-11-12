@@ -528,14 +528,14 @@ def _refresh_refusal(code: str) -> Any:
         return _refuse(
             409,
             "the OAuth app for this Connection is not configured: "
-            "set it under Settings → OAuth Apps",
+            "set it under Settings → Connections",
             "client_not_configured",
         )
     # The provider answered and refused: a retry will not help.
     return _refuse(
         502,
         f"the provider rejected the sign-in refresh ({code[:64]}): check the OAuth app "
-        "under Settings → OAuth Apps, then reconnect if it persists",
+        "under Settings → Connections, then reconnect if it persists",
         "refresh_rejected",
     )
 

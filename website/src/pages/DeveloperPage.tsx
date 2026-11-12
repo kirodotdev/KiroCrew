@@ -38,7 +38,7 @@ export default function DeveloperPage() {
       navigate(settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB, highlight }), { replace: true })
       return
     }
-    // MCP Management left Developer for Customize → Connections → MCP Servers.
+    // MCP Management lives on the MCP Servers page (`/mcp`), not on Developer.
     if (tab === LEGACY_DEVELOPER_MCP_POOL_SUB) {
       navigate(MCP_MANAGEMENT_PATH, { replace: true })
       return

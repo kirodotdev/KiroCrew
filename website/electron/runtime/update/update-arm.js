@@ -16,6 +16,7 @@
 const ARM_KEY = "updateArm";
 const APPLY_ERROR_KEY = "updateApplyError";
 const GOVERNED_KEY = "updatePolicyGoverned";
+const FAILED_KEY = "updateFailedVersion";
 
 function createUpdateArm({ store, now = () => Date.now() }) {
   const readKey = (key) => {
@@ -57,6 +58,8 @@ function createUpdateArm({ store, now = () => Date.now() }) {
     if (existing && existing.version === version) return existing;
     const rec = { version, armedAt: new Date(now()).toISOString(), attempts: 0 };
     writeKey(ARM_KEY, rec, { strict: true });
+    // An arm is a fresh ask for this version, so an earlier give-up no longer stands.
+    if (readKey(FAILED_KEY) !== null) writeKey(FAILED_KEY, null);
     return rec;
   }
 
@@ -76,6 +79,24 @@ function createUpdateArm({ store, now = () => Date.now() }) {
   /** Keep the failure of a start-time apply for the lane to show once. */
   function recordApplyError(version, message) {
     writeKey(APPLY_ERROR_KEY, { version, message: String(message || ""), at: new Date(now()).toISOString() });
+  }
+
+  /** The version whose apply was given up on, so no arm of it is adopted again. */
+  function recordFailedVersion(version) {
+    writeKey(FAILED_KEY, { version: String(version || ""), atMs: now() });
+  }
+
+  /** @returns {{version: string, atMs: number}|null} the last give-up, when it happened. */
+  function failedRecord() {
+    const rec = readKey(FAILED_KEY);
+    if (!rec || typeof rec.version !== "string" || !rec.version) return null;
+    return { version: rec.version, atMs: Number.isFinite(rec.atMs) ? rec.atMs : 0 };
+  }
+
+  /** @returns {string} the version the last give-up was about, "" when none. */
+  function failedVersion() {
+    const rec = failedRecord();
+    return rec ? rec.version : "";
   }
 
   /** Read and forget the recorded start-time apply failure. */
@@ -103,7 +124,7 @@ function createUpdateArm({ store, now = () => Date.now() }) {
     return readKey(GOVERNED_KEY) === true;
   }
 
-  return { read, arm, markAttempt, clear, recordApplyError, takeApplyError, recordGoverned, wasGoverned };
+  return { read, arm, markAttempt, clear, recordFailedVersion, failedRecord, failedVersion, recordApplyError, takeApplyError, recordGoverned, wasGoverned };
 }
 
-module.exports = { createUpdateArm, ARM_KEY, APPLY_ERROR_KEY, GOVERNED_KEY };
+module.exports = { createUpdateArm, ARM_KEY, APPLY_ERROR_KEY, GOVERNED_KEY, FAILED_KEY };

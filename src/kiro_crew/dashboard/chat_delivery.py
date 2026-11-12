@@ -518,7 +518,8 @@ async def steer_into_running_turn(
     a restored transcript, and only an id names THIS delivery.
 
     ``nudge_meta`` says the text is AUTOMATION (a monitor loop's work-ledger
-    wake), and is the ``meta.nudge`` (``{"cycle", "loop_id"}``) its row carries.
+    wake), and is the ``meta.nudge`` (``{"cycle", "loop_id"}``) its row carries,
+    plus the loop's ``session_deliver.WAKE_GENERATION``, which no row carries.
     The row's role follows the origin, not the branch that ran: the steer is
     persisted as a ``nudge`` row, the same role the idle fire writes, so it
     draws as the nudge chip rather than a bubble the person typed. It

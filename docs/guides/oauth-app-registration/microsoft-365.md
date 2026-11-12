@@ -4,7 +4,7 @@
 
 ## Status: not available as a Connections entry
 
-Kiro Crew Connections has no Microsoft 365 provider, no registry entry, and no reserved callback port. There is nothing to configure under **Settings → OAuth Apps** for Microsoft 365 today. Do not set `KIROCREW_CONNECTIONS_MICROSOFT_365_*` environment variables; nothing reads them.
+Kiro Crew Connections has no Microsoft 365 provider, no registry entry, and no reserved callback port. There is nothing to configure under **Settings → Connections** for Microsoft 365 today. Do not set `KIROCREW_CONNECTIONS_MICROSOFT_365_*` environment variables; nothing reads them.
 
 This is a statement about the Connections feature, which manages a fixed list of vendor MCP servers with dashboard-entered credentials. It says nothing about whether an individual agent could be pointed at one of the Microsoft endpoints below by other means; that path is outside this document and has not been tested.
 

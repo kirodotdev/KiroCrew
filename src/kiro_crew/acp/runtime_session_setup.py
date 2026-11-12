@@ -251,6 +251,10 @@ class _MirroredSessionMcp(NamedTuple):
     compares THIS, never a later read of the file, against its saved intent."""
     crew_bridged: list[str] = []
     """The Connection bridge snapshots the array wrote, for the handle's shutdown."""
+    zero_tools: bool = False
+    """Whether the spec declares ``"tools": []``, from the same parse as the array.
+    The handle refuses every permission request of such a session
+    (``AcpSessionHandle._deny_zero_tools``)."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -752,6 +756,7 @@ async def _mirrored_session_mcp(
         ref_spec=ref_spec,
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
+        zero_tools=projection.zero_tools,
     )
 
 

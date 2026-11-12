@@ -765,7 +765,8 @@ async def notify_cycle_failed(
     rejections and session-start failures. A spent, failed turn is what tells a loop
     making no progress from a quiet one. Only the loop's OWN cycle counts (the runner
     applies the self-wake guard, as for ``notify_cycle_start_failed``), so an erroring
-    human turn cannot spend the stand-down budget.
+    human turn cannot spend the stand-down budget unless it took the loop's steered
+    wake, which makes it that cycle.
 
     Fenced by id AND ``config_generation`` captured at fire time (``_directive_loop_id``,
     ``_directive_loop_gen``), matched under ``_lock``. The id catches a replaced loop

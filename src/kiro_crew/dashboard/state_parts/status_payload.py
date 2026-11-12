@@ -124,6 +124,7 @@ def status_snapshot(
     update_restart_ready_version: str = "",
     update_restart_ready_reason: str = "",
     update_armed_version: str | None = None,
+    update_armed_at: float | None = None,
     pending_apply_error: str | None = None,
     version_display: str = "",
     bundle_id: str = "",
@@ -245,6 +246,7 @@ def status_snapshot(
         # Armed for the next start (a click on Update), and how the last boot-time
         # apply ended: ``kiro_crew.update_next_start``.
         "update_armed_version": update_armed_version,
+        "update_armed_at": update_armed_at,
         "pending_apply_error": pending_apply_error,
         "update_last_checked_at": update_last_checked_at,
         "update_check_interval_secs": update_check_interval_secs,

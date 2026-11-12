@@ -2,8 +2,8 @@
 //
 // Contract under test:
 // - a server on the share list whose launch the gateway refused is named, with
-//   the restart line and a link to MCP Management in Customize → Connections → MCP Servers, where it is approved.
-// - the link lands on /capabilities?tab=mcp, a surface served for anyone (no
+//   the restart line and a link to the MCP Servers page's Sharing view, where it is approved.
+// - the link lands on /mcp?view=sharing, a surface served for anyone (no
 //   dependence on Developer Mode).
 // - the list comes from the gateway's `share_refused`, which matches a refusal
 //   recorded under a slash-named server's alias.
@@ -66,7 +66,7 @@ function mount(ui: React.ReactNode) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/" element={ui} />
-          <Route path="/capabilities" element={<Where />} />
+          <Route path="/mcp" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -95,10 +95,10 @@ describe('McpShareRefusedNotice', () => {
     expect(notice).toHaveTextContent('every chat starts its own copy')
     expect(notice).toHaveTextContent('Approve sharing')
     expect(notice).toHaveTextContent('Settings → About → Restart gateway')
-    const link = screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
     fireEvent.click(link)
-    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/mcp?view=sharing')
   })
 
   it('opens MCP Management in a new tab while the page holds staged edits', async () => {
@@ -107,7 +107,7 @@ describe('McpShareRefusedNotice', () => {
     )
     mount(<McpShareRefusedNotice stagedChanges />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    const link = screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
@@ -119,7 +119,7 @@ describe('McpShareRefusedNotice', () => {
     )
     mount(<McpShareRefusedNotice />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    expect(screen.getByRole('link', { name: 'Review in MCP Management' })).not.toHaveAttribute('target')
+    expect(screen.getByRole('link', { name: 'Review in MCP Servers' })).not.toHaveAttribute('target')
   })
 
   it('renders the refusal as an error notice with the agent hand-off', async () => {
@@ -179,7 +179,7 @@ describe('McpShareRefusedNotice', () => {
     ])
     mount(<McpTab />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    const link = () => screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = () => screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link()).not.toHaveAttribute('target')
     fireEvent.click(await screen.findByRole('button', { name: /Uninstall/ }, WAIT))
     await waitFor(() => expect(link()).toHaveAttribute('target', '_blank'))

@@ -21,7 +21,7 @@ from chat_test_helpers import _make_state
 from steer_requeue_helpers import _running_slot
 
 from kiro_crew.context_assembly.replay import build_interrupted_turn_preamble
-from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard import chat_runner, session_deliver
 from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
 from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
 from kiro_crew.dashboard.chat_utils import _dequeue_next_message
@@ -173,6 +173,7 @@ class TestRequeuedAutomationSteer:
     async def test_a_human_edit_clears_automation_origin_and_drains_as_user(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         qid = slot.queue_append(WAKE, meta={AUTOMATION_STEER_META: dict(NUDGE), "sendId": "s-1"})
+        slot._queue[0]["_recovered_wake"] = ("loop-1", 7)
 
         assert slot.queue_edit_by_id(qid, "my own words", directive_user_origin=True) is True
 
@@ -183,10 +184,11 @@ class TestRequeuedAutomationSteer:
         assert entry["_directive_user_origin"] is True
         with (
             patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
-            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
         ):
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
+        assert "_recovered_wake" not in run_chat.call_args.kwargs, "their words charge no loop"
         rows = [m for m in slot.messages if m.get("content") == "my own words"]
         assert [r["role"] for r in rows] == ["user"]
         assert "nudge" not in rows[0]["meta"]
@@ -236,6 +238,43 @@ class TestRequeuedAutomationSteer:
         assert frames[0]["meta"]["nudge"] == NUDGE
         rows = [m for m in slot.messages if m.get("content") == WAKE]
         assert frames[0]["meta"]["mid"] == rows[0]["meta"]["mid"]
+
+    @pytest.mark.asyncio
+    async def test_the_requeued_wakes_own_turn_is_its_loops_cycle(self, tmp_path):
+        """A wake the running turn ended before taking drains as its own turn, and a
+        fault that ends that turn must be charged to the loop, or the work-ledger
+        wake's one retry never comes. The steer's loop generation rides the
+        entry, never the meta the queue persists and the row shows.
+        """
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        slot._acp_client = _steer_client()
+        steered = session_deliver.automation(4, "loop-1", generation=7).nudge
+        assert (
+            await steer_into_running_turn(
+                state, slot, WAKE, user_origin=False, admission={}, nudge_meta=steered
+            )
+            == STEER_STEERED
+        )
+        _requeue_unconsumed_steers(state, slot)
+        slot.task = None
+
+        rows = [m for m in slot.messages if m.get("content") == WAKE]
+        assert rows[0]["meta"]["nudge"] == NUDGE, "the steered row shows no generation"
+        assert slot._queue[0]["meta"][AUTOMATION_STEER_META] == NUDGE
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert run_chat.call_args.kwargs.get("_recovered_wake") == (
+            "loop-1",
+            7,
+        ), "the requeued wake ran without its loop, so its fault charges nothing"
+        rows = [m for m in slot.messages if m.get("content") == WAKE]
+        assert [r["meta"]["nudge"] for r in rows] == [NUDGE, NUDGE]
 
 
 class TestRequeuedAutomationSteerShowsOnce:

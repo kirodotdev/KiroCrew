@@ -8,6 +8,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavTip } from './navTip'
+import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
 
 /** Glyph inside the nav-rail header's expand/collapse button — the same
  *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
@@ -15,17 +16,18 @@ import { useNavTip } from './navTip'
  *  bot name is unmounted), so a 404 on the avatar asset, a blocked request or
  *  a hung fetch used to leave an invisible control that still toggled the
  *  rail when clicked. A PanelLeft glyph therefore fills the box by default,
- *  the swap to the logo happens only on the img's own `load` event, and
+ *  the swap to the logo happens only on the logo's own `load` event, and
  *  `error` reverts it. `loadedSrc` records WHICH src loaded so a branding or
  *  theme swap falls back until the new asset proves itself. `boxClass` is the
- *  theme-overridable size (`branding.logoClass`, else w-10 collapsed / w-7
- *  expanded) and is applied to BOTH the fallback and the img so the swap never
+ *  theme-overridable size (`branding.logoClass`, else w-9 collapsed / w-7
+ *  expanded) and is applied to BOTH the fallback and the logo so the swap never
  *  moves the button's geometry; the hover tilt and `transition-all` classes
- *  live on the img exactly as before. The img stays mounted (display:none)
- *  while hidden so the browser still fetches it. A sibling rather than a
- *  generalisation of MobileNavGlyph: that component's literal `w-6 h-6` box is
- *  pinned by narrowFirstBaseline.test.ts, while this box is a runtime
- *  expression. */
+ *  live on the logo. The logo stays mounted (display:none) while hidden so
+ *  the browser still fetches it. It renders through PackLoaderImage, so an
+ *  animated pack logo holds its first frame under reduced motion. A sibling
+ *  rather than a generalisation of MobileNavGlyph: that component's literal
+ *  `w-6 h-6` box is pinned by narrowFirstBaseline.test.ts, while this box is a
+ *  runtime expression. */
 export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string; boxClass: string; iconSize: number }) {
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
   const showLogo = !!avatar && loadedSrc === avatar
@@ -37,7 +39,7 @@ export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string
         </span>
       )}
       {!!avatar && (
-        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+        <PackLoaderImage src={avatar} onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
       )}
     </>
   )

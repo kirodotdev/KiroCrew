@@ -14,6 +14,7 @@ from unittest import mock
 import pytest
 
 from kiro_crew import cli_cloud
+from kiro_crew.cloud import aws
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
@@ -23,6 +24,8 @@ from kiro_crew.cloud.launch_state import LaunchState
 
 INSTANCE = {"exists": True, "instance_id": "i-0abc"}
 URL = "http://localhost:5599/"
+# Read before the autouse fixture below replaces it, for the tests that need a real record.
+_REAL_RESOLVE = cli_cloud._resolve
 
 
 def _args(**kw: Any) -> argparse.Namespace:
@@ -265,6 +268,8 @@ class TestDoctor:
     def _aws_cli_present(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: "aws")
         _floor_monkeypatch.setattr(shutil, "which", lambda *_a, **_k: "/usr/bin/aws")
+        # `aws configure get region` with no Region set exits 1.
+        _floor_monkeypatch.setattr(aws, "run_aws", lambda *_a, **_k: (1, "", ""))
 
     @pytest.fixture
     def shown(self, monkeypatch) -> list[tuple[str, str]]:
@@ -298,7 +303,7 @@ class TestDoctor:
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
         monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "")
         assert cli_cloud._cloud_doctor(_args()) == 1
-        hint = ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor")
+        hint = ssm.session_manager_plugin_install_hint(retry="rerun `kirocrew cloud doctor`")
         assert ("detail", hint) in shown
         assert "then rerun `kirocrew cloud doctor`:" in hint
 
@@ -342,23 +347,79 @@ class TestDoctor:
             ("ok", "ssm: reachable"),
         ]
 
+    @pytest.mark.parametrize(
+        ("flag", "recorded", "warned"),
+        [
+            ("", "", True),
+            ("eu-west-1", "", False),
+            ("", "eu-west-2", False),
+            ("", "us-east-1", False),
+        ],
+    )
+    def test_a_profile_set_to_another_region_is_named_only_beside_the_default(
+        self, monkeypatch, shown, flag, recorded, warned
+    ):
+        monkeypatch.setattr(cli_cloud, "_resolve", _REAL_RESOLVE)
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: True)
+        if recorded:
+            LaunchState.record(profile="dev", region=recorded, last_tag="crew-a")
+        calls: list[tuple[list[str], str, str]] = []
+
+        def run_aws(args: list[str], profile: str = "", region: str = "", **_kw: Any):
+            calls.append((args, profile, region))
+            return 0, "eu-west-1\n", ""
+
+        monkeypatch.setattr(aws, "run_aws", run_aws)
+        assert cli_cloud._cloud_doctor(_args(profile="dev", region=flag)) == 0
+        checked = flag or recorded or "us-east-1"
+        assert ("ok", f"AWS reachable — account acct-demo · {checked}") in shown
+        warning = (
+            "Your AWS profile sets Region eu-west-1; Kiro Crew uses its default us-east-1 "
+            "unless you pass --region eu-west-1."
+        )
+        assert [text for kind, text in shown if kind == "warn"] == ([warning] if warned else [])
+        assert calls == ([(["configure", "get", "region"], "dev", "")] if warned else [])
+
 
 class TestEnsurePlugin:
     @pytest.fixture(autouse=True)
     def _plugin_missing(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
         _floor_monkeypatch.setattr(ssm, "reinstall_cannot_clear_refusal", lambda: False)
+        _floor_monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+        _floor_monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: True)
 
     def test_declining_the_prompt_returns_false_and_installs_nothing(self, monkeypatch, capsys):
         confirm, install = mock.Mock(return_value=False), mock.Mock()
         monkeypatch.setattr(cli_cloud.ui, "confirm", confirm)
         monkeypatch.setattr(ssm, "install_session_manager_plugin", install)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "sudo dnf x")
         assert cli_cloud._ensure_session_manager_plugin() is False
         confirm.assert_called_once_with("Install session-manager-plugin now?", default=True)
         install.assert_not_called()
         out = capsys.readouterr().out
         assert "session-manager-plugin is required for SSM dashboard tunnels." in out
-        assert "Install it later with: kirocrew cloud doctor" in out
+        assert "It needs admin rights." in out
+        assert "Cannot connect: it needs session-manager-plugin." in out
+        assert "then rerun `kirocrew cloud connect`:" in out
+        assert "  sudo dnf x" in out
+        assert "cloud doctor" not in out
+
+    def test_with_no_built_in_install_it_names_aws_page_and_asks_nothing(self, monkeypatch, capsys):
+        """Windows has no install plan, so a yes could only fail."""
+        monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "")
+        confirm, install = mock.Mock(), mock.Mock()
+        monkeypatch.setattr(cli_cloud.ui, "confirm", confirm)
+        monkeypatch.setattr(ssm, "install_session_manager_plugin", install)
+        assert cli_cloud._ensure_session_manager_plugin() is False
+        confirm.assert_not_called()
+        install.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Kiro Crew has no built-in install for it on this system." in out
+        assert "Sudo may ask" not in out
+        assert "Install it from AWS's page, then rerun `kirocrew cloud connect`:" in out
+        assert ssm._SESSION_MANAGER_PLUGIN_DOC_URL in out
 
     @pytest.mark.parametrize(
         ("ok", "message", "shown"),

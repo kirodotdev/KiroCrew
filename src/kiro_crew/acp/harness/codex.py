@@ -716,7 +716,12 @@ class CodexHarness(MembershipHarness):
         # placeholder until then. Project-level .codex/config.toml overrides
         # are not covered. A session/new that carries mcpServers replaces the
         # whole mcp_servers table in codex-acp's createSessionConfig, dropping
-        # this override for any session that mounts servers that way.
+        # this override for any session that mounts servers that way. A
+        # foreground session, a Bot's worker included, gets no override at all,
+        # so codex starts the config.toml servers beside the servers Crew
+        # mounts. A mounted server takes the place of a config.toml server with
+        # the same name (DISABLE_MCP_CONFIG_FILTERING below). codex-acp 2.3.0
+        # has no per-session channel that would narrow them.
         self._bg_codex_config = ""
         if is_background:
             _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))

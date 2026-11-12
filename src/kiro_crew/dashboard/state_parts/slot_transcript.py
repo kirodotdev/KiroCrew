@@ -42,6 +42,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
     _TRANSIENT_ROLES,
     _WIRE_ONLY_ROLES,
     durable_row_count,
+    is_interruption_stale,
     is_turn_interrupted,
     parse_cls_meta,
 )
@@ -702,6 +703,7 @@ def to_dict(
         strip_options=_strip_options,
         parse_cls_meta=parse_cls_meta,
         is_turn_interrupted=is_turn_interrupted,
+        is_interruption_stale=is_interruption_stale,
         is_system_notice=is_system_notice,
         latest_transcript_ts=latest_transcript_ts,
         last_message_preview=_last_message_preview,

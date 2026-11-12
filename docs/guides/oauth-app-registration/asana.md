@@ -61,7 +61,7 @@ Two protocol details worth knowing when reading Kiro Crew logs:
 
 ## 5. Enter the credentials in Kiro Crew
 
-1. Open the Kiro Crew dashboard and go to **Settings → OAuth Apps → Asana card**.
+1. Open the Kiro Crew dashboard and go to **Settings → Connections → Asana card**.
 2. Paste the value from step 1.6 into **Client ID**.
 3. Paste the client secret into **Client secret**.
 4. Use the card's copy button for the redirect URI to double-check that the Asana app holds exactly `http://127.0.0.1:48102/callback`.
@@ -73,7 +73,7 @@ Asana requires the secret at token exchange (`client_secret` is marked "required
 
 ## 6. Verify the connection
 
-1. Open **Customize → Connections**. The Asana card should read **Connect** instead of **Needs configuration**.
+1. Open **Settings → Connections**. The Asana card should read **Connect** instead of **Needs configuration**.
 2. Click **Connect**. An app.asana.com page opens. Sign in if prompted, review the request, and click **Allow**. The page shows the **App name** from step 1.3 and the account being authorized; if the wrong Asana account is shown, sign out of Asana in that browser first and start again from the card.
 3. Local installs return to the dashboard automatically; remote installs show the paste box described in section 2. If the browser instead shows a plain-text error before any consent page, Asana says that happens when "either the `client_id` or `redirect_uri` do not match": compare the Client ID on the card with the console, and the redirect URL with `http://127.0.0.1:48102/callback` character by character.
 4. The card should now read **Connected**.
