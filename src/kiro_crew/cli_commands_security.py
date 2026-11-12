@@ -436,6 +436,22 @@ def _policy(args: argparse.Namespace) -> None:
         if prof is None:
             print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.", file=sys.stderr)
             raise SystemExit(1)
+        # A profile file that is unreadable, unparseable, or whose ``extends``
+        # parent is missing is substituted by the fallback profile (deny-all, or
+        # the looser one a policy declares under ``fallback``) and stored under
+        # the same stem, so ``get_store_profile`` returns a valid-looking profile.
+        # Without this warning the broken file reads as a deliberate, normal one. Enforcement is correct
+        # either way; the warning only lets the operator tell a lockdown they
+        # wrote from a file that failed to load.
+        from kiro_crew.platform.governance_profiles import fallback_profile_names
+
+        if args.name in fallback_profile_names():
+            print(
+                f"⚠️  profile {args.name!r} failed to load (unreadable, invalid, or a "
+                "missing/chained 'extends') and is running as the fallback profile "
+                "shown below. Fix the file in ~/.kiro/crew/profiles/.",
+                file=sys.stderr,
+            )
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
         print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
         if not prof.controls:
