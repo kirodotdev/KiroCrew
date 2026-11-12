@@ -181,11 +181,14 @@ function focusedPane(): Element | null {
  * The control a keyboard chord should land on when a tool call is waiting for a
  * decision, or null when nothing is waiting in the pane the user is working in.
  *
- * Returns the FIRST ENABLED button of the approval bar's own action row, so this
- * encodes no opinion about which decision is the default one: it lands where the
- * row already puts its first control, which is where a user tabbing backwards
- * from the composer arrives today. The chord removes keystrokes from a path that
- * already exists; it does not choose a verb.
+ * Returns the row's PRIMARY control when it marks one (`data-approval-primary`:
+ * Allow once, the row's last control and so where a user tabbing backwards from
+ * the composer arrives), else the first enabled button of the row (a
+ * security-rule override card marks none, and its first control opens a menu).
+ * The chord removes keystrokes from a path that already exists. A row whose
+ * primary is disabled answers null rather than falling through to a neighbour:
+ * a decision is in flight, and the chord must not land on the reject or trust
+ * menu in its place.
  *
  * NOTHING IS RESOLVED BY LOOKING THIS UP. The focus-approval chord focuses the
  * element and stops, so that keystroke cannot approve a prompt unread — the
@@ -213,11 +216,10 @@ function focusedPane(): Element | null {
  * eleven languages.
  */
 export function queryPendingApprovalAction(): HTMLElement | null {
-  const sel = '[data-approval-actions] button:not([disabled])'
-  const pane = focusedPane()
-  return pane
-    ? pane.querySelector<HTMLElement>(sel)
-    : document.querySelector<HTMLElement>(sel)
+  const scope: ParentNode = focusedPane() ?? document
+  const primary = scope.querySelector<HTMLButtonElement>('[data-approval-actions] [data-approval-primary]')
+  if (primary) return primary.disabled ? null : primary
+  return scope.querySelector<HTMLElement>('[data-approval-actions] button:not([disabled])')
 }
 
 /** Sent to an approval row by `rejectPendingApproval`; `useToolApproval` answers it. */
