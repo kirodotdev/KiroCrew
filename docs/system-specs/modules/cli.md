@@ -1058,12 +1058,21 @@ interrupted provisioning run can be found on the next launch attempt.
 
 Launch and connect require the local AWS Session Manager plugin for
 `AWS-StartPortForwardingSession`. If `session-manager-plugin` is missing,
-`cloud launch` prompts to install AWS's official package for the current local
-platform (macOS `.pkg`, Debian/Ubuntu `.deb`, or RPM Linux `.rpm`) before the
-wizard reaches sign-in/dashboard tunneling. `--yes` accepts this installer
-prompt. `cloud connect` performs the same check and installer prompt before
-opening the dashboard tunnel. If installation is declined or fails, the command
-exits non-zero and tells the user to retry after fixing the local prerequisite.
+`cloud launch` says the install needs admin rights and prompts to install AWS's
+official package for the current local platform (macOS `.pkg`, Debian/Ubuntu
+`.deb`, or RPM Linux `.rpm`) before the wizard reaches sign-in/dashboard
+tunneling. `--yes` accepts this installer prompt. `cloud connect` performs the
+same check and installer prompt before opening the dashboard tunnel. Where there
+is no built-in install (Windows, or Linux with neither `dpkg` nor `rpm`) neither
+command prompts; each says so. The install steps run as they are; when one fails
+with no terminal for sudo to ask on and `sudo -n true` fails too, the installer
+says in plain words that sudo needed a password it could not ask for, so a
+sudoers rule for the installer alone still installs. When the plugin is still
+missing (declined, failed, or no built-in install), the command says it stopped
+because the plugin is required, prints this host's install command (AWS's
+install page when there is none; the ownership fix when the install left AWS's
+install tree refused, which a reinstall does not clear) and the command to rerun
+(`kirocrew cloud launch` or `kirocrew cloud connect`), and exits non-zero.
 
 `kirocrew cloud doctor` is read-only and exits 1 when any line is a failure
 (✗): no usable `aws` CLI, a missing or refused Session Manager plugin, or AWS

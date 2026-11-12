@@ -425,6 +425,15 @@ class TestSessionManagerPluginProbe:
         assert refusal.path in result.message
         assert refusal.remedy_command in result.message
 
+    def test_the_next_step_for_a_refusal_in_aws_install_tree_is_its_fix(self, monkeypatch):
+        """An install that leaves AWS's tree refused must not end by offering a reinstall."""
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", _pkg_tree_refusal)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "brew install x")
+        assert ssm.session_manager_plugin_next_step("kirocrew cloud launch") == [
+            "Run this command, then rerun `kirocrew cloud launch`:",
+            f"  {_PKG_TREE_REMEDY}",
+        ]
+
     def test_a_refusal_with_no_known_fix_still_installs(self, monkeypatch):
         """A refused copy outside AWS's tree (a second account's Homebrew) can be
         shadowed by a fresh AWS install, so the installer still runs."""
@@ -1176,6 +1185,8 @@ class TestSessionManagerPlugin:
         commands: list[list[str]] = []
 
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: next(installed))
+        monkeypatch.setattr(ssm, "_sudo_cannot_prompt", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
         monkeypatch.setattr(
             ssm,
             "_session_manager_plugin_install_plan",

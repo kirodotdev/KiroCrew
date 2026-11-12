@@ -348,17 +348,40 @@ class TestEnsurePlugin:
     def _plugin_missing(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
         _floor_monkeypatch.setattr(ssm, "reinstall_cannot_clear_refusal", lambda: False)
+        _floor_monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+        _floor_monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: True)
 
     def test_declining_the_prompt_returns_false_and_installs_nothing(self, monkeypatch, capsys):
         confirm, install = mock.Mock(return_value=False), mock.Mock()
         monkeypatch.setattr(cli_cloud.ui, "confirm", confirm)
         monkeypatch.setattr(ssm, "install_session_manager_plugin", install)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "sudo dnf x")
         assert cli_cloud._ensure_session_manager_plugin() is False
         confirm.assert_called_once_with("Install session-manager-plugin now?", default=True)
         install.assert_not_called()
         out = capsys.readouterr().out
         assert "session-manager-plugin is required for SSM dashboard tunnels." in out
-        assert "Install it later with: kirocrew cloud doctor" in out
+        assert "It needs admin rights." in out
+        assert "Cannot connect: it needs session-manager-plugin." in out
+        assert "then rerun `kirocrew cloud connect`:" in out
+        assert "  sudo dnf x" in out
+        assert "cloud doctor" not in out
+
+    def test_with_no_built_in_install_it_names_aws_page_and_asks_nothing(self, monkeypatch, capsys):
+        """Windows has no install plan, so a yes could only fail."""
+        monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "")
+        confirm, install = mock.Mock(), mock.Mock()
+        monkeypatch.setattr(cli_cloud.ui, "confirm", confirm)
+        monkeypatch.setattr(ssm, "install_session_manager_plugin", install)
+        assert cli_cloud._ensure_session_manager_plugin() is False
+        confirm.assert_not_called()
+        install.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Kiro Crew has no built-in install for it on this system." in out
+        assert "Sudo may ask" not in out
+        assert "Install it from AWS's page, then rerun `kirocrew cloud connect`:" in out
+        assert ssm._SESSION_MANAGER_PLUGIN_DOC_URL in out
 
     @pytest.mark.parametrize(
         ("ok", "message", "shown"),
