@@ -49,6 +49,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client_timeouts import (
     _COMPACTION_FAILED_TURN_BUDGET,
+    _EOF_EXIT_GRACE_SECS,
     _MAX_CONSECUTIVE_EMPTY,
     _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _READ_TIMEOUT,
@@ -594,7 +595,13 @@ async def _prompt_loop(
                         req_id,
                         _stall_idle,
                     )
-                    await self._kill_process(force=True)
+                    # A stalled TOOL leaves the agent itself able to read the
+                    # stdin close, so kiro-cli gets the same bounded chance to
+                    # exit on it that a shutdown gives.
+                    if self._is_kiro:
+                        await self._kill_process(force=True, exit_grace=_EOF_EXIT_GRACE_SECS)
+                    else:
+                        await self._kill_process(force=True)
                     raise AcpProcessDied(
                         f"tool stalled — no data for {_stall_idle:.0f}s; agent killed to recover"
                     )

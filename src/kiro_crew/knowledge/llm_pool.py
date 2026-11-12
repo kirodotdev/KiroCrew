@@ -1134,6 +1134,18 @@ class CCWorker(Worker):
         self.calls_since_reset = 0
 
 
+async def _stop_workers(workers: list[Worker]) -> None:
+    """Shut *workers* down at the same time, logging a failure instead of raising it.
+
+    A worker's shutdown can wait on its child process (an ACP client gives the
+    agent a moment to exit once stdin is closed), so stopping them one after
+    another would make a pool's stop cost that wait once per worker.
+    """
+    for result in await asyncio.gather(*(w.shutdown() for w in workers), return_exceptions=True):
+        if isinstance(result, Exception):
+            logger.debug("Worker shutdown error", exc_info=result)
+
+
 class LLMPool:
     """Bounded pool of long-lived LLM workers.
 
@@ -1470,11 +1482,7 @@ class LLMPool:
             self._reaping_workers = workers
 
         try:
-            for worker in workers:
-                try:
-                    await worker.shutdown()
-                except Exception:
-                    logger.debug("Worker shutdown error", exc_info=True)
+            await _stop_workers(workers)
         except asyncio.CancelledError:
             # shutdown() cancelled us mid-teardown; leave _reaping_workers set
             # so shutdown() drains the survivors, then finish cancelling.
@@ -1581,11 +1589,7 @@ class LLMPool:
             self._started = False
             self._in_use = 0
             self._idle_since = None
-        for worker in workers:
-            try:
-                await worker.shutdown()
-            except Exception:
-                logger.debug("Worker shutdown error", exc_info=True)
+        await _stop_workers(workers)
         logger.info("LLMPool: all workers shut down")
 
     async def __aenter__(self) -> "LLMPool":

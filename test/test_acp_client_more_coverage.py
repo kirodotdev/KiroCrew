@@ -775,7 +775,13 @@ class TestEnsureReady:
 
         await client.shutdown()
 
-        assert order == ["kill {'force': True}", "reset"]
+        from kiro_crew.acp.client_timeouts import _EOF_EXIT_GRACE_SECS
+
+        # A kiro-cli client is given the stdin-close wait before the kill.
+        assert order == [
+            f"kill {{'force': True, 'exit_grace': {_EOF_EXIT_GRACE_SECS!r}}}",
+            "reset",
+        ]
         # A stale confirmation from an earlier kill does not survive into this one.
         assert client._process_tree_confirmed_dead is False
 
