@@ -259,7 +259,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
-from kiro_crew.dashboard.handlers import kiro_usage_api
+from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
 )
@@ -1714,6 +1714,17 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 pass
 
 
+async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -> str | None:
+    """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check.
+
+    The check is off until ``telemetry.plan_alert_pcts`` lists a percentage, and
+    it never raises, so the refresh's outcome is what the caller gets either way.
+    """
+    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    await plan_credit_alerts.notify_if_crossed(state, _usage_cache)
+    return outcome
+
+
 async def api_sessions_usage(request: web.Request) -> web.Response:
     """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
     # Same browser-storm guard as api_models: the /usage scrape shells out to
@@ -1772,7 +1783,7 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         # text scrape, a minute-scale kiro-cli subprocess. A faster readout is
         # not worth that churn; a profile switch is picked up on the next interval.
         state: DashboardState = request.app["state"]
-        task = asyncio.create_task(_fetch_usage_bg(vault_owned=vault_owned))
+        task = asyncio.create_task(_fetch_usage_then_alert(state, vault_owned=vault_owned))
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
     return web.json_response({"usage": served})
@@ -1819,7 +1830,7 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
             {"error": "A refresh is already running", "code": "refresh_in_flight"},
             status=409,
         )
-    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    outcome = await _fetch_usage_then_alert(request.app["state"], vault_owned=vault_owned)
     if outcome == _SKIPPED_SCRAPE_PARKED:
         parked_for = max(1, int(_usage_scrape_backoff_until - time.monotonic() + 0.999))
         return web.json_response(

@@ -216,6 +216,17 @@ class TelemetryConfig:
             "after recording was turned on explicitly.",
         ),
     )
+    plan_alert_pcts: list[float] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Plan Credit Alert Percentages",
+            "Percentages of your plan's credits (for example [50, 80, 100]) at which "
+            "to send one notification per plan period when the credits used cross "
+            "them. Empty = no alerts. Values must be above 0 and at most 1000; "
+            "others are ignored. Needs the dashboard open, since the reading is "
+            "taken when the credit pill refreshes.",
+        ),
+    )
     beacon_endpoint: str = field(
         default=_DEFAULT_BEACON_ENDPOINT,
         metadata=_meta(

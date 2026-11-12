@@ -4503,6 +4503,7 @@
         "traces_otlp_headers_secret": {},
         "traces_otlp_headers_env": {},
         "beacon_enabled": true,
+        "plan_alert_pcts": [],
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
     },
@@ -4715,6 +4716,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "telemetry.plan_alert_pcts",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Plan Credit Alert Percentages",
+      "help": "Percentages of your plan's credits (for example [50, 80, 100]) at which to send one notification per plan period when the credits used cross them. Empty = no alerts. Values must be above 0 and at most 1000; others are ignored. Needs the dashboard open, since the reading is taken when the credit pill refreshes.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "telemetry.plan_alert_pcts.*",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "telemetry.beacon_endpoint",

@@ -925,6 +925,14 @@ The desktop app's list of remote Crews it can open through the Kiro relay. See [
 | `tunnel.relay_viewer_oidc_scope_prefix` | For testing against a non-prod control plane only, like kiro-cli's `api.oidc.scopePrefix`. Builder ID and IAM Identity Center sign-ins request their scopes under this prefix instead of the public one. Lower-case letters and underscores only; any other value is ignored with a warning. Applies to the next sign-in | `""` (public scopes) |
 | `tunnel.relay_viewer_relay_domain` | Empty (the default) keeps the check that the Crew address starts with its endpoint ID. Set, the address must be exactly `https://<endpoint ID>.<this domain>` with no port, so a value that isn't the relay's domain lists no Crews | `""` |
 
+### Plan credit alerts
+
+A notification when the credits used on your plan cross percentages you choose, for example 50, 80 and 100. Each percentage is told once per plan period, and a plan period ends when the plan's reset date changes. A jump over two percentages at once sends one notice, for the higher one. The reading is taken when the dashboard refreshes the credit pill, so the dashboard has to be open for an alert to arrive. The notice goes to the notification bell on the Agent channel. What was already told is kept in `plan-credit-alerts.json` beside `config.json`, so a restart does not repeat it. There is no settings page for it yet; use `kirocrew config set telemetry.plan_alert_pcts "[50, 80, 100]"`.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `telemetry.plan_alert_pcts` | The percentages of your plan's credits at which to notify. A list of numbers above 0 and at most 1000; anything else in the list is ignored. Empty means no alerts. Read on every credit refresh, so a change needs no restart | `[]` |
+
 ### Power
 
 | Key | Description | Default |
