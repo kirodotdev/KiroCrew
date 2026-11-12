@@ -15,7 +15,7 @@
  * The split renderer (SessionGridLayout) and the grid state hook stay REAL so the
  * tree transforms are exercised end to end.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import SessionGridView from '../components/SessionGridView'
 import PaneDim from '../components/PaneDim'
@@ -362,6 +362,24 @@ describe('SessionGridView — split keybinding', () => {
     await screen.findByTestId('pane-a')
 
     fireEvent.keyDown(document, { key: 'D', ctrlKey: true })
+
+    await waitFor(() => expect(pickers()).toHaveLength(2))
+  })
+
+  it('leaves Ctrl+D to the text field on a Mac, where only Cmd+D splits', async () => {
+    const prev = navigator.platform
+    onTestFinished(() => Object.defineProperty(navigator, 'platform', { value: prev, configurable: true }))
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    renderGrid('a')
+    await screen.findByTestId('pane-a')
+
+    const ctrlD = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true })
+    document.dispatchEvent(ctrlD)
+
+    expect(ctrlD.defaultPrevented).toBe(false)
+    expect(pickers()).toHaveLength(1)
+
+    fireEvent.keyDown(document, { key: 'd', metaKey: true })
 
     await waitFor(() => expect(pickers()).toHaveLength(2))
   })

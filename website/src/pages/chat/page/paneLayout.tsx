@@ -18,6 +18,7 @@ import { resolveFolderAgent, resolveFolderProjectDir, isStaleProjectDirError } f
 import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels'
 import { sidePanelDockMotion } from '../sidePanelMount'
 import { errMessage } from '../../../utils/thunkError'
+import { isSplitChord } from '../../../hooks/splitChord'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
 import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
@@ -193,7 +194,7 @@ export function usePaneLayoutState({
   useEffect(() => {
     if (embedMode) return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+      if (isSplitChord(e)) {
         // A crew window covers the pane: never split the hidden local session.
         if (!splitFeatureEnabled || splitMode || !activeSlot || crewWindowShown()) return
         e.preventDefault()

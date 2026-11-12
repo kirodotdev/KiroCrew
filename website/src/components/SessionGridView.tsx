@@ -19,6 +19,7 @@ import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
 import { crewModeView } from '../lib/crewMode'
+import { isSplitChord } from '../hooks/splitChord'
 type Slot = {
   key: string
   /** Set on a Crew Mode worker: the root it works for. */
@@ -115,7 +116,7 @@ export default function SessionGridView({
   // browser tab (Chrome reserves it), so split-down is the on-pane ⬓ button only.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'd') return
+      if (!isSplitChord(e)) return
       const ids = grid.leaves.map((l) => l.id)
       const target = grid.focusedId && ids.includes(grid.focusedId) ? grid.focusedId : ids[0]
       if (!target) return
