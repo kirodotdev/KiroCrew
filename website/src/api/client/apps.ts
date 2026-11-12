@@ -155,7 +155,15 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
         body: JSON.stringify({ name }),
         signal,
       })
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
+        // A refusal answered before the stream opens (owner-only, a bad body, an
+        // expired or stale-owner session) is a JSON error body: read it through
+        // the shared parser every other call uses, so the page shows its message
+        // and code, not the raw JSON, and the sign-in recovery runs. `j` always
+        // throws on a non-2xx.
+        await j(res)
+      }
+      if (!res.body) {
         const text = await res.text()
         throw new Error(text || `HTTP ${res.status}`)
       }
