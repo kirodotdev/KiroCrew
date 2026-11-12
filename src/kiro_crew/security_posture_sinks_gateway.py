@@ -357,7 +357,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Central policy fetch failures",
         "platform/policy_distribution_boot.py",
         "The failure text of a central governance-policy fetch, which reaches TWO "
-        "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
+        "surfaces: `kirocrew policy fetch` on stderr and a `logger` line (durable, "
         "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
         "malformed document reaches the message through a parser error, and `json`'s "
         "errors quote the offending text, so an endpoint that echoes back the "

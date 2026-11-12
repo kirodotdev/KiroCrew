@@ -663,6 +663,8 @@ def _policy_fetch(*, force: bool) -> None:
     # "was refused", not "refused": the policy is the object of the refusal, not the
     # thing doing it.
     label = "was refused" if outcome.status == REFRESH_REJECTED else "could not be reached"
-    print(f"❌ The central policy {label}: {outcome.detail}")
-    print("   The ceiling already in effect is unchanged.")
+    # On stderr, as `policy source` and `policy validate` report their failures, so a
+    # config-management run that surfaces only stderr sees why the command exited 1.
+    print(f"❌ The central policy {label}: {outcome.detail}", file=sys.stderr)
+    print("   The ceiling already in effect is unchanged.", file=sys.stderr)
     raise SystemExit(1)
