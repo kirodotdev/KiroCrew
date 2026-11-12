@@ -344,7 +344,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         index = next((i for i, row in enumerate(slot.messages) if row is rewound_row), -1)
         disk_older = getattr(slot, "_disk_older_count", 0)
         if index < 0:
-            return web.json_response({"error": "user message not found"}, status=400)
+            return web.json_response(
+                {"error": "user message not found", "code": "user_message_not_found"},
+                status=400,
+            )
 
         # The transcript this rewind was authorized against. A concurrent
         # rebinding (a cron injection re-linking the slot) moves the slot to
