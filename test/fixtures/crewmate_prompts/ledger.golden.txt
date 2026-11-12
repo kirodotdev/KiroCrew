@@ -131,9 +131,9 @@ For work with more than one item, record the goal first (work_ledger_record acti
    `worker_session_key`.
 4. `session_send` the seed prompt.
 **Bind before you seed.** A worker whose first call is `work_brief` while unbound
-gets `not_bound` and cannot tell an early call from a broken one. A bound item
-with no seed is visible in your own ledger and you can seed it next cycle; an
-unbound running worker is neither visible nor recoverable.
+gets `not_bound`, takes it as having no item, does what the seed says and reports
+nothing. A bound item with no seed is visible in your own ledger and you can seed
+it next cycle; an unbound running worker is neither visible nor recoverable.
 A bound worker reports blocked, question or done through the ledger.
 Patrol: when tracked work needs a loop, follow this. When a `session_create` or `bind` reply's `patrol=` is
 `armed` or `existing (active-work-ledger)`, the gateway already runs your

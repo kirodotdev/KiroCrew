@@ -385,8 +385,9 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "work and treat title + acceptance as the definition of done. Takes no "
                 "arguments — which item you are bound to is resolved from your own "
                 "session, not supplied. It does not return the conductor's goal or any "
-                "sibling item: you have neither. Answers 'not_bound' when this session "
-                "is not a dispatched worker."
+                "sibling item: you have neither. Answers 'not_bound' when no item is "
+                "bound to this session: the message you were given is then your whole "
+                "task."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },

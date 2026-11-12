@@ -88,6 +88,6 @@ sequenceDiagram
 
 **`verdict` and `state` answer different questions.** `verdict` is the evaluator's reading; `state` is the conductor's disposition, written by `close` as `accepted`, `rejected`, or `abandoned`. An item can hold `verdict: fail` and stay open while the worker retries.
 
-**The bind precedes the seed.** A worker that runs before its binding exists reads `not_bound` and cannot retry intelligently, so `action=bind` is sent before `session_send`. A bound item with no session is visible and recoverable; an unbound running worker is neither.
+**The bind precedes the seed.** A worker that runs before its binding exists reads `not_bound`, takes it as having no item and reports nothing, so `action=bind` is sent before `session_send`. A bound item with no session is visible and recoverable; an unbound running worker is neither.
 
 **Every item write appends exactly one event.** There is no way to change an item field without also appending a line to the item's event log, which is what lets a conductor read history rather than infer it from a transcript.

@@ -304,7 +304,7 @@ async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> Non
     A conductor auto-approves ``session_create`` but not ``session_send``; an
     unreadable spec cannot say which prompt applies, so it is refused too.
     """
-    from kiro_crew.agent_sdk.mcp_refs import entry_grants, entry_reaches
+    from kiro_crew.agent_sdk.agent_specs import creates_without_send
 
     # The header is often the history key; the slot is then found by the walk.
     slot = state.get_slot(caller_key) or state.get_slot(sc.caller_slot_key(state, caller_key))
@@ -319,13 +319,7 @@ async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> Non
         if slot is not None
         else None
     )
-    tool = "@kirocrew-dashboard/session_"
-    entries = granted or ()
-    # Create over-matches (a wider read refuses more); send must be a grant
-    # kiro-cli itself honours, or the seed would skip a prompt it still shows.
-    create = any(entry_reaches(e.strip(), tool + "create") for e in entries)
-    send = any(entry_grants(e, tool + "send") for e in entries)
-    if granted is None or (create and not send):
+    if granted is None or creates_without_send(granted):
         raise sc.SessionControlError(
             "a first message needs session_send's approval: create the session, "
             "then session_send to it",

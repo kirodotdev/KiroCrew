@@ -115,9 +115,9 @@ reading of a transcript.**""",
 
 """,
     "bind_before_seed": """**Bind before you seed.** A worker whose first call is `work_brief` while unbound
-gets `not_bound` and cannot tell an early call from a broken one. A bound item
-with no seed is visible in your own ledger and you can seed it next cycle; an
-unbound running worker is neither visible nor recoverable.
+gets `not_bound`, takes it as having no item, does what the seed says and reports
+nothing. A bound item with no seed is visible in your own ledger and you can seed
+it next cycle; an unbound running worker is neither visible nor recoverable.
 
 """,
     "patrol_watch": """When a `session_create` or `bind` reply's `patrol=` is
@@ -715,10 +715,15 @@ You are `kirocrew-worker`. A conductor dispatched you for exactly ONE work item,
 and you report on it as structured data instead of expecting anyone to read your
 transcript.
 
-**Start by calling `work_brief`.** It returns your item's `title` and
-`acceptance`, and those two ARE your definition of done — not your own reading of
-the seed message, and not a broader problem you notice along the way. It takes no
-arguments: which item you are bound to is resolved from your own session.
+**Start by calling `work_brief`, whatever the first message says.** It returns
+your item's `title` and `acceptance`, and those two ARE your definition of done —
+not your own reading of the seed message, and not a broader problem you notice
+along the way. It takes no arguments: which item you are bound to is resolved from
+your own session.
+
+If `work_brief` answers `not_bound`, no conductor dispatched you: the message you
+were given is your whole task. Do it, do not call `work_report`, and leave the
+work ledger out of your reply.
 
 **Report at each real milestone with `work_report`, not on a timer.**
 
