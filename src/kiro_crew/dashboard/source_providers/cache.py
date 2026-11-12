@@ -671,13 +671,29 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     return await asyncio.shield(task)
 
 
+#: Issue readers installed by owners listed after this module (each installs its
+#: own on import), so a provider whose search half needs ``issue_search`` still
+#: reads single issues through the redaction, byte cap and cache below.
+_INSTALLED_ISSUE_READERS: dict[str, Callable[[SourceRef], Awaitable[dict[str, Any]]]] = {}
+
+
+def install_issue_reader(
+    provider: str, reader: Callable[[SourceRef], Awaitable[dict[str, Any]]]
+) -> None:
+    """Serve *provider*'s issue refs with *reader*. Idempotent per provider."""
+    _INSTALLED_ISSUE_READERS[provider] = reader
+
+
 async def _fetch_issue_uncached(ref: SourceRef) -> dict[str, Any]:
+    reader = _INSTALLED_ISSUE_READERS.get(ref.provider)
     if ref.provider == "github":
         fetched = await github._fetch_github_issue(ref)
     elif ref.provider == "gitlab":
         fetched = await gitlab._fetch_gitlab_issue(ref)
     elif ref.provider == "jira":
         fetched = await jira._fetch_jira_issue(ref)
+    elif reader is not None:
+        fetched = await reader(ref)
     else:
         raise SourceProviderError(f"unsupported issue provider: {ref.provider}")
     data = sanitize._redact_provider_data(fetched)

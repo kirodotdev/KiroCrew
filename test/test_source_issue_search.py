@@ -228,11 +228,13 @@ def test_app_token_grant_is_path_segment_bounded(monkeypatch, declared, path, al
 # ── Providers the contract names but the gateway does not serve yet ──────────
 
 
-@pytest.mark.parametrize("provider", ["linear"])
+@pytest.mark.parametrize("provider", ["asana"])
 @pytest.mark.asyncio
 async def test_planned_providers_answer_provider_not_supported(
     monkeypatch, _mock_source_sel, provider
 ) -> None:
+    # Every named provider is served today, so this checks the branch with a stand-in.
+    monkeypatch.setattr(issue_search, "_PLANNED_PROVIDERS", frozenset({provider}))
     fake = _GitHub([])
     monkeypatch.setattr(source, "_run_json", fake)
     status, payload = await _post({"provider": provider, "scope": "CREW"})

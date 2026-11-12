@@ -489,6 +489,8 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
     ),
     # Holds no re-exported name; listed so the import-order checks cover it.
     "issue_search": (),
+    # Likewise; importing it installs Linear into issue search and the issue read.
+    "linear": (),
     "review": (
         "_branch_pattern_matches",
         "_flatten_paginated",
