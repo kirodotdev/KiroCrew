@@ -6,12 +6,10 @@ comment from reaching ``gh pr comment``/``curl``, the governance chokepoint, the
 audit-or-deny SEL writes, and the two ``run`` paths (subprocess ``claude -p`` and the
 in-process provider session) whose result contract is "never raise into the spine".
 
-The module's own suite lives under the app tree, which the reduced-scope CI selector
-deselects — so none of that perimeter was exercised on a pull request. These tests live
-under ``test/`` (never deselected) and drive the perimeter with INJECTED fakes at the
-agent-process boundary: no agent binary, no provider, no network, no real ``git`` and no
-real ``subprocess``. Writes are confined to ``tmp_path`` (and ``KIRO_HOME`` is
-redirected there for the self-registration test).
+These tests drive that perimeter with INJECTED fakes at the agent-process boundary: no
+agent binary, no provider, no network, no real ``git`` and no real ``subprocess``. Writes
+are confined to ``tmp_path`` (and ``KIRO_HOME`` is redirected there for the
+self-registration test).
 
 One product defect is characterised rather than fixed — see
 ``test_run_spawn_failure_result_or_known_defect``.
