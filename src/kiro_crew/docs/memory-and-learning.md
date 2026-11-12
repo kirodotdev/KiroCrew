@@ -68,6 +68,29 @@ of excerpts from the last three days (headings, bullets and each paragraph's
 first line), and the body arrives only when `memory_recall`
 asks for it.
 
+### Narrowing a recall by kind and time
+
+`memory_recall` also takes four optional arguments. Leave them out and the answer
+is the one it always gave.
+
+| Argument | Meaning |
+|---|---|
+| `kind` | `fact`, `episode` or `lesson`: return only that part of the answer. |
+| `since`, `until` | Keep what was written in the half-open range `[since, until)`: an episode by when it was recorded, a fact by when its current value was set (rewriting a fact moves that time). An ISO date means midnight UTC, so "October" is `since=2026-10-01`, `until=2026-11-01`. |
+| `as_of` | Keep what was valid at that moment, judged by the same validity check recall applies now. A fact with a validity window counts only inside it (`valid_from` up to, not including, `valid_until`), so a fact whose window has since closed is found by a date inside it. A fact with no window counts from when its current value was set, so one rewritten after that moment is not returned for it. |
+
+Time filters apply to facts and episodes. Lessons are standing rules, so time
+filters beside `kind=lesson` are dropped, and a timed query without a `kind` leaves
+the lessons block out. A malformed or conflicting filter (an unknown `kind`, a date
+that does not parse, `since` not earlier than `until`) is never a refusal: it is
+dropped, the recall runs without it, and the answer carries a warning saying what
+was ignored (a `Warning:` line from the tool, a `warning` field from the dashboard
+route). Valid filters beside a dropped one still apply. A fact that was replaced or forgotten is removed from the store,
+so `as_of` cannot find it; its history stays in the revision log. Pages from the
+Markdown notebook carry no dates, so a timed query does not search them. The
+filters narrow the ranked candidates: a date range asks for the best matches inside
+it, not for every record in it.
+
 ### Lessons
 
 Corrections and rules you teach Kiro Crew. Two ways to create:

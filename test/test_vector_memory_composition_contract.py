@@ -388,7 +388,7 @@ _STORE_SIGNATURES = {
     "read_editable_history": "(self) -> 'str'",
     "read_history_entries": "(self, *, since: 'str | None' = None, limit: 'int' = 366, max_bytes: 'int' = 8388608) -> 'list[dict]'",
     "rebuild_memory_index": "(self) -> 'int'",
-    "recall": "(self, query_text: 'str', *, cap: 'int' = 3000, project_dir: 'str | Path | None' = None, keep: 'Callable[[list[dict]], list[dict] | None] | None' = None, conversation_id: 'str' = '') -> 'dict'",
+    "recall": "(self, query_text: 'str', *, cap: 'int' = 3000, project_dir: 'str | Path | None' = None, keep: 'Callable[[list[dict]], list[dict] | None] | None' = None, conversation_id: 'str' = '', filters: 'RecallFilters | None' = None) -> 'dict'",
     "reconcile_embedding_space": "(self, signature: 'str', *, clear_when_unknown: 'bool' = False, force: 'bool' = False, rebuild_generation: 'str' = '') -> 'int'",
     "reconfigure": "(self, cfg: 'object') -> 'None'",
     "recorded_embedding_space": "(self) -> 'str | None'",

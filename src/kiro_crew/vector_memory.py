@@ -80,6 +80,7 @@ from kiro_crew.lesson_validation import (  # noqa: F401
     render_withheld_tier,
     tighter_lesson_budget,
 )
+from kiro_crew.memory_recall_filters import RecallFilters
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.owner_only_files import owner_only_opener, prepare_owner_only_sqlite  # noqa: F401
@@ -1784,6 +1785,7 @@ class VectorMemoryStore:
         project_dir: str | Path | None = None,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
         conversation_id: str = "",
+        filters: RecallFilters | None = None,
     ) -> dict:
         """Compute once; discard mixed-space results and retry keyword-only once."""
         return _recall.recall(
@@ -1793,6 +1795,7 @@ class VectorMemoryStore:
             project_dir=project_dir,
             keep=keep,
             conversation_id=conversation_id,
+            filters=filters,
             session_affinity=self._session_affinity,
             recency_boost=self._recency_boost,
         )

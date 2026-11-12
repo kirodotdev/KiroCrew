@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew import memory_recall_filters as recall_filters
 from kiro_crew import memory_record_metadata as record_meta
 
 if TYPE_CHECKING:
@@ -84,6 +85,12 @@ def _ineligible_ids(self: VectorMemoryStore, record_ids: list[str] | None = None
                     tuple(chunk),
                 )
             )
+    as_of = recall_filters.as_of_now()
+    if as_of is not None:
+        # A recall asked what was true at a past instant: judge each record's
+        # window at that instant, so a fact whose window has since closed is found.
+        stamp = as_of.isoformat()
+        return {row["record_id"] for row in rows if not record_meta.eligible(dict(row), now=stamp)}
     return record_meta.ineligible_record_ids(rows)
 
 

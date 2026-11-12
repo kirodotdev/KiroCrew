@@ -14,6 +14,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.embeddings import enter_work_phase
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
+from kiro_crew.memory_recall_filters import parse_filters as parse_recall_filters
 from kiro_crew.metrics.feature_usage import recall_payload_hit, record_memory_recalled
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
@@ -237,6 +238,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     if not query or len(query) > MAX_RECALL_QUERY:
         return _error("A query of 1–2000 characters is required.", "invalid_memory_query")
+    filters, filter_warning = parse_recall_filters(request.query)
     enter_work_phase("store_open")
     try:
         vector_unavailable = False
@@ -284,6 +286,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         from kiro_crew import memory_shadow_trace as trace
 
         tracing = bool(session) and tier is not None and trace.observing()
+        filter_kwargs: dict[str, Any] = {} if filters is None else {"filters": filters}
         with injection_receipts.collect() if tracing else contextlib.nullcontext({}) as sink:
             result = (
                 await run_in_embed_pool(
@@ -293,6 +296,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
                     project_dir=str(project) if project else None,
                     keep=_memory_recall_keep(state, session, query, decision_pending, name),
                     conversation_id=session,
+                    **filter_kwargs,
                 )
                 if tier is not None
                 else {}
@@ -302,7 +306,14 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         )
         if vector_unavailable:
             result["vector_status"] = "unavailable"
-        if markdown is not None and markdown._memory_version == 1:
+        if filter_warning:
+            result["warning"] = filter_warning
+        if (
+            markdown is not None
+            and markdown._memory_version == 1
+            # Notebook pages carry no dates, so a timed or non-fact query skips them.
+            and (filters is None or filters.wants_notebook)
+        ):
             enter_work_phase("notebook")
             rows = []
             index_count = await asyncio.to_thread(markdown.index_row_count)

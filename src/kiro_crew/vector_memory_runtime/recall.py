@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew import memory_recall_filters as recall_filters
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE, enter_work_phase
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
@@ -22,6 +23,7 @@ from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpace
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from kiro_crew.memory_recall_filters import RecallFilters
     from kiro_crew.vector_memory import VectorMemoryStore
 
 # The store's own logger: callers and tests filter on it by name.
@@ -123,6 +125,7 @@ def recall(
     conversation_id: str = "",
     session_affinity: float = 0.0,
     recency_boost: float = 0.0,
+    filters: RecallFilters | None = None,
 ) -> dict:
     """Compute once; discard mixed-space results and retry keyword-only once.
 
@@ -145,7 +148,7 @@ def recall(
         else None
     )
     enter_work_phase("search")
-    query = _RecallQuery(vector, generation, signature)
+    query = _RecallQuery(vector, generation, signature, filters)
     try:
         return store._recall_once(
             query_text,
@@ -164,7 +167,7 @@ def recall(
             query_text,
             cap=cap,
             project_dir=project_dir,
-            query=_RecallQuery(None, None, None),
+            query=_RecallQuery(None, None, None, filters),
             keep=keep,
             conversation_id=conversation_id,
             session_affinity=session_affinity,
@@ -195,8 +198,12 @@ def recall_once(
         v2_operating_point,
     )
 
+    filters = query.filters
+
     def retrieval(facts: list[dict], episodes: list[dict]) -> dict:
         evidence: dict = {"facts": facts, "episodes": episodes}
+        if filters is not None:
+            evidence["filters"] = filters.describe()
         if store.algorithm_version == "v2":
             evidence["operating_point"] = v2_operating_point(
                 store.recorded_embedding_space(), embed_fn=store.embed_fn
@@ -224,26 +231,41 @@ def recall_once(
     # Embed the original question once; lexical scoring uses its topic
     # terms so CJK question endings cannot suppress known facts.
     query_text = " ".join(sorted(memory_recall.recall_terms(query_text)))
-    facts = (
-        store._semantic_candidates_v2(query_text, recall_query=query)
-        if store.algorithm_version == "v2"
-        else store._semantic_candidates_v1(query_text, recall_query=query)
-    )
+    with recall_filters.as_of_scope(filters):
+        facts = (
+            []
+            if filters is not None and not filters.wants("fact")
+            else (
+                store._semantic_candidates_v2(query_text, recall_query=query)
+                if store.algorithm_version == "v2"
+                else store._semantic_candidates_v1(query_text, recall_query=query)
+            )
+        )
+        # A date filter narrows a ranked list, so look further down it first.
+        episodic_limit = store._episodic_limit * (4 if filters is not None and filters.timed else 1)
+        episodes = (
+            []
+            if filters is not None and not filters.wants("episode")
+            else store.search_episodic(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                limit=episodic_limit,
+                relevance_filter=True,
+                recall_query=query,
+                conversation_id=conversation_id,
+                session_affinity=session_affinity,
+                recency_boost=recency_boost,
+            )
+        )
+    if filters is not None and filters.timed:
+        facts = recall_filters.narrow(store, facts, "fact", filters)
+        episodes = recall_filters.narrow(store, episodes, "episode", filters)[
+            : store._episodic_limit
+        ]
     for fact in facts:
         fact.setdefault("id", f"key:{fact['key']}")
         fact.pop("embedding", None)
         fact.setdefault("retrieval", {"reason": "v1_hybrid_match"})
-    episodes = store.search_episodic(
-        query_embedding=query_embedding,
-        query_text=query_text,
-        limit=store._episodic_limit,
-        relevance_filter=True,
-        recall_query=query,
-        conversation_id=conversation_id,
-        session_affinity=session_affinity,
-        recency_boost=recency_boost,
-    )
-
     for episode in episodes:
         episode.pop("embedding", None)
         episode.setdefault(
@@ -301,8 +323,12 @@ def recall_once(
     # Recall is the only way a private store's or a non-default workspace's
     # lessons reach the model, so they stay in the payload.
     lessons_share = cap // 3
-    lessons = store.get_lessons_context(
-        query_text, cap=lessons_share, project_dir=project_dir, recall_query=query
+    lessons = (
+        ""
+        if filters is not None and not filters.wants("lesson")
+        else store.get_lessons_context(
+            query_text, cap=lessons_share, project_dir=project_dir, recall_query=query
+        )
     )
     # Over the share means the one top-ranked lesson alone did not fit, so it
     # is shortened behind an in-text marker rather than dropped: an empty block

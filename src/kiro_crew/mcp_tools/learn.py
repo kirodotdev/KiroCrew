@@ -32,6 +32,7 @@ from kiro_crew.validation import MAX_RESPONSE_LEN
 
 def memory_recall(name: str, args: dict[str, Any]) -> str:
     from kiro_crew.memory_recall import recall_json
+    from kiro_crew.memory_recall_filters import parse_filters
 
     query = args.get("query")
     if not isinstance(query, str) or not query.strip() or len(query) > 2000:
@@ -41,12 +42,15 @@ def memory_recall(name: str, args: dict[str, Any]) -> str:
     )
     if not session:
         return refusal
-    result = mcp_core._get(
-        "/api/memory/recall?" + urlencode({"q": query.strip()}), session_key=session
-    )
-    return recall_json(
+    params = {"q": query.strip()}
+    filters, warning = parse_filters(args)
+    if filters is not None:
+        params.update(filters.describe())
+    result = mcp_core._get("/api/memory/recall?" + urlencode(params), session_key=session)
+    text = recall_json(
         result, ensure_ascii=False, context_cap=3000, mcp_envelope=True, model_facing=True
     )
+    return f"{text}\n{warning}" if warning else text
 
 
 # Leaked tool-call markup leaves tags like ``</rule></invoke>`` at the ends of an
