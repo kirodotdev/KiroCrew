@@ -1211,6 +1211,10 @@ class TestRedactionSinkRegistry:
             # _redact_meta (dashboard/handlers/steering.py) is `redact()`, both
             # scanners, over a steering listing's description or display path.
             "_redact_meta(",
+            # _redact_obj (dashboard/handlers/workflows.py) runs redact_exfiltration_urls
+            # THEN redact_credentials on every string, dict keys included; the
+            # Kiro Workflows routes import it rather than defining their own pair.
+            "_redact_obj(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

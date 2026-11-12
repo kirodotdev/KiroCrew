@@ -831,6 +831,10 @@ def _sweep_pending_approvals(
             # stays open.
             continue
         if not fut.done():
+            # A KAS plan handoff waits for the person under every mode
+            # (chat_runner marks the card ``person_only``).
+            if _get_pattern_from_pending(slot, aid, "person_only") == "1":
+                continue
             # Read while still pending: names the row the frame settles.
             _mid = slot.approval_instance(aid) or ""
             fut.set_result("approved")

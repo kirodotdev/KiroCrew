@@ -30,6 +30,7 @@ from chat_runner_coverage_helpers import (
 
 from kiro_crew import name_grant
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.providers.base import LLMEvent
 from kiro_crew.trust_patterns import (
     GrantDeadline,
     base_trust_patterns,
@@ -67,6 +68,66 @@ class TestRunChatAutoApproveRungs:
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
         ):
             yield
+
+    @pytest.mark.asyncio
+    async def test_a_kas_plan_handoff_asks_even_in_trust(self, tmp_path):
+        """KAS's ``update_workflow`` plan approval passes no grant rung, Trust included."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trust = True
+        plan = _permission(
+            title="Add 2 workflow steps to wf_1",
+            tool_input="{}",
+            tool_kind="other",
+            is_shell=False,
+        )
+        plan.harness_tool_id = "update_workflow"
+        _set_stream(client, [plan, _complete()])
+        prompted: list[str] = []
+
+        def _allow_once_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                prompted.append("card")
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _allow_once_when_registered
+        await _drive(state, slot)
+
+        assert prompted == ["card"], "the plan reached the person's card"
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @staticmethod
+    def _kas_question(*, answers_only: bool = True) -> LLMEvent:
+        """A ``user_input`` question the chat's own KAS session asks.
+
+        The shape of kiro-agent's legacy bridge (``acp-event-adapter.ts``
+        ``handleUserInputViaPermissionRequest``): the question as the title, one
+        ``allow_once`` option per answer, no reject, no ``_meta.kiro.toolId``.
+        """
+        question = _permission(
+            title="Which branch should I target?",
+            tool_input="",
+            tool_kind="other",
+            is_shell=False,
+        )
+        question.options = [{"id": "q1-main", "label": "main"}, {"id": "q1-dev", "label": "dev"}]
+        question.kas_builtin_ids = True
+        question.answers_only = answers_only
+        return question
+
+    @pytest.mark.asyncio
+    async def test_a_kas_tool_approval_under_trust_is_still_auto_approved(self, tmp_path):
+        """Control: a KAS request that offers a reject is a tool approval, and Trust answers it."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trust = True
+        _set_stream(client, [self._kas_question(answers_only=False), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert not [m for m in slot.messages if m.get("role") == "permission"]
 
     @pytest.mark.asyncio
     async def test_a_non_shell_approval_mints_no_shell_witness(self, tmp_path):
