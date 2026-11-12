@@ -566,6 +566,19 @@ ingested. The chunk figure is derived from the chunker's target size and file by
 (`_estimated_chunks`), never measured: it exists to show order of magnitude before the
 user confirms, and no code path treats it as a bound.
 
+**One row per folder spelling.** The add dedupes on the exact `uri` (`409
+source_exists`). For a folder source it also looks up the plain spelling and
+that spelling with a trailing separator or a trailing `.` segment
+(`<dir>`, `<dir>/`, `<dir>/.`). A hit answers `200` with `status: exists`,
+the row's `id` and a `warning`, and adds nothing: a second row would ingest
+the same folder again. It is a 200, not the exact re-add's 409, because the
+Knowledge tab's add form shows a 409 as a failed add, and these spellings
+were added successfully before. `id` is the key every caller reads: the
+md-notebook app confirms it, as it does a 409's id, and the Knowledge tab's
+follow-up sync is a no-op for a folder source. A new row keeps the spelling
+it was given, and `..` is never collapsed, since that can change which
+directory a symlinked path names.
+
 **Web-page sources and the fetch allowlist.** A source with no connector (the
 dashboard's Web Page type is `url`) is fetched by the gateway itself,
 `url_fetch.fetch_page`, and handed to `ingest_file` like an upload: decoded (HTML by
