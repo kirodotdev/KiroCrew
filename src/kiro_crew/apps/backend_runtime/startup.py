@@ -129,17 +129,24 @@ def start_enabled_app_backends() -> list[str]:
 
         denied = gov_denied or adm_denied or execution_denied
         if denied:
-            try:
-                _deregister_agents(name)
-                _deregister_skills(name)
-                _deregister_mcp_servers(name)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Boot resource reconcile: FAILED to revoke resources for " "denied app %s: %s",
-                    name,
-                    exc,
-                )
-            else:
+            revoke_failed = False
+            for resource_kind, deregister in (
+                ("agents", _deregister_agents),
+                ("skills", _deregister_skills),
+                ("MCP servers", _deregister_mcp_servers),
+            ):
+                try:
+                    deregister(name)
+                except Exception as exc:  # noqa: BLE001
+                    revoke_failed = True
+                    logger.error(
+                        "Boot resource reconcile: FAILED to revoke resources (%s) for "
+                        "denied app %s: %s",
+                        resource_kind,
+                        name,
+                        exc,
+                    )
+            if not revoke_failed:
                 logger.warning(
                     "Boot resource reconcile: revoked executable resources for "
                     "denied app %s: %s",

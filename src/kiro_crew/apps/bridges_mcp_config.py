@@ -151,10 +151,46 @@ def _read_mcp_json_unlocked(*, strict: bool = False) -> dict[str, Any]:
         return {}
 
 
-def _write_mcp_json_unlocked(data: dict[str, Any]) -> None:
-    """Write mcp.json without acquiring a lock (caller must hold lock)."""
-    _mcp_json_path().parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(_mcp_json_path(), json.dumps(data, indent=2) + "\n")
+def _write_mcp_json_unlocked(data: dict[str, Any]) -> bool:
+    """Write mcp.json without acquiring a lock (caller must hold lock).
+
+    Returns whether the write landed. ``kirocrew.json`` is the shared agent spec,
+    and the app register, deregister and prune paths all reach it here on every
+    boot reconcile, on any data home. So this write asks the same ownership
+    question as the derived-spec writers (``agent._declined_foreign_spec_write``):
+    a shared directory owned by another home is left untouched and the caller
+    registers nothing; a default-home instance and ``isolated_agents_dir`` write
+    as before. Returns ``False`` rather than raising, as ``_register_agents``
+    skips a refused spec; the guard logs the WARNING and the SEL denial itself.
+    Asked under ``_mcp_lock``, which the rebuild also holds for this file, so the
+    provenance it reads cannot change between the decision and the write. A first
+    write to the shared directory from a relocated home also emits the existing
+    ``kirocrew-core`` managed entry. Its ``KIROCREW_HOME`` pin lets later app
+    writes prove that the relocated home created the file.
+    """
+    path = _mcp_json_path()
+    # Deferred: the agent facade imports config.loader and the bridges family is
+    # imported during the backend's boot path (same shape as bridges_agents).
+    from kiro_crew import agent as _agent
+
+    if _agent._declined_foreign_spec_write(path):
+        return False
+    if not path.exists():
+        if _agent._new_shared_spec_needs_owner_pin(path.parent):
+            provenance = _agent.managed_mcp_spec_entry("kirocrew-core")
+            if provenance is None:
+                # Without the pin the new file would carry no owner, and this
+                # home could never change it again.
+                logger.warning(
+                    "Not creating %s: the kirocrew-core entry that marks this home "
+                    "as its owner could not be resolved",
+                    path,
+                )
+                return False
+            data.setdefault("mcpServers", {})["kirocrew-core"] = provenance
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
+    return True
 
 
 def _read_mcp_json() -> dict[str, Any]:

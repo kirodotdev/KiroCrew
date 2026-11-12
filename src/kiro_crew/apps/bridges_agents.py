@@ -17,8 +17,9 @@ import logging
 import os
 import re
 import stat
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Container, Mapping
+from typing import Any, Container, Iterator, Mapping
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.apps.agent_template_values import HOST_PLACEHOLDERS, host_placeholder_values
@@ -1170,6 +1171,26 @@ def _register_agents(
         return registered
 
 
+@contextmanager
+def _owned_agents_dir(agents_dir: Path) -> Iterator[bool]:
+    """Hold the agent-spec lock for a removal sweep; yield whether this home owns it.
+
+    ``False`` means another data home owns *agents_dir*. That is the settled state,
+    not a failure, since ``_register_agents`` declines every write there, so
+    nothing in it is this home's to remove. A lock that cannot be opened or
+    acquired raises ``OSError`` so callers report the transient failure and retry.
+    The ownership answer and every unlink in the sweep share one critical section,
+    the lock every spec writer of this directory holds, so ownership cannot change
+    between the check and a delete. Asked once per sweep: the guard answers for the
+    directory, not per file.
+    """
+    from kiro_crew import agent as _agent
+    from kiro_crew.agent_files import AGENT_FILENAME
+
+    with _agent.agents_spec_lock(agents_dir):
+        yield not _agent._declined_foreign_spec_write(agents_dir / AGENT_FILENAME)
+
+
 def _deregister_agents(app_name: str) -> int:
     """Remove all agent symlinks for an app from ~/.kiro/agents/."""
     prefix = _safe_link_name(app_name + "/")
@@ -1177,18 +1198,21 @@ def _deregister_agents(app_name: str) -> int:
     agents_dir = _kiro_agents_dir()
     if not agents_dir.is_dir():
         return 0
-    for entry in agents_dir.iterdir():
-        if entry.name.startswith(prefix) and entry.name.endswith(".json"):
-            try:
-                entry.unlink()
-                removed += 1
-            except OSError:
-                pass
     # The launch copies the app's palette sessions ran under (apps.agent_launch)
-    # describe the specs just removed, so they go with them.
+    # describe the specs removed here, so they go with them.
     from kiro_crew.apps.agent_launch import remove_app_agent_launches
 
-    removed += remove_app_agent_launches(app_name)
+    with _owned_agents_dir(agents_dir) as owned:
+        if not owned:
+            return 0
+        for entry in agents_dir.iterdir():
+            if entry.name.startswith(prefix) and entry.name.endswith(".json"):
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        removed += remove_app_agent_launches(app_name)
     if removed:
         logger.info("Deregistered %d agent(s) for app %s", removed, app_name)
         # Drop the removed names from the resolver's snapshot. Without this a
