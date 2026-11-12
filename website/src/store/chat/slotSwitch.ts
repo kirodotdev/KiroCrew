@@ -511,10 +511,12 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         // write. A turn that started in the background but has not yet sent
         // its first frame reads idle here, exactly as its pane did while it
         // was in the background (the keyed entry is promoted only by ordered
-        // frames or a tick-ordered warm; see warmSlotCache.fulfilled).
+        // frames or a tick-ordered warm; see warmSlotCache.fulfilled). A send
+        // made here before the user left and not yet confirmed still runs:
+        // `enterActiveSlot` brought its mark back.
         const incoming = runs[safeKey(target)]?.state ?? 'idle'
         state.slotState = incoming
-        state.slotRunning = incoming !== 'idle'
+        state.slotRunning = incoming !== 'idle' || state.pendingTurnSlot === target
         state.slotStopping = incoming === 'stopping'
       }
       // Restore cached messages if available (instant switch), otherwise show loading.
@@ -531,7 +533,10 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       }
       state._wsChunkedDuringFetch = false
       // Everything past this length is appended while the fetch is in flight.
-      state._switchLiveFrom = state.messages.length
+      // An unconfirmed send is live too: its bubble came back with the cache,
+      // and a page read before the server stored it lacks the row.
+      const unconfirmedSend = state.pendingTurnSlot === target ? state.messages.findLastIndex(m => m.role === 'user') : -1
+      state._switchLiveFrom = unconfirmedSend >= 0 ? unconfirmedSend : state.messages.length
     })
     .addCase(switchSlot.fulfilled, (state, action) => {
       // A later switch owns the pane: its own fulfilment, or the cache its
@@ -875,14 +880,15 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         state.slotRunning = origin.run.running
         state.slotStopping = origin.run.stopping
         // The local-turn guard: a send the origin made before leaving was
-        // awaiting server confirmation. If that turn ENDED while the origin
-        // was non-active (the event-synced snapshot says not running), the
-        // guard must fall with it -- the active-path _done that normally
-        // clears it never ran because the view was elsewhere, and left
-        // standing it hides Continue and makes syncSlotRunningFromServer
-        // ignore idle snapshots for this slot indefinitely. A still-running
-        // (or still-unconfirmed) turn keeps its guard.
-        if (state.pendingTurnSlot === origin.key && !origin.run.running) state.pendingTurnSlot = null
+        // awaiting server confirmation, and `pending` parked its mark on the
+        // origin's run entry. A still-unconfirmed send gets it back. If that
+        // turn ENDED while the origin was non-active, the background write
+        // that idled it already dropped the mark: left standing it would hide
+        // Continue and make syncSlotRunningFromServer ignore idle snapshots
+        // for this slot indefinitely.
+        const parked = isUnsafeKey(origin.key) ? undefined : runs[safeKey(origin.key)]
+        state.pendingTurnSlot = parked?.pendingTurn ? origin.key : null
+        if (parked) delete parked.pendingTurn
         // Re-key the paging cursor when the captured one described the origin;
         // no valid cursor existed otherwise, and guessing pages the wrong chat.
         if (origin.cursor) {

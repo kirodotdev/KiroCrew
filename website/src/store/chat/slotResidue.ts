@@ -11,6 +11,7 @@ import { MCP_APP_KEY_SEP, evictMcpApps } from './mcpApps'
 import { clearFiledFolderSuggestions } from './composerCards'
 import {
   recordEndedTurn,
+  rowEndsPendingTurn,
   settleEndedActiveTurn,
   settleEndedBackgroundTurn,
   turnAlreadyEnded,
@@ -159,7 +160,10 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       for (const row of action.payload) {
         if (row.running === false) {
           const identity = wireTurnIdentity(row)
-          if (identity && !turnAlreadyEnded(state, row.key, identity)) {
+          // A parked send survives a row that does not end its turn, as the
+          // active slot's does in `settleEndedActiveTurn`.
+          const parked = !!state.slotRun?.[safeKey(row.key)]?.pendingTurn
+          if (identity && !turnAlreadyEnded(state, row.key, identity) && (!parked || rowEndsPendingTurn(state, row.key, identity))) {
             settleEndedBackgroundTurn(state, row.key)
           }
           recordEndedTurn(state, row.key, row)

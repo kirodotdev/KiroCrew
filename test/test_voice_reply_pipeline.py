@@ -553,6 +553,15 @@ class TestStitchMp3s:
     untouched on failure.
     """
 
+    @pytest.fixture(autouse=True)
+    def _trusted_ffmpeg_present(self):
+        # The stitch only starts an ffmpeg from a trusted directory; these
+        # tests are about cleanup, so state that one exists whatever the host.
+        # Which ffmpeg it picks is test_voice_stitch_ffmpeg_trust.py's subject.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("kiro_crew.transcribe._find_system_ffmpeg", lambda: "/usr/bin/ffmpeg")
+            yield
+
     @staticmethod
     def _two_inputs(tmp_path) -> list[str]:
         """Two fake MP3 inputs — one path short-circuits before ffmpeg runs."""

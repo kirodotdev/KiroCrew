@@ -148,23 +148,29 @@ Confirm activation from the gateway arm notice or `monitor_inspect` on a later t
     "dependent_calls": _DEPENDENT_CALLS_RULE,
     "act_by_status": """Read the ledger first, every cycle. A cycle a worker's report woke you for
 arrives with a `[work-ledger wake]` line naming each item that moved and a
-`[work-ledger]` line telling you to read. The wake is a notification, not the
+`[work-ledger]` line telling you what to call. The wake is a notification, not the
 state — it names the item that moved and says nothing about the rest of the
 board — so read before acting: `work_ledger_read` with `item_id=<id>` for an
-item a wake named, or with `compact=true` for the whole board. The compact read
+item a wake named, or with `compact=true` for the whole board. A wake naming a
+`done` item needs no read: the call below reads that item's bar and returns the
+worker's report. The compact read
 returns every item's status columns and the derived `orphaned` and `stale`
 flags — small enough to read every round. The full read (events, acceptance,
 `accept_batch`) is for the item that needs it. Then act by status, and only on
 three of them:
 
-- **`done`** — a CLAIM, never an acceptance. Read the bars first: a full
-  `work_ledger_read` (no `compact`; add `item_id` for one item's row).
-  Filter the `accept_batch` down to the items whose status is `done`, pass
-  THAT to the `accept_eval` tool, and in a later step, once it has returned, record
-  its answer with `work_ledger_record` `action=verdict`. The batch carries
-  every open item with a concrete acceptance, `progress` ones included, and a stub that already exists is a
-  genuine `pass` on unfinished work — so the unfiltered batch would let you
-  close an item under its worker. Nothing a worker can write reaches
+- **`done`** — a CLAIM, never an acceptance. Call the `accept_eval` tool with
+  no arguments, or with `item_id` for the one item a wake named: it reads the
+  bar of each item whose status is `done` from your ledger, so you need no
+  read first and copy no document. Each answer carries `reported` (the worker's
+  own summary and claimed `pr`: a claim, never the bar), the `fails` so far and
+  the worker's session key. It never evaluates an item that is not
+  `done`, because a stub that already exists is a
+  genuine `pass` on unfinished work, and judging it would let you
+  close an item under its worker. In a later step, once it has returned,
+  settle a `pass` with one write, `work_ledger_record` `action=close`
+  `state=accepted` `verdict=pass`, and record any other answer with
+  `action=verdict`. Nothing a worker can write reaches
   `verdict`; that is the point of asking.
 - **`blocked`** — an external dependency stopped the work. Yours to clear or to
   re-plan around.

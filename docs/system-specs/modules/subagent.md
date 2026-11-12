@@ -5066,9 +5066,9 @@ The mechanism is one extra window plus one env value, applied at three seams:
   seconds of; nothing is released, a second heir simply refreshes again, and the
   lock never covers marker I/O. If the refresh itself fails (`os.utime` raises)
   the window is handed out only when the sweep could not take the tree anyway —
-  a live owner, or an absent/garbled marker — and refused for a dead-owner tree,
-  since mounting one without the hold is the deletion-under-a-mount this exists
-  to prevent; the spawn then falls back to its own directory. It is mounted as
+  a live owner, or a garbled marker — and refused for a dead-owner or unowned
+  tree, since mounting one without the hold is the removal-under-a-mount this
+  exists to prevent; the spawn then falls back to its own directory. It is mounted as
   a SECOND
   `extra_private_dirs` window beside the process's own, and named by
   `KIROCREW_SCRATCH` (`agent_scratch.scratch_env(own, shared=…)`). `TMPDIR` /
@@ -5122,12 +5122,17 @@ the sweep reads dead-plus-idle as reclaimable. Outcomes: `"refused"` (a link
 where the marker belongs) reaps the spawn exactly as the own-directory marker
 does; `"stale"` (the append failed AND the old marker could not be cleared) reaps
 too, since that is precisely the deletion-under-a-live-process state;
-`"unwritable"` leaves the tree UNOWNED — never swept, a visible leak rather than
-a loss — and warns. `"garbled"` (a marker this module did not write: not
-integers, oversized, not a regular file) also only warns and proceeds: the sweep
-skips such a tree for good, so mounting it risks a leak and never a deletion,
-and a fatal answer would let any agent process the tree is mounted into veto
-every later spawn on it by scribbling over the marker. The marker is read to
+`"unwritable"` leaves the tree UNOWNED — never deleted in place, and moved into
+the quarantine only after a week with no write in it (`_UNOWNED_IDLE_SECONDS`;
+never under a `KIROCREW_SCRATCH_ROOT` override, which can hold the operator's
+own folders), a move a human can undo rather than a loss — and warns. Only Linux can tell that
+a live process still uses such a tree (`agent_scratch_users`, which then keeps
+it); on macOS and Windows the week with no write is the only hold. `"garbled"` (a marker
+this module did not write: not integers, oversized, not a regular file) also
+only warns and proceeds: the sweep skips such a tree for good, so mounting it
+risks a leak and never a deletion, and a fatal answer would let any agent
+process the tree is mounted into veto every later spawn on it by scribbling over
+the marker. The marker is read to
 EOF under the size cap, never in one `read`: a short read hands back a prefix,
 and a prefix naming only dead pids reads as a dead owner over the live pid the
 tail names. It is opened `O_NONBLOCK`: a FIFO planted at the marker's name

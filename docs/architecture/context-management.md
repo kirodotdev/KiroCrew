@@ -106,7 +106,11 @@ build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 (`member`, `preamble`, `profile`, `workspace`, `docs`, `steering`,
 `thread_history`, `stop_notes`, `memory`, `skills`, `lessons`, `provenance`,
-`finalize`) and `_emit_context_section_timings` logs and histograms them.
+`finalize`) and `_emit_context_section_timings` logs and histograms them. A
+gateway makes the skills read once ahead of its first session
+(`skill_first_read.first_read_after_ready`, past readiness and on a worker
+thread), so that session's `skills` mark does not carry the process's first
+read; the build itself reads through the loader as before.
 
 ### What memory contributes at session start
 
@@ -549,7 +553,9 @@ second private window into the masked scratch root and names as the child's
 directory (its replacement inherits and adopts it). Reclamation is keyed on
 process liveness rather than on file age — a directory is removed only once every
 process group recorded in its `.owner` marker is dead **and** the whole tree has
-been idle past a grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
+been idle past a grace window, and an ownerless directory is never deleted in place: after a
+week with no write in the default root, one with an allocator's name is moved into the sweep's
+quarantine. On macOS the Seatbelt
 deny over the masked root re-opens `file-read-metadata` on the literal
 directories above each window (`sandbox_plan.window_ancestors`) and nothing else:
 `realpath` of a window `lstat`s every component, so without it a harness that

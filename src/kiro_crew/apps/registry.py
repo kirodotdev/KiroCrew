@@ -702,6 +702,7 @@ if _typing.TYPE_CHECKING:
         _git_fetch_branch,
         _git_fetch_commit,
         _git_fetch_ref,
+        _mkdtemp_settled,
         _names_a_missing_ref,
         _read_clone_branch,
         _read_git_metadata_bounded,

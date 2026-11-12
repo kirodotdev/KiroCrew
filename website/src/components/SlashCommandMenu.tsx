@@ -7,6 +7,7 @@ import { pickerQueryKey, type PickerWorkflow, type SlashCommand } from '../chat-
 import { SLASH_MENU_QUERY, WORKFLOW_PICK_QUERY } from '../chat-core/composer/slashQuery'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
@@ -323,6 +324,8 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     if (!visible) return
     itemRefs.current[selectedRef.current]?.scrollIntoView({ block: 'nearest' })
   }, [displayed, visible, itemRefs, selectedRef])
+
+  useAnchorTracking(visible, anchorRef)
 
   if (!visible || !anchorRef.current) return null
   // Rows are ordered by an effect, so a matching list is briefly empty here.

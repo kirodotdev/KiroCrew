@@ -119,6 +119,18 @@ WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "destroy": ("retired_bindings",),
 }
 
+#: The acceptance conditions the evaluator can judge, one example object per kind, as
+#: the text a tool description shows a conductor. ``work_ledger_record`` quotes it on
+#: its ``acceptance`` argument and ``work_dispatch`` points there, so the object can
+#: be written from the description alone; a kind's field names are otherwise only in
+#: the evaluator's source. ``cmd`` is absent because the evaluator refuses it.
+ACCEPTANCE_SHAPES: str = (
+    'One of: {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}; {"kind": '
+    '"pr_merged", "pr": 123, "repo": "owner/name"}; {"kind": "file", "path": '
+    '"/absolute/path"} (add "exists": false for a path that must be gone); {"kind": '
+    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}.'
+)
+
 
 #: Most retired bindings an item keeps; past it the oldest destroyed one goes first.
 MAX_RETIRED_BINDINGS = 8

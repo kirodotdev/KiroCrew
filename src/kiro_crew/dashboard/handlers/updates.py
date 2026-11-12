@@ -224,3 +224,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
+
+    # A second alias of the same name; isort would fold it into the line above.
+    from kiro_crew import __version__ as _running_version  # noqa: F401  # isort: skip

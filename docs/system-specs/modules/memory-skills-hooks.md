@@ -3791,12 +3791,35 @@ overnight cannot abandon a span unread.
 
 macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows supported. All paths use `pathlib.Path`. GGUF model downloaded over sha256-pinned HTTPS from the Kiro Crew CDN. No runtime install step — native llama.cpp libraries are vendored per platform in `_vendor/llama_cpp_libs/` and selected in-process through the `_LIB_PATH_SEAM` module the loader registers in `sys.modules` (`LLAMA_CPP_LIB_PATH` remains the operator's override, never written by the loader) (the old Docker fallback is gone).
 
-Before the vendored runtime becomes usable, `embeddings._load_llama_class()`
-reconfigures llama-cpp-python's import-time stdout/stderr null streams to UTF-8
-with backslash replacement. The upstream suppressor temporarily installs those
-streams process-wide while the GGUF loads on `kc-embed-load`; keeping the same
-handles preserves its native fd suppression while preventing unrelated Unicode
-gateway output from failing under a locale encoding such as Windows cp1252.
+Loading the model never redirects the process's standard streams. Upstream
+llama-cpp-python wraps its native load calls in `suppress_stdout_stderr`, which
+points `sys.stdout`, `sys.stderr` and descriptors 1 and 2 at the null device
+for the whole process. The GGUF loads on `kc-embed-load`, so that discards
+whatever any other thread writes in the window (the gateway's `--json-ready`
+line, a log record, a traceback) and hands the null device to every child
+started in it. Before the vendored runtime becomes usable,
+`embeddings._load_llama_class()` therefore replaces that class's enter and exit
+(`embeddings_native._quiet_native_log_without_redirect`; the vendored file stays
+upstream's). llama.cpp reports through one log callback, so the loader
+registers its own: it drops every native line while a block is open and hands
+the line to the binding's callback otherwise. The count of open blocks is the
+only state, which is why the `set_verbose` call every constructor makes cannot
+end the silence of a load still running (a model swapped in from the dashboard
+while another loads). `verbose=True` still disables the block.
+Both halves are installed once per binding, under one lock, and a registered
+callback is never released: `_load_llama_class`'s cache does not serialise two
+threads that both call it first, and llama.cpp holds only the callback's
+address, so a second registration followed by a release would leave it calling
+freed memory.
+A native line that bypasses llama.cpp's log callback is not hidden; the bundled
+Linux arm64 build writes none through a full load, embed and free.
+
+No code under `src/kiro_crew` may redirect a standard stream or its descriptor
+while other threads run. `test/test_embed_load_keeps_stdio.py` holds a load open
+and writes from another thread, and its ratchet lists every remaining redirect
+with the reason it is safe: the first statements of a child's entry point, a
+forked child before it execs, or a re-point that discards nothing. A new row
+needs one of those reasons; anything else silences the writer itself.
 
 | Platform | Vendored libs | GPU | Notes |
 |----------|--------------|-----|-------|
@@ -5318,6 +5341,26 @@ three tiers, none of which walks the tree on the calling thread:
    in `skill_search_index.sqlite3`). A restart lands here, and so does every
    short-lived loader — the unsigned MCP fallback in `mcp_tools/skills.py` builds one
    per call — instead of walking.
+
+**A gateway makes the first read before its first session.** The first skill read of
+a process costs more than every later one, whatever the catalog holds. It reads each
+packaged skill's `app:` line (`_packaged_app_claims`, asked by
+`_get_released_app_names`) and walks the packaged trees (`_packaged_skill_names`, asked
+by the startup index), two results kept for the life of the process because the
+installed package does not change while it runs; and a scope with no list in memory
+answers from tier 3 or the cold path. A session start reads skills inside its prompt
+build, after the person's message has arrived, so a gateway's first session paid for
+all of that there. `skill_first_read.first_read_after_ready` makes the read instead:
+`GatewayOrchestrator.run` starts it as a tracked task past `KIROCREW_READY`
+(`no-new-work-on-gateway-boot-path`), it waits for the builtin sync task, because the
+sync drops the catalog when it changes a skill, and then calls
+`context_assembly.inclusion.skill_parts` on a worker thread with the arguments a
+default-agent session start with no project passes. It keeps nothing of its own: the
+loader holds what it read under the invalidation it already has, and a session start
+reads through the loader as before, so the text a session receives does not change. It
+covers the global scope only; a trusted project's scope is first read by the first
+session in that project. A failed read is logged at debug, and the first session then
+reads for itself. Not started in test mode.
 
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project

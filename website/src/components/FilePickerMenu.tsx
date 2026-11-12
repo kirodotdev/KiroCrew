@@ -8,6 +8,7 @@ import { pickerQueryKey, type FileKind, type FileResult, type FileSearchResponse
 import ErrorNotice from './ErrorNotice'
 import { RETRYABLE_SEARCH_CAUSES, SEARCH_FAILURE_KEYS, searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { matchSpecQuery, SPEC_DIR, splitPathToken } from './composerTokens'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { buildFileLabels } from '../utils/fileTokens'
@@ -334,6 +335,8 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     if (!open) return
     itemRefs.current[selectedRef.current]?.scrollIntoView({ block: 'nearest' })
   }, [results, open, itemRefs, selectedRef])
+
+  useAnchorTracking(open, anchorRef)
 
   if (!open || !anchorRef.current) return null
 
