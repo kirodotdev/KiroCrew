@@ -524,6 +524,7 @@ class _RunContext:
         # runs them live.
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
+        self._failed_task_logs = 0
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
@@ -737,6 +738,11 @@ class _RunContext:
                 token = _CALL_SCOPE.set(_CallScope(self, group + (index,)))
                 try:
                     return await _maybe_await(thunk if inspect.isawaitable(thunk) else thunk())
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("parallel task", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
@@ -757,12 +763,33 @@ class _RunContext:
                 token = _CALL_SCOPE.set(chain)
                 try:
                     return await _call_stage(stage, prev, item, index)
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("pipeline item", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
             return run
 
         return await _pipeline(items, *[in_chain(s) for s in stages], limit=self._concurrency)
+
+    # Failed-task log events per run: enough to explain the failures, few enough
+    # that a pipeline over thousands of bad items cannot flood the event stream
+    # and the checkpoints that re-serialize it.
+    _FAILED_TASK_LOG_LIMIT = 20
+
+    def _log_failed_task(self, where: str, index: int, exc: Exception) -> None:
+        # The combinator resolves the task to None (A5); this event is the only
+        # record of why, so a run of all-None results can be explained.
+        self._failed_task_logs += 1
+        if self._failed_task_logs > self._FAILED_TASK_LOG_LIMIT:
+            return
+        message = f"{where} {index} failed: {describe_agent_error(exc)}"
+        if self._failed_task_logs == self._FAILED_TASK_LOG_LIMIT:
+            message += " (further failed tasks in this run are not logged)"
+        self._record(self._stream.log(self.now, message=message))
 
     def _scope(self) -> _CallScope:
         """The scope of the branch this task runs in, or the run's root scope."""
