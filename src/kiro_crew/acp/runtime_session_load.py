@@ -323,7 +323,7 @@ async def load_session(
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new. User-declared servers stay in the
         # agent block, as on new: KAS launches block servers on a cold
-        # session/load too, and only the block carries the 120 s ``timeout``
+        # session/load too, and only the block carries the ``timeout``
         # (finish_settings_mcp); a session-level element has no ``timeout`` slot,
         # so a hoisted server got KAS's 60 s. Probe record: the session/load
         # hoist section of docs/system-specs/modules/acp-client.md.

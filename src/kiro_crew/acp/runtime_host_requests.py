@@ -55,10 +55,11 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 
 
 # How long an MCP sign-in may hold its slot. The engine answers the reset when
-# its connect attempt ends, which the server's connect timeout bounds: 60 s by
-# default and at most 600 s. This only frees the slot if no answer ever comes,
-# so it sits past the longest attempt: a slot freed while the engine can still
-# send that attempt's link would hand the link to the next sign-in.
+# its connect attempt ends or 60 s in, whichever is first; the attempt itself
+# runs to the server's connect timeout, at most 600 s. This only frees the slot
+# if no answer ever comes, so it sits past the longest attempt: a slot freed
+# while the engine can still send that attempt's link would hand the link to
+# the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
 # How long a credential re-attempt (a reset without startOAuth) may hold off a
 # sign-in. It opens no consent URL, so the slot does not have to outlast the
@@ -434,9 +435,10 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
     """Start an explicit OAuth sign-in for one MCP server of one session.
 
     Sends ``_kiro/mcp/resetServer`` with ``startOAuth`` in the background: the
-    engine answers only when the connect attempt ends, which is after the user
-    signs in or after the server's connect timeout. The consent URL arrives
-    meanwhile as ``_kiro/openExternalUrl`` and is delivered to *session_id*.
+    engine answers when the connect attempt ends (the user signs in, or the
+    server's connect timeout passes) or 60 s in, whichever is first. The consent
+    URL arrives meanwhile as ``_kiro/openExternalUrl`` and is delivered to
+    *session_id*.
 
     Returns False, starting nothing, when the host sends no consent URL, the
     session is not registered, or another sign-in is in flight: the URL
