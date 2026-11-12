@@ -440,6 +440,9 @@ class RelayClient:
                 conn.move_requested.clear()
                 continue
             conn, run = moved
+            if self._monotonic() - ready_at >= self._backoff_reset_after:
+                # The connection the move retired was held ready long enough.
+                self._backoff.reset()
             ready_at = self._monotonic()
 
     async def _until(self, run: "asyncio.Future[ConnectionEnd]", event: asyncio.Event) -> bool:

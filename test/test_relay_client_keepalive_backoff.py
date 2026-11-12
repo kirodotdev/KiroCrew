@@ -156,6 +156,37 @@ async def test_the_backoff_starts_again_after_a_connection_held_ready() -> None:
 
 
 @asyncio_test
+async def test_the_backoff_starts_again_after_a_held_connection_moved() -> None:
+    now = [1000.0]
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(
+            relay, crew, sleep=RecordingSleep(), monotonic=lambda: now[0]
+        )
+        await client.start()
+        try:
+            for _ in range(2):
+                leg = await relay.next_leg()
+                await leg.recv_type("hello")
+                await leg.close(1013)
+            old = await relay.next_leg()
+            await old.handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            # Held ready past the reset rule, then moved to a new connection.
+            now[0] += BACKOFF_RESET_AFTER_SECONDS * 25
+            await old.send(valid_message("frames/reconnect", 0))
+            new = await relay.next_leg()
+            await new.handshake()
+            await async_wait_until(lambda: client._draining is not None)
+            # The new connection ends before it has been up 60 seconds itself.
+            now[0] += 10
+            await new.close(1013)
+            await relay.next_leg()
+            assert client.delays[:3] == [2.0, 5.0, 2.0]
+        finally:
+            await stop(client, ingress)
+
+
+@asyncio_test
 async def test_the_client_pings_on_its_interval_and_answers_pings() -> None:
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew, timings=RelayTimings(ping_interval=0.05))
