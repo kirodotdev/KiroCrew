@@ -821,6 +821,22 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
             },
             status=429,
         )
+    if clients:
+        # The open card, as a note a chat app can carry (behind the
+        # bridge_approvals preview); scheduled, never awaited.
+        from kiro_crew.notifications.bridge_question_note import schedule_pending_question
+
+        opened = state._agent_asks.get(ask_id) or {}
+        slot = state._slots.get(slot_key)
+        schedule_pending_question(
+            state,
+            ask_id=ask_id,
+            slot_key=slot_key,
+            session_key=session_key,
+            questions=opened.get("questions") or questions,
+            session_title=str(getattr(slot, "display_title", "") or ""),
+            ttl_s=float(state._AGENT_ASK_WINDOW_DEFAULT),
+        )
     return web.json_response({"ask_id": ask_id if clients else "", "clients": clients})
 
 
