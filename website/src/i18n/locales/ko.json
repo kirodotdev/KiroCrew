@@ -12312,6 +12312,7 @@
         "fork_no_later_messages": "이 메시지 이후의 메시지가 아직 없습니다.",
         "fork_in_progress": "포크 중…",
         "fork_other_in_progress": "다른 포크를 시작하는 중입니다.",
+        "fork_with_another_model": "다른 모델로 분기",
         "copy_failed": "복사 실패",
         "quote_message": "메시지 인용",
         "turn_credits": "크레딧 {{credits}}",

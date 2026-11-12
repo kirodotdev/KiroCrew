@@ -25,6 +25,7 @@ interface ForkSessionOptions {
 /**
  * Fork from a transcript row: reads whether a tail fork is offered, forks the slot at that
  * row, and switches to the new session unless the user opened another one meanwhile.
+ * `handleFork` resolves true only when the new session is the open one once the switch lands.
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
@@ -36,8 +37,8 @@ export function useForkSession({
   // history; with it off the plain entry already forks with history. A primitive, so it can sit in
   // the transcript renderer's dependency list.
   const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
-  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => {
-    if (!activeSlot) return
+  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head'): Promise<boolean> => {
+    if (!activeSlot) return false
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     let control: string | undefined
     // Pending until the child is active or the fork failed (the `finally`), so
@@ -80,6 +81,7 @@ export function useForkSession({
           dispatch(requestSlotFolderOpen({ key: result.key, folder_id: result.folder_id }))
           release()
           await switching
+          return store.getState().chat.activeSlot === result.key
         }
       } else {
         showTranscriptForkFailure(showActionError, result.code, result.error, direction, control)
@@ -90,6 +92,7 @@ export function useForkSession({
     } finally {
       release()
     }
+    return false
   }, [activeSlot, dispatch, forkCfg, showActionError])
   return {
     handleFork, forkDirectionChoice,

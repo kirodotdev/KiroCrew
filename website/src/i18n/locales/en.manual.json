@@ -5725,6 +5725,7 @@
         "fork_no_later_messages": "No messages after this one yet.",
         "fork_in_progress": "Forking…",
         "fork_other_in_progress": "Another fork is starting.",
+        "fork_with_another_model": "Fork with another model",
         "copy_failed": "Copy failed",
         "quote_message": "Quote message"
       },

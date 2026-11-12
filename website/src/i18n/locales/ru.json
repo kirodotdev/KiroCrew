@@ -13122,6 +13122,7 @@
         "fork_no_later_messages": "После этого сообщения пока нет сообщений.",
         "fork_in_progress": "Ответвление…",
         "fork_other_in_progress": "Запускается другое ответвление.",
+        "fork_with_another_model": "Создать ответвление с другой моделью",
         "copy_failed": "Не удалось скопировать",
         "quote_message": "Цитировать сообщение",
         "turn_credits": "{{credits}} кредита",
