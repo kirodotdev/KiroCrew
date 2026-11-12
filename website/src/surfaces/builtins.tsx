@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -183,7 +183,6 @@ registerBuiltinSurface({
 const CAPABILITY_SUB_ITEM_ICONS: Record<string, ReactElement> = {
   crews: <Bot size={16} />,
   skills: <BookOpen size={16} />,
-  mcp: <Link2 size={16} />,
   knowledge: <Library size={16} />,
   prompts: <MessageSquareText size={16} />,
   steering: <ScrollText size={16} />,
@@ -198,7 +197,7 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 // ── Bottom ─────────────────────────────────────────────────────────────────
 // Agents + Capabilities merged into one bottom-pinned "Customize"
 // destination. The /capabilities secondary panel hosts Crewmates (bindings),
-// Custom agents, Connections, Skills, Hooks, and Prompts;
+// Custom agents, Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
 //
 // Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the
@@ -208,6 +207,13 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.capabilities,
   icon: <KiroGhostMark size={16} />,
+})
+
+// MCP servers and MCP sharing, between Customize and Settings. Connections (the
+// provider cards and their OAuth apps) is a Settings tab.
+registerBuiltinSurface({
+  ...BUILTIN_SURFACE_NAV.mcp,
+  icon: <Server size={16} />,
 })
 
 registerBuiltinSurface({

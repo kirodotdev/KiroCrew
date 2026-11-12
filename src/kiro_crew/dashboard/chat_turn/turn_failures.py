@@ -473,16 +473,16 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
             slot._last_turn_structural_terminal_loop_id = _directive_loop_id
             slot._last_turn_structural_terminal_loop_gen = _directive_loop_gen
         # A cycle that never obtained a model session. Only the loop's own
-        # cycle counts, a recovery it queued for itself included
-        # (``_wake_cycle``); a human turn that happened to be starved would
-        # otherwise spend an unrelated loop's stand-down budget. The streak
+        # cycle counts, a recovery it queued for itself or a turn carrying its
+        # steered wake included (``_wake_cycle``); any other human turn that
+        # happened to be starved would otherwise spend an unrelated loop's
+        # stand-down budget. The streak
         # itself lives on the loop (``notify_cycle_start_failed``), which backs
         # the loop off and eventually stands it down instead of firing cycle
         # after cycle that can only fail the same way. Read with getattr: the
         # two ACP exception families tag this fact independently and share no base.
-        _wake_cycle = turn._wake_cycle
-        _wake_id, _wake_gen = _wake_cycle or ("", 0)
-        _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
+        _wake_id, _wake_gen = turn._wake_cycle or ("", 0)
+        _note_cycle_start_failure(slot.key, exc, self_wake=turn._wake_cycle is not None)
         # A cycle that DID reach a model session and dispatched but then
         # died terminally here -- a backend error after retries were spent,
         # a persistent tool error, a prompt timeout. The gate (self-wake
@@ -496,7 +496,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         await _note_cycle_failure(
             slot.key,
             exc,
-            self_wake=_wake_cycle is not None,
+            self_wake=turn._wake_cycle is not None,
             loop_id=_wake_id,
             expected_generation=_wake_gen,
         )
@@ -710,9 +710,9 @@ def _unsent_resend(turn: _ChatTurn) -> tuple[str, dict[str, Any]] | None:
 
 async def _on_error(turn: _ChatTurn, exc) -> None:
     """Any other error the turn raised."""
-    # As in _on_acp_error_card: a recovery the loop's cycle queued is that cycle.
-    _wake_cycle = turn._wake_cycle
-    _wake_id, _wake_gen = _wake_cycle or ("", 0)
+    # As in _on_acp_error_card: a recovery the loop's cycle queued, or a turn that
+    # carries its steered wake, is that cycle.
+    _wake_id, _wake_gen = turn._wake_cycle or ("", 0)
     slot = turn.slot
     state = turn.state
     _memory_preparation_admitted = turn._memory_preparation_admitted
@@ -809,7 +809,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     # AcpError, so they land here -- and a member slot is exactly the
     # population that runs there. Reporting only in the AcpError branch would
     # leave the loops this bound exists for never backing off.
-    _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
+    _note_cycle_start_failure(slot.key, exc, self_wake=turn._wake_cycle is not None)
     # The SIBLING of the failed-cycle report in the AcpError branch (_on_acp_error_card),
     # for the same reason the start-failure report is duplicated here: a
     # cycle that reached a session and dispatched but then died does not
@@ -833,7 +833,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     await _note_cycle_failure(
         slot.key,
         exc,
-        self_wake=_wake_cycle is not None,
+        self_wake=turn._wake_cycle is not None,
         loop_id=_wake_id,
         expected_generation=_wake_gen,
         err_meta=_err_meta,

@@ -711,6 +711,13 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action == "create-store":
         _memory_create_store(args)
         return
+    # No verb: print the usage line without opening (and so creating) the store.
+    if action is None:
+        print(
+            "Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|backup|"
+            "backups|restore|create-store|carve|retired|forget|import}"
+        )
+        return
     cfg = KiroCrewConfig.load()
     # Only `export` and `import` name a store here; every other verb resolves the
     # DEFAULT store, the same `config_dir()/MEMORY_DB_FILE` `VectorMemoryStore()`

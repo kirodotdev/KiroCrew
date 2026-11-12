@@ -316,11 +316,15 @@ def update_member_self(
             "changed_meanwhile",
             f"the Bot's {exc.field} was changed by someone else just now; try again",
         ) from None
+    from kiro_crew.agent_files import member_label
+
     after = {k: _copy_value(getattr(agent, k)) for k in values}
     before = {k: was[k] for k in changed}
     return {
         "member": member,
-        "name": agent.display_name or member,
+        # The Undo row this draws reads the label, not the key: a first Bot that
+        # clears its display name is "Bot" there, as it is everywhere else.
+        "name": member_label(member, agent),
         "changed": changed,
         "before": before,
         "after": after,
@@ -398,13 +402,15 @@ def undo_member_self(
         raise SelfUpdateError(
             "stale_undo", f"the Bot's {exc.field} was changed again since; nothing was undone"
         ) from None
+    from kiro_crew.agent_files import member_label
+
     return {
         "member": member,
-        # The name the crewmate goes by now the change is back, the same shape
-        # :func:`update_member_self` answers with (its key when it has none):
-        # the caller renames the home folder from it, so both directions of one
-        # change leave the sidebar reading what every other surface reads.
-        "name": agent.display_name or member,
+        # The name the crewmate goes by now the change is back, the same label
+        # :func:`update_member_self` answers with: the caller renames the home
+        # folder from it, so both directions of one change leave the sidebar
+        # reading what every other surface reads.
+        "name": member_label(member, agent),
         "changed": changed,
         "after": {k: _copy_value(getattr(agent, k)) for k in values},
     }

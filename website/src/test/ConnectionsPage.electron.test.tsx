@@ -78,7 +78,13 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../pages/overview/McpTab', () => ({ default: () => null }))
+// The OAuth app part a card opens is its own unit (OAuthAppPanel.test.tsx).
+vi.mock('../pages/connections/OAuthAppPanel', async () => ({
+  OAuthDraftsContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slug: string, dirty: boolean) => void>(() => {}),
+  OAuthClientWrittenContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slugs: string[]) => void>(() => {}),
+  OAuthDraftValuesContext: (await vi.importActual<typeof import('react')>('react')).createContext({ get: () => undefined, set: () => {} }),
+  OAuthAppPanel: ({ settingSlug }: { settingSlug: string }) => <div data-testid={`oauth-app-${settingSlug}`} />,
+}))
 
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
 import { isElectron } from '../lib/electron'
@@ -116,9 +122,12 @@ function mount({ strict = false, chat = {} }: { strict?: boolean; chat?: ChatSee
   return renderWithProviders(strict ? <StrictMode>{tree}</StrictMode> : tree, { store })
 }
 
+/** The card for one provider, clicked open as a user does. */
 function card(slug: string): HTMLElement {
   const el = document.getElementById(`connection-${slug}`)
   if (!el) throw new Error(`no card rendered for ${slug}`)
+  const toggle = el.querySelector<HTMLElement>(':scope > header h3 button[aria-expanded="false"]')
+  if (toggle) fireEvent.click(toggle)
   return el
 }
 

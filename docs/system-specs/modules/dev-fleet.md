@@ -1774,7 +1774,8 @@ raises it too, although no restart is needed for that build.
 Dev Fleet backend — repoints the live gateway at a different worktree by writing a
 **live-target pointer file** (`live_target.json`). The gateway resolves this
 pointer at startup and `execve`s into the named checkout's own `kirocrew` binary
-— moving the working directory and `PATH` with it. No service definition is
+— moving the working directory and `PATH` with it. An `execve` that fails leaves
+the installed build booting in the directory it started in. No service definition is
 ever mutated.
 
 The mechanism is the version-selector shape used by `rustup` (reads

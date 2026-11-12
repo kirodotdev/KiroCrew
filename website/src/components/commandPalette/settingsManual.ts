@@ -4,10 +4,15 @@ import connectionsRegistry from '../../../../src/kiro_crew/connections/registry.
 /** The registry fields this file reads; the full shape lives in pages/connections/registry.ts. */
 type ConnectionsRegistryRow = { slug: string; name: string; auth?: { mode?: string } }
 
-/** Registry id of the Settings → OAuth Apps card for one pre-registered provider.
- *  Shared with the gallery card's deep link so the two cannot drift. */
+/** Registry id of the Settings → Connections OAuth app part for one
+ *  pre-registered provider, or `google` for the Google entry. */
 export function connectionsOAuthClientEntryId(slug: string): string {
   return `connections.oauth-client-${slug}`
+}
+
+/** The Google products, one entry on the page (pages/connections/connectionsLinks.ts). */
+function isGoogleRegistrySlug(slug: string): boolean {
+  return slug === 'gmail' || slug.startsWith('google-')
 }
 
 /**
@@ -421,15 +426,16 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     settingId: 'kiro-sign-in',
   },
-  // Settings → OAuth Apps renders one card per PRE-REGISTERED registry
-  // provider, so the cards are data, not JSX the extractor can see. Derive an
-  // entry per provider from the registry itself: the gallery's "Configure OAuth
-  // app" link deep-links by this id, and `settingId` is what lets the highlight
-  // wait for the card to mount after its async fetch instead of substituting a
-  // same-label field on another provider's card. `labelSuffix` carries the
-  // provider name so search finds "OAuth app — GitHub".
+  // Settings → Connections opens one OAuth app part per PRE-REGISTERED registry
+  // provider, so the parts are data, not JSX the extractor can see. Derive an
+  // entry per provider from the registry itself. A hit opens that card's part
+  // (ConnectionsPage reads the highlight), and `settingId` is what lets the
+  // highlight wait for it to mount after its async fetch instead of
+  // substituting a same-label field on another provider's card. `labelSuffix`
+  // carries the provider name so search finds "OAuth app — GitHub". The six
+  // Google products share one part, so they are one "OAuth app — Google".
   ...(connectionsRegistry as ConnectionsRegistryRow[])
-    .filter(provider => provider.auth?.mode === 'preregistered')
+    .filter(provider => provider.auth?.mode === 'preregistered' && !isGoogleRegistrySlug(provider.slug))
     .map<ManualSettingEntry>(provider => ({
       id: connectionsOAuthClientEntryId(provider.slug),
       labelKey: 'pages.settings.connectionsPanel.oauth_app',
@@ -440,4 +446,14 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
       occurrence: 1,
       settingId: `connections-oauth-client-${provider.slug}`,
     })),
+  {
+    id: connectionsOAuthClientEntryId('google'),
+    labelKey: 'pages.settings.connectionsPanel.oauth_app',
+    labelSuffix: 'Google',
+    descriptionKey: 'pages.settings.connectionsPanel.oauth_app_google',
+    tab: 'connections',
+    type: 'input',
+    occurrence: 1,
+    settingId: 'connections-oauth-client-google',
+  },
 ]

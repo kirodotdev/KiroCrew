@@ -418,12 +418,32 @@ class KasLoginService:
         epoch: int,
         signout_gen: str = "",
     ) -> dict[str, Any]:
-        """Register a fresh SSO-OIDC client and start its device authorization."""
+        """Start an SSO-OIDC device authorization for the ``identity`` slot.
+
+        The client registration the slot's stored sign-in carries is reused while
+        it is in date (:func:`builder_id.stored_client`), as kiro-cli does. A new
+        client is registered otherwise, and also when StartDeviceAuthorization
+        answers the stored one with any error but a start-URL refusal, so a
+        registration AWS refuses can never stop the user signing in again.
+        """
         session = await self._http()
-        client = await builder_id.register_client(region, session=session)
-        auth = await builder_id.start_device_authorization(
-            client, region=region, start_url=start_url, session=session
-        )
+        stored = await asyncio.to_thread(self._store.load, identity)
+        client = builder_id.stored_client(stored, region)
+        auth = None
+        if client is not None:
+            try:
+                auth = await builder_id.start_device_authorization(
+                    client, region=region, start_url=start_url, session=session
+                )
+            except builder_id.StartUrlRejectedError:
+                raise
+            except builder_id.BuilderIdAuthError as err:
+                logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
+        if client is None or auth is None:
+            client = await builder_id.register_client(region, session=session)
+            auth = await builder_id.start_device_authorization(
+                client, region=region, start_url=start_url, session=session
+            )
         return await self._register_pending(
             _PendingOidcLogin(
                 client=client,

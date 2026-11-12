@@ -84,11 +84,11 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
       return
     }
     if (usage.status === 'loading') return
-    // A failed status read shows the notice too, in its neutral "what can be
-    // collected" form with the read error on screen: failing quietly would hide
-    // both the notice and the failure. Its Continue records no notice version,
-    // so a working read on a later load still decides properly.
-    if (usage.status === 'error' || (usage.status === 'ready' && usage.recordingOn)) {
+    // Only a read that answered opens the notice. A failed read says nothing
+    // about what is on, and this user has already passed the chapter, so a
+    // failure (the first load after the sign-in runs out is one) must not put it
+    // back on screen. Nothing is stored either, so the next load decides again.
+    if (usage.status === 'ready' && usage.recordingOn) {
       privacyExit.current = 'close'
       setNotice('show')
     } else {
@@ -255,6 +255,9 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
         // Hidden, not acknowledged: privacyAcked stays false, so the chapter
         // opens again at the next load.
         onAskAgent={() => setShowPrivacy(false)}
+        // Off by the user's own setting: Continue's ack is recorded without the
+        // screen, and onContinue above moves on as it would.
+        passWhenOff
       />
 
       {/* First-run chapter 3 — Customize + feature tour (theme → about you →

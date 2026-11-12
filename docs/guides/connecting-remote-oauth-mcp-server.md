@@ -11,7 +11,7 @@ remains useful for a custom Miro entry and applies to any OAuth-backed remote
 server (Linear, Notion, Atlassian, a self-hosted OIDC-fronted service, …).
 
 The short version is five moves, and every one of them has a trap that reads
-like a dead end. **Customize → Connections → MCP Servers** covers moves 1 and 2
+like a dead end. **MCP Servers** covers moves 1 and 2
 for you: it writes the server into a scope file the gateway reads, and the
 rebuild copies it into the agent file with its `@ref`. The by-hand steps below
 are for working in the files directly. An agent helping a user points them at
@@ -131,8 +131,7 @@ exactly the gap `includeMcpJson: false` opens.
 Together those read like a broken install: the dashboard says the server is
 configured, and chat behaves as though it does not exist. It is neither broken
 nor a typo — it is `includeMcpJson: false` doing exactly what it is pinned to
-do. The fix is to add the server under **Customize → Connections → MCP
-Servers**, or, by hand, the previous section: put the server in the **agent
+do. The fix is to add the server under **MCP Servers**, or, by hand, the previous section: put the server in the **agent
 file** (`kirocrew.json`) and add the `@miro` ref to `tools`.
 Once the agent can see the entry, the next session start runs OAuth for it.
 
@@ -394,7 +393,7 @@ you should not hand-write them into a custom entry either: a secret written
 there sits in plaintext in a file the agent can read, with nothing owning its
 lifecycle. The supported path for a confidential pre-registered client is a
 **Connections registry provider** with `auth.mode: "preregistered"` — the
-operator enters the client under **Settings → OAuth Apps**, the secret goes to
+operator enters the client under **Settings → Connections**, the secret goes to
 the encrypted vault, and Kiro Crew writes all three fields into the emitted
 spec itself (see
 [../system-specs/modules/connections.md](../system-specs/modules/connections.md),

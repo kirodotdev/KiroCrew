@@ -275,9 +275,10 @@ def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, te
 def test_only_windows_drops_the_slash_before_a_drive_in_a_file_uri(
     monkeypatch, is_windows, uri, expected
 ):
+    from kiro_crew import file_uri
     from kiro_crew import member_essential_context as mec
 
-    monkeypatch.setattr(mec, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", is_windows)
     assert mec._file_uri_path(uri) == Path(expected).expanduser()
 
 

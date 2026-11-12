@@ -1200,7 +1200,37 @@ class TestSameSecondRunCollapse:
                 )
 
 
-class TestForkScanVerdictIsBoundToItsPullRequest:
+class _AnotherPullRequestOrAttemptStaysPending:
+    """The two stale-row checks every attempt-bound fork lane runs, written once.
+
+    The scan class and ``_ForkLaneVerdictBinding`` take this as a base and keep their
+    own ``_only_check_run``, ``_trigger_attempt`` and ``_id_for``, so every node id
+    stays ``<Class>::<test>``.
+    """
+
+    def test_a_siblings_clean_check_run_does_not_pass_this_pr(self, runner: Runner):
+        # Same name, same head SHA, same attempt -- DIFFERENT pull request.
+        self._only_check_run(runner, self._id_for(runner, pr="9999", attempt=1))
+
+        proc, outputs = runner.evaluate(fork=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+
+    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(self, runner: Runner):
+        # The trigger has been re-run: attempt 2 is current, and the only row on
+        # the commit is attempt 1's clean verdict -- computed for the previous
+        # attempt. It must not answer for this one.
+        self._trigger_attempt(runner, 2)
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
+
+        proc, outputs = runner.evaluate(fork=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+
+
+class TestForkScanVerdictIsBoundToItsPullRequest(_AnotherPullRequestOrAttemptStaysPending):
     """A fork scan verdict must belong to THIS pull request and THIS attempt.
 
     Two open PRs can share a head SHA -- the same fork branch opened against two
@@ -1253,27 +1283,6 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
 
     def _id_for(self, runner: Runner, *, pr: str, attempt: int) -> str:
         return f"{self.PREFIX}{pr}-{RUN_ID}-{attempt}"
-
-    def test_a_siblings_clean_check_run_does_not_pass_this_pr(self, runner: Runner):
-        # Same name, same head SHA, same attempt -- DIFFERENT pull request.
-        self._only_check_run(runner, self._id_for(runner, pr="9999", attempt=1))
-
-        proc, outputs = runner.evaluate(fork=True)
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
-
-    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(self, runner: Runner):
-        # The trigger has been re-run: attempt 2 is current, and the only row on
-        # the commit is attempt 1's clean verdict -- computed against whatever the
-        # ruleset said last time. It must not answer for this attempt.
-        self._trigger_attempt(runner, 2)
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(fork=True)
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
 
     def test_a_siblings_trigger_run_is_not_mistaken_for_this_prs(self, runner: Runner):
         # The expected external_id names the newest run of the lane's TRIGGERING
@@ -1356,7 +1365,7 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         assert "Internal Content Scan" in _bucket(_lane_log(proc), "passed")
 
 
-class _ForkLaneVerdictBinding:
+class _ForkLaneVerdictBinding(_AnotherPullRequestOrAttemptStaysPending):
     """A fork lane verdict must belong to THIS pull request and THIS attempt.
 
     Two open PRs can share a head SHA -- the same fork branch opened against two
@@ -1419,27 +1428,6 @@ class _ForkLaneVerdictBinding:
 
     def _id_for(self, runner: Runner, *, pr: str, attempt: int) -> str:
         return f"{self.PREFIX}{pr}-{RUN_ID}-{attempt}"
-
-    def test_a_siblings_clean_check_run_does_not_pass_this_pr(self, runner: Runner):
-        # Same name, same head SHA, same attempt -- DIFFERENT pull request.
-        self._only_check_run(runner, self._id_for(runner, pr="9999", attempt=1))
-
-        proc, outputs = runner.evaluate(fork=True)
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
-
-    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(self, runner: Runner):
-        # The trigger has been re-run: attempt 2 is current, and the only row on
-        # the commit is attempt 1's clean verdict -- computed on the previous
-        # roll. It must not answer for this attempt.
-        self._trigger_attempt(runner, 2)
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(fork=True)
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
 
     def test_a_siblings_trigger_run_is_not_mistaken_for_this_prs(self, runner: Runner):
         # The expected external_id names the newest run of the lane's TRIGGERING

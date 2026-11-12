@@ -13,7 +13,7 @@ This runbook covers the **Box MCP server** (`https://mcp.box.com`), Box's hosted
 
 - A Box account that is an **Admin or Co-Admin** of the enterprise. Box's setup guide for custom MCP clients starts with "Sign in to the Box Admin Console" and every step after that is an admin action. A plain managed user cannot complete this runbook alone.
 - Box states the MCP server is "available on all Box plans", but two of its tool groups need extra enablement or licences: AI tools need Box AI turned on for the enterprise (**Admin Console → Box AI → Settings → Enable AI API**), and Doc Gen tools need an Enterprise Advanced licence. Box's documentation does not state whether a free developer account exposes the Box MCP server in its Admin Console; if you only have a developer account, expect to check for the entry in step 2 of section 1 before going further.
-- Kiro Crew installed and its dashboard reachable, so you can open **Settings → OAuth Apps**.
+- Kiro Crew installed and its dashboard reachable, so you can open **Settings → Connections**.
 - Facts you will need to type exactly:
   - Redirect URI: `http://127.0.0.1:48108/callback`
   - MCP endpoint: `https://mcp.box.com`
@@ -72,7 +72,7 @@ Click **Save** after ticking the scopes. Individual MCP tools can additionally b
 
 ## 5. Enter the credentials in Kiro Crew
 
-1. Open the Kiro Crew dashboard and go to **Settings → OAuth Apps**.
+1. Open the Kiro Crew dashboard and go to **Settings → Connections**.
 2. Find the **Box** card.
 3. Paste the **Client ID** from section 1 into the **Client ID** field.
 4. Paste the **Client Secret** into the **Client secret** field. Box requires the secret at token exchange: its authorization-server metadata lists only `client_secret_basic` and `client_secret_post` as token endpoint authentication methods, and its token endpoint documentation sends `client_secret` on every `authorization_code` request. A public (secret-less) PKCE client is not documented.
@@ -83,7 +83,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 
 ## 6. Verify the connection
 
-1. Open **Customize → Connections** in the Kiro Crew dashboard. The Box card should now read **Connect** instead of **Needs configuration**.
+1. Open **Settings → Connections** in the Kiro Crew dashboard. The Box card should now read **Connect** instead of **Needs configuration**.
 2. Click **Connect**. A browser tab opens on `https://account.box.com/api/oauth2/authorize` showing Box's consent page for the app name you chose in section 1, with the scopes from section 3.
 3. Sign in with your Box account if asked, then click **Grant access to Box**.
 4. The browser lands on `http://127.0.0.1:48108/callback?...`. On a local install this completes automatically. On a remote install, copy the landing URL from the address bar and paste it into the dashboard when prompted.

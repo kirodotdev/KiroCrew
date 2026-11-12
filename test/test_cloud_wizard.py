@@ -1027,6 +1027,7 @@ class TestSessionManagerPluginPrereq:
     def test_ensure_session_manager_plugin_installs_when_missing(self, monkeypatch, capsys):
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: None)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_can_install", lambda: True)
         monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: True)
         monkeypatch.setattr(
             wizard.ssm,
@@ -1037,12 +1038,38 @@ class TestSessionManagerPluginPrereq:
         assert wizard._ensure_session_manager_plugin() is True
         assert "installed" in capsys.readouterr().out
 
-    def test_ensure_session_manager_plugin_decline(self, monkeypatch):
+    def test_ensure_session_manager_plugin_decline(self, monkeypatch, capsys):
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: None)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_can_install", lambda: True)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_install_command", lambda: "sudo x")
         monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: False)
 
         assert wizard._ensure_session_manager_plugin() is False
+        out = capsys.readouterr().out
+        assert "Launch stopped: it needs session-manager-plugin." in out
+        assert "then rerun `kirocrew cloud launch`:" in out
+        assert "  sudo x" in out
+        assert "cloud doctor" not in out
+
+    def test_ensure_session_manager_plugin_with_no_built_in_install(self, monkeypatch, capsys):
+        """Windows has no install plan: no offer, even under --yes."""
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: None)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_can_install", lambda: False)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_install_command", lambda: "")
+
+        def _no_prompt(*_a, **_k):
+            raise AssertionError("must not offer an install this system has no plan for")
+
+        monkeypatch.setattr(wizard.ui, "confirm", _no_prompt)
+        monkeypatch.setattr(wizard.ssm, "install_session_manager_plugin", _no_prompt)
+
+        assert wizard._ensure_session_manager_plugin(assume_yes=True) is False
+        out = capsys.readouterr().out
+        assert "Kiro Crew has no built-in install for it on this system." in out
+        assert "Sudo may ask" not in out
+        assert "Install it from AWS's page, then rerun `kirocrew cloud launch`:" in out
 
     def test_ensure_session_manager_plugin_names_a_refusal_instead_of_offering_install(
         self, monkeypatch, capsys

@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     slack_options_owner_keys_snapshot,
 )
+from kiro_crew.dashboard.handlers.messaging import _is_slack_ts
 from kiro_crew.dashboard.slot_ownership import checkpoint_slot_replaced, slot_not_found
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -372,6 +373,166 @@ class SlackLinkError(Exception):
 _AUTO_LINK_ANCHOR_SUFFIX = "Session connected automatically from the dashboard."
 _MANUAL_LINK_ANCHOR_SUFFIX = "Session linked from dashboard."
 
+#: Longest the link waits on Slack for a thread parent (gate + read together).
+#: The link answers first-send latency, so a slow or rate-limited Slack costs
+#: the parent, never the link.
+_THREAD_PARENT_READ_TIMEOUT_S = 5.0
+
+#: SEL operation for the parent read decision, admitted or refused.
+_THREAD_PARENT_OPERATION = "chat.slack_link_thread_parent"
+
+
+def _slot_holds_turns(slot: Any) -> bool:  # _ChatSlot (avoids import cycle)
+    """Whether *slot* already holds a conversation, in its window or on disk.
+
+    The window is read first: for a lazy slot that read is what loads the disk
+    counters, so reading them first would see 0 for a session with turns.
+    """
+    if any(m.get("role") in ("user", "assistant") for m in slot.messages):
+        return True
+    return bool(
+        getattr(slot, "_disk_older_count", 0) or getattr(slot, "_disk_older_durable_count", 0)
+    )
+
+
+async def _thread_parent_channel_admitted(state: DashboardState, channel: str) -> bool:
+    """Whether the bot may read a thread parent in *channel* for a dashboard link.
+
+    The same reach the inline Slack path has: the ``channels`` governance policy
+    admits Slack inbound and this channel, and the channel is one the bot
+    already reads for its owner, a tracked channel or the owner's own DM. A
+    channel outside that set is not read, so a link caller (who chooses
+    ``channel`` and ``thread_ts``) gains no read the bot would not already do
+    for an inbound message there. Fail-closed: any error refuses.
+    """
+    # Local: slack.handler imports dashboard modules at load (same as the
+    # messaging_api routes that check tracked channels).
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
+    from kiro_crew.slack.handler import is_tracked_channel
+
+    try:
+        if not await channel_inbound_permitted("slack"):
+            return False
+        # audit=False: _seed_thread_parent writes the one row for this decision.
+        refusal = await asyncio.to_thread(
+            channel_refusal,
+            channel,
+            operation=_THREAD_PARENT_OPERATION,
+            caller="dashboard",
+            audit=False,
+        )
+        if refusal:
+            return False
+        if is_tracked_channel(channel):
+            return True
+        owner_id = getattr(state, "owner_id", None)
+        if not owner_id:
+            return False
+        owner_dm = await state.slack_client.open_dm(owner_id)
+        return bool(owner_dm) and owner_dm == channel
+    except Exception:
+        logger.debug("slack link: thread parent gate failed; refusing", exc_info=True)
+        return False
+
+
+def _audit_thread_parent_read(slot: Any, channel: str, thread_ts: str, outcome: str) -> None:
+    """One SEL row per parent read decision: ``approved``, ``denied`` or ``error``."""
+    try:
+        sel().log_api_access(
+            caller="dashboard",
+            operation=_THREAD_PARENT_OPERATION,
+            outcome=outcome,
+            source="dashboard",
+            resources=f"slot={slot.key},channel={channel},thread_ts={thread_ts}",
+        )
+    except Exception:
+        logger.debug("slack link: thread parent audit failed", exc_info=True)
+
+
+async def _seed_thread_parent(
+    state: DashboardState,
+    slot: Any,  # _ChatSlot (avoids import cycle)
+    channel: str,
+    thread_ts: str,
+) -> None:
+    """Hand a new session the message that started the Slack thread it just joined.
+
+    The dashboard twin of the Slack-born first turn (``slack/thread_parent.py``):
+    the parent is read from Slack here, on the server, never from the request.
+    Its prompt text waits on the slot for the next turn, which hands it to
+    ``build_message`` as the fenced ``[SLACK THREAD CONTEXT — UNTRUSTED DATA]``
+    block and nothing else Slack-derived, and one display-only ``notice`` row
+    shows it above the reply.
+
+    Read only in a channel :func:`_thread_parent_channel_admitted` admits, and
+    within :data:`_THREAD_PARENT_READ_TIMEOUT_S`. Called after the link lock is
+    released, so a slow read holds up no other link attempt; the re-check after
+    the read covers a slot that closed, moved thread or took a turn meanwhile.
+
+    Written through the slot (``append_and_surface``) rather than
+    ``record_thread_parent``: a dashboard slot owns its transcript window and
+    re-serializes it, so a row written to the log behind it would not reach the
+    open tab. The row text is the same ``transcript_notice``.
+
+    A session that already holds a conversation gets nothing, and an incognito
+    or temporary one gets the prompt text but no row. Best effort: a refused,
+    failed or slow read leaves the link and the turn exactly as without it.
+    """
+    # Local, like the turn path's own kiro_crew.context imports: thread_parent loads
+    # kiro_crew.context, which this module does not import at load.
+    from kiro_crew.slack.thread_parent import (
+        NOTICE_CLS,
+        NOTICE_ROLE,
+        fetch_thread_parent,
+        parent_prompt_text,
+        transcript_notice,
+    )
+
+    if _slot_holds_turns(slot) or not state.slack_client:
+        return
+    # A session that keeps no memory gets no row, so its read needs no author.
+    keeps_row = getattr(slot, "memory_mode", "persistent") == "persistent"
+
+    async def _gate_and_read() -> tuple[bool, Any]:
+        if not await _thread_parent_channel_admitted(state, channel):
+            return False, None
+        return True, await fetch_thread_parent(
+            state.slack_client, channel, thread_ts, with_author=keeps_row
+        )
+
+    try:
+        admitted, parent = await asyncio.wait_for(
+            _gate_and_read(), timeout=_THREAD_PARENT_READ_TIMEOUT_S
+        )
+    except Exception:
+        # Includes the deadline (asyncio.TimeoutError).
+        logger.debug("slack link: thread parent read failed for %s", slot.key, exc_info=True)
+        _audit_thread_parent_read(slot, channel, thread_ts, "error")
+        return
+    _audit_thread_parent_read(slot, channel, thread_ts, "approved" if admitted else "denied")
+    if parent is None:
+        return
+    # The read yielded: the slot may have closed, moved to another thread or
+    # taken its first turn meanwhile.
+    if (
+        not slot_is_live(state, slot)
+        or not slot._slack_linked
+        or slot._slack_channel != channel
+        or slot._slack_thread_ts != thread_ts
+        or _slot_holds_turns(slot)
+    ):
+        return
+    slot._pending_thread_parent = (channel, thread_ts, parent_prompt_text(parent))
+    if not keeps_row:
+        return
+    try:
+        dashboard_state.append_and_surface(
+            state, slot, NOTICE_ROLE, transcript_notice(parent), NOTICE_CLS
+        )
+    except Exception:
+        logger.debug("slack link: thread parent row failed for %s", slot.key, exc_info=True)
+
 
 def _audit_channel_pin_denial(session_key: str, operation: str) -> None:
     """SEL record for a link refused because the channel names another agent."""
@@ -405,6 +566,7 @@ async def link_slot_to_slack(
     anchor_suffix: str = _MANUAL_LINK_ANCHOR_SUFFIX,
     operation: str = "chat.slack_link",
     governed: bool = True,
+    reply_ts: str = "",
 ) -> dict[str, Any]:
     """Link *slot* to a Slack thread and return the API response payload.
 
@@ -425,6 +587,12 @@ async def link_slot_to_slack(
     a new caller cannot skip it by omission. The manual Connect row keeps its
     established direct Slack behavior by passing ``governed=False`` itself.
 
+    ``reply_ts`` is the Slack message that sent the person here. When it is a
+    reply inside ``existing_thread`` (a different ts) and the session holds no
+    conversation yet, the thread's first message is read, after the lock is
+    released and only in a channel the bot already reads for its owner, and
+    handed to the session's first turn (:func:`_seed_thread_parent`).
+
     Raises :class:`SlackLinkError` when the link cannot be made. Every write
     happens after the thread exists, so a refusal leaves no half-written link.
     """
@@ -438,6 +606,7 @@ async def link_slot_to_slack(
     # registry holds the lock weakly: this local reference keeps it alive for
     # the holder and every waiter, and the entry vanishes with the last of them.
     lock = _slack_link_lock(state, session_key)
+    seed_parent: tuple[str, str] | None = None
     async with lock:
         if not state.slack_client:
             raise SlackLinkError(503, "slack_not_connected", "Slack not connected")
@@ -649,6 +818,12 @@ async def link_slot_to_slack(
             _drop_unsaved_link(state, slot, session_key, thread_ts)
             raise SlackLinkError(500, "link_not_saved", "could not save the Slack link") from exc
 
+        # A reply in a thread this session did not start: its first turn gets
+        # the message being answered, as a Slack-born session's first turn has.
+        # Read below, after the lock is released.
+        if existing_thread and reply_ts and reply_ts != existing_thread:
+            seed_parent = (target_channel, thread_ts)
+
         # Seed the new thread with readable history — only when we created a NEW
         # thread. Linking to an existing thread (challenge-and-redirect) would
         # duplicate messages the thread already contains.
@@ -668,7 +843,10 @@ async def link_slot_to_slack(
             resources=slot.key,
         )
         state.push_slots_update()
-        return {"ok": True, "thread_ts": thread_ts, "channel": target_channel}
+        result: dict[str, Any] = {"ok": True, "thread_ts": thread_ts, "channel": target_channel}
+    if seed_parent is not None:
+        await _seed_thread_parent(state, slot, *seed_parent)
+    return result
 
 
 def _drop_unsaved_link(
@@ -858,9 +1036,19 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     # rather than posting a new one — this is what makes a thread reply route
     # back to its dashboard session bidirectionally.
     existing_thread = str(body.get("thread_ts", "") or "")
+    # The ts of the Slack message that sent the person here (the challenge
+    # token's ``msg_ts`` claim). Only a timestamp: the thread parent itself is
+    # read from Slack by the server. A value of any other shape is ignored.
+    raw_reply_ts = body.get("msg_ts")
+    reply_ts = str(raw_reply_ts) if _is_slack_ts(raw_reply_ts) else ""
     try:
         result = await link_slot_to_slack(
-            state, slot, channel=raw_channel, existing_thread=existing_thread, governed=False
+            state,
+            slot,
+            channel=raw_channel,
+            existing_thread=existing_thread,
+            governed=False,
+            reply_ts=reply_ts,
         )
     except SlackLinkError as exc:
         if exc.agent:

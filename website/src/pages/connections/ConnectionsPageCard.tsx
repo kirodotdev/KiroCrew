@@ -14,6 +14,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useTranslation } from 'react-i18next'
+import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -25,18 +26,17 @@ import {
   Lock,
   RotateCw,
   Settings2,
+  ChevronDown,
   Unplug,
   X,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
-import { settingsPath } from '../../components/settingsPath'
-import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import type { McpServer } from '../../types'
 import { fmtDate, fmtList } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
 import type { ConnectionProvider } from './registry'
+import { isGoogleSlug } from './connectionsLinks'
 // The loopback pre-check lives in `utils/loopbackReturnAddress` (shared with
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
@@ -113,6 +113,16 @@ interface ConnectionCardProps {
   testingProvider?: string
   feedbackSlots: ReadonlyArray<{ slug: string; value: Feedback }>
   highlighted: boolean
+  /** Clicking the card's name opens its configuration in place: the actions
+   *  and, for a pre-registered provider, `oauthPanel`. Undefined renders the
+   *  card always open, for a product row inside the Google entry. */
+  expand?: { expanded: boolean; onToggle: () => void; panelId: string }
+  oauthPanel?: ReactNode
+  /** Out of the current search: hidden, not unmounted, so drafts survive. */
+  hidden?: boolean
+  /** False while any OAuth app form on the page holds unsaved input: the
+   *  error notice then offers no chat hand-off, which would navigate away. */
+  handOffAllowed?: boolean
   onConnect: () => Promise<unknown>
   onCancel: () => Promise<unknown>
   onDisconnect: () => Promise<unknown>
@@ -277,6 +287,59 @@ function PrerequisiteTip({ label, heading, text }: { label: string; heading: str
   )
 }
 
+/** A card's status label, also shown on the closed Google entry. */
+function ConnectionStateBadge({ state }: { state: ConnectionCardState }) {
+  const { t } = useTranslation()
+  const stateMeta: Record<ConnectionCardState, { label: string; icon: ReactNode; tone: string }> = {
+    'not-connected': {
+      label: t('pages.connectionsPage.not_connected'),
+      icon: <Link2 className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-bg-hover text-muted',
+    },
+    'waiting-for-approval': {
+      label: t('pages.connectionsPage.waiting_for_approval'),
+      icon: <CircleDashed className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />,
+      tone: 'bg-warn-subtle text-warn-text',
+    },
+    connected: {
+      label: t('pages.connectionsPage.connected'),
+      icon: <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-ok-subtle text-ok-text',
+    },
+    // Warn tone, not the error tone: an unverifiable state is not a failure. The
+    // icon is static on purpose — a spinner would claim a grant is in flight
+    // when nothing is pending.
+    'not-verified': {
+      label: t('pages.connectionsPage.not_verified'),
+      icon: <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-warn-subtle text-warn-text',
+    },
+    'needs-attention': {
+      label: t('pages.connectionsPage.needs_attention'),
+      icon: <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-danger-subtle text-danger-text',
+    },
+    // Muted, not warn: nothing is wrong with the provider, a step is missing on
+    // OUR side. The lock says "this needs a key" without alarming a user who
+    // cannot act on it (only the owner can configure).
+    'needs-configuration': {
+      label: t('pages.connectionsPage.needs_configuration'),
+      icon: <Lock className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-bg-hover text-muted',
+    },
+  }
+  const meta = stateMeta[state]
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${meta.tone}`}>
+      {meta.icon}
+      {meta.label}
+    </span>
+  )
+}
+
+/** The card slides to where the grid puts it once it opens or closes. */
+export const CARD_LAYOUT_TRANSITION = { duration: 0.2, ease: 'easeOut' } as const
+
 function ConnectionCard({
   provider,
   server,
@@ -294,6 +357,10 @@ function ConnectionCard({
   testingProvider,
   feedbackSlots,
   highlighted,
+  expand,
+  oauthPanel,
+  hidden = false,
+  handOffAllowed = true,
   onConnect,
   onCancel,
   onDisconnect,
@@ -559,8 +626,10 @@ function ConnectionCard({
     : t('pages.connectionsPage.service_value_prop', { provider: provider.name })
   // One shared element so EVERY consent-initiating action (Connect, Authorize,
   // Reconnect) carries the provider-side prerequisite — a GitLab whose Duo is
-  // off fails identically whichever button started the OAuth flow.
-  const providerPrerequisite = provider.prerequisite_copy
+  // off fails identically whichever button started the OAuth flow. A Google
+  // product row skips it: the Google entry states that step once, as one tip
+  // beside its own action, instead of a triangle beside each of six Connects.
+  const providerPrerequisite = provider.prerequisite_copy && !isGoogleSlug(provider.slug)
     ? provider.slug in PREREQUISITE_KEYS
       ? t(PREREQUISITE_KEYS[provider.slug as keyof typeof PREREQUISITE_KEYS], {
           defaultValue: provider.prerequisite_copy,
@@ -600,45 +669,6 @@ function ConnectionCard({
       text={prerequisiteText}
     />
   ) : null
-  const stateMeta: Record<ConnectionCardState, { label: string; icon: ReactNode; tone: string }> = {
-    'not-connected': {
-      label: t('pages.connectionsPage.not_connected'),
-      icon: <Link2 className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-bg-hover text-muted',
-    },
-    'waiting-for-approval': {
-      label: t('pages.connectionsPage.waiting_for_approval'),
-      icon: <CircleDashed className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />,
-      tone: 'bg-warn-subtle text-warn-text',
-    },
-    connected: {
-      label: t('pages.connectionsPage.connected'),
-      icon: <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-ok-subtle text-ok-text',
-    },
-    // Warn tone, not the error tone: an unverifiable state is not a failure. The
-    // icon is static on purpose — a spinner would claim a grant is in flight
-    // when nothing is pending.
-    'not-verified': {
-      label: t('pages.connectionsPage.not_verified'),
-      icon: <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-warn-subtle text-warn-text',
-    },
-    'needs-attention': {
-      label: t('pages.connectionsPage.needs_attention'),
-      icon: <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-danger-subtle text-danger-text',
-    },
-    // Muted, not warn: nothing is wrong with the provider, a step is missing on
-    // OUR side. The lock says "this needs a key" without alarming a user who
-    // cannot act on it (only the owner can configure).
-    'needs-configuration': {
-      label: t('pages.connectionsPage.needs_configuration'),
-      icon: <Lock className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-bg-hover text-muted',
-    },
-  }
-  const meta = stateMeta[state]
   const runRelay = async () => {
     // Normalize a scheme-less mobile paste (#7406) and submit the normalized
     // form, mirroring the chat banner's relay affordance.
@@ -652,11 +682,20 @@ function ConnectionCard({
     if (delivered) setReturnAddress('')
   }
 
+  // A card that needs the user stays open: a consent in flight (Re-open,
+  // Cancel), a broken or unproven connection (its error and Reconnect). The
+  // Google entry opens for the same states.
+  const forcedOpen = state === 'waiting-for-approval' || state === 'needs-attention' || state === 'not-verified'
+  const open = expand === undefined || expand.expanded || forcedOpen
+  const reduceMotion = useReducedMotion()
   return (
-    <article
+    <motion.article
+      layout={reduceMotion ? false : true}
+      transition={CARD_LAYOUT_TRANSITION}
       id={`connection-${provider.slug}`}
+      hidden={hidden}
       data-state={state}
-      className={`relative flex flex-col rounded-lg border bg-card p-3.5 shadow-sm transition-colors ${
+      className={`relative flex flex-col rounded-lg border bg-card p-3.5 shadow-sm transition-colors ${open && oauthPanel !== undefined ? 'xl:col-span-2 2xl:col-span-3 ' : ''}${
         highlighted ? 'border-accent ring-1 ring-accent/40' : state === 'needs-attention' ? 'border-danger/40' : 'border-border'
       }`}
     >
@@ -673,11 +712,21 @@ function ConnectionCard({
             </span>
           )}
         </span>
-        <h3 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">{provider.name}</h3>
-        <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${meta.tone}`}>
-          {meta.icon}
-          {meta.label}
-        </span>
+        <h3 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
+          {expand ? (
+            <button
+              type="button"
+              onClick={expand.onToggle}
+              aria-expanded={open}
+              aria-controls={expand.panelId}
+              className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent"
+            >
+              <span className="min-w-0 truncate">{provider.name}</span>
+              <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+            </button>
+          ) : provider.name}
+        </h3>
+        <ConnectionStateBadge state={state} />
       </header>
 
       {/* A two-line FLOOR with a three-line ceiling, not a fixed height. The
@@ -703,7 +752,11 @@ function ConnectionCard({
         {valueProp}
       </p>
 
-      <div className="mt-auto">
+      {/* Closed, a card shows its name, status and value prop, plus the one
+          next step a new user needs: Connect on a not-connected card, Configure
+          (which is the expand) on a missing client. Every other action and the
+          OAuth app form open with the card. */}
+      {(open || state === 'needs-configuration' || state === 'not-connected') && <div id={expand?.panelId} className="mt-auto">
         {state === 'not-connected' && (
           <div className="flex items-center justify-between gap-3">
             <a href={provider.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text">
@@ -838,21 +891,31 @@ function ConnectionCard({
                   card state uses for its pre-action caveat -- never as a band
                   above the action row. The badge already says what state the
                   card is in; the tip says what pressing the button entails. */}
-              <PrerequisiteTip
-                label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
-                heading={t('pages.connectionsPage.before_you_connect')}
-                text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
-              />
-              {/* A route, not a Connect button: the missing step lives on the
-                  Settings tab, and only the owner can complete it. The highlight
-                  lands on this provider's card there. */}
-              <Link
-                to={settingsPath({ tab: 'connections', highlight: connectionsOAuthClientEntryId(provider.slug) })}
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-accent-fg hover:opacity-90"
-              >
-                <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
-                {t('pages.connectionsPage.configure_oauth_app')}
-              </Link>
+              {/* Not on a Google product row: its OAuth app is the shared part
+                  below the rows, and this tip names a Configure button the row
+                  does not have. */}
+              {expand && !open && (
+                <PrerequisiteTip
+                  label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+                  heading={t('pages.connectionsPage.before_you_connect')}
+                  text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+                />
+              )}
+              {/* Not a Connect button: the missing step is the OAuth app part,
+                  which opens in place on this card. Only the owner can save it. */}
+              {/* Shown only while closed: once open, the form below is the
+                  next step and the name toggle closes the card. */}
+              {expand && !open && oauthPanel !== undefined && (
+                <Btn
+                  primary
+                  onClick={expand.onToggle}
+                  aria-expanded={expand.expanded}
+                  aria-controls={expand.panelId}
+                >
+                  <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  {t('pages.connectionsPage.set_up_provider', { provider: provider.name })}
+                </Btn>
+              )}
             </div>
           </div>
         )}
@@ -974,8 +1037,9 @@ function ConnectionCard({
             {/* The headline is copy selected by evidence (verdict vs could-not-reach);
                 the raw detail stays the ErrorNotice `message` so the journal lookup
                 key keeps its structured context. Detail absent: the headline itself
-                is the message so the notice still renders. askAgent is ON: a status
-                card holds no unsaved draft, so the hand-off can destroy nothing. */}
+                is the message so the notice still renders. askAgent is OFF while
+                any OAuth app form on the page holds unsaved input: the hand-off
+                opens chat and would drop it. Otherwise nothing unsaved is lost. */}
             <ErrorNotice
               title={(oauth?.error || server?.error) ? t(
                 errorIndicatesProviderRejection(oauth?.error || server?.error)
@@ -987,7 +1051,7 @@ function ConnectionCard({
                 'pages.connectionsPage.connection_unreachable',
                 { provider: provider.name },
               )}
-              askAgent
+              askAgent={handOffAllowed}
             />
             <div className="flex items-center justify-end gap-2">
               {prerequisiteTip}
@@ -1002,7 +1066,15 @@ function ConnectionCard({
             </div>
           </div>
         )}
-      </div>
+      </div>}
+
+      {/* Hidden, not unmounted, while closed: closing the card keeps a typed
+          but unsaved Client ID and secret. */}
+      {oauthPanel !== undefined && (
+        <div className="mt-3 border-t border-border pt-3" hidden={!open}>
+          {oauthPanel}
+        </div>
+      )}
 
       {feedbackSlots.length > 0 && (
         <div data-slot="connection-feedback" className="mt-3 grid text-[11px]">
@@ -1081,9 +1153,9 @@ function ConnectionCard({
           })}
         </div>
       )}
-    </article>
+    </motion.article>
   )
 }
 
 // `ConnectionsPage.tsx` renders one per provider.
-export { ConnectionCard }
+export { ConnectionCard, ConnectionStateBadge, PrerequisiteTip }

@@ -28,7 +28,7 @@ import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanel } from './settings/SecretsPanel'
-import { ConnectionsPanel } from './settings/ConnectionsPanel'
+import { useConnectionsUiEnabled, useConnectionsUiPending } from '../hooks/useConnectionsUi'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
 import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
@@ -46,6 +46,9 @@ const AgentBackendTab = lazy(() =>
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
 )
+/** Lazy: the Connections gallery (cards, connect flow, OAuth app parts) is
+ *  only needed when that tab opens, so it stays out of the Settings chunk. */
+const ConnectionsPage = lazy(() => import('./connections/ConnectionsPage'))
 /** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
 const BrowserPanel = lazy(() =>
   import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
@@ -251,6 +254,12 @@ export default function SettingsPage() {
   // bare `readPreviewFlag`, so toggling it in Settings > Developer > Feature Previews updates this
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
+  // The `connections_ui` escape hatch: false empties the Connections tab's gallery.
+  const connectionsUiEnabled = useConnectionsUiEnabled()
+  // Until that config is read, the tab cannot know which layout it has: the
+  // OAuth-apps-only forms (off) or the gallery (on). Showing the off forms first
+  // would drop a draft typed into them when the read flips the page to on.
+  const connectionsUiPending = useConnectionsUiPending()
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   // People exists only while the gateway reports the Shared Crew preview
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
@@ -342,7 +351,13 @@ export default function SettingsPage() {
         {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
-        {tab === 'connections' && <ConnectionsPanel />}
+        {tab === 'connections' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            {connectionsUiPending
+              ? <ContentSkeleton rows={6} />
+              : <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
+          </Suspense>
+        )}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
           <SettingsCard>

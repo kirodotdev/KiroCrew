@@ -823,6 +823,14 @@ class TestPromptResolution:
             == "from disk"
         )
 
+    def test_a_file_uri_spelled_prompt_is_inlined(self, tmp_path):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute path."""
+        p = tmp_path / "prompt.md"
+        p.write_text("from disk", encoding="utf-8")
+        ref = "file:///" + p.as_posix().lstrip("/")
+        agents_dir = tmp_path / "agents"
+        assert resolve_prompt({"prompt": ref}, agent_id="a", agents_dir=agents_dir) == "from disk"
+
     def test_missing_file_is_an_error_not_a_silent_empty_prompt(self, tmp_path):
         with pytest.raises(KasAgentTranslationError):
             resolve_prompt(

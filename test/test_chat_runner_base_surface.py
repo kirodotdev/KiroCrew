@@ -312,7 +312,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_settle_consumed_steers",
             "function",
-            "(slot: \"'_ChatSlot'\", snapshot: 'str', state: \"'DashboardState | None'\" = None) -> 'None'",
+            "(slot: \"'_ChatSlot'\", snapshot: 'str', state: \"'DashboardState | None'\" = None)"
+            " -> \"'tuple[str, int] | None'\"",
         ),
     ),
     "tool_approval": (

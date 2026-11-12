@@ -583,3 +583,55 @@ class TestEnabledReadsStrictly:
         assert get_app("strict-probe")["enabled"] is True
         rows = [r for r in list_apps() if r.get("name") == "strict-probe"]
         assert [r["enabled"] for r in rows] == [True]
+
+
+class TestRecordThatIsNotAnObject:
+    """An ``installed.json`` that parses but is not an object is reported as damaged.
+
+    Never read as "not installed" (that would let install and cleanup paths treat
+    the tree as a leftover), and never allowed to take the whole listing down.
+    """
+
+    def _write(self, app_home, name, payload):
+        app_root = app_home / "apps" / name
+        app_root.mkdir(parents=True)
+        path = app_root / "installed.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    @pytest.mark.parametrize("payload", [[], None, "x", 3])
+    def test_the_listing_skips_it_and_keeps_the_others(self, app_home, payload):
+        bad = self._write(app_home, "bad-record", payload)
+        self._write(app_home, "good-record", {"name": "good-record", "enabled": True})
+        before = bad.read_bytes()
+
+        try:
+            names = [r.get("name") for r in list_apps()]
+        except AttributeError as exc:
+            pytest.fail(f"one damaged record took the listing down: {exc}")
+
+        assert "good-record" in names
+        assert "bad-record" not in names
+        assert bad.read_bytes() == before
+
+    def test_readers_get_one_typed_error_not_absent(self, app_home):
+        from kiro_crew.apps.manager_records import InstalledRecordShapeError
+
+        self._write(app_home, "bad-record", [])
+        with pytest.raises(InstalledRecordShapeError):
+            _read_installed("bad-record")
+        assert app_enabled_state("bad-record") is None
+
+    def test_the_orphan_scan_never_marks_it_for_teardown(self, app_home):
+        from kiro_crew.apps.manager_builtins import (
+            detect_orphaned_builtins,
+            invalidate_orphan_cache,
+        )
+
+        self._write(app_home, "bad-record", [])
+        invalidate_orphan_cache()
+        assert "bad-record" not in detect_orphaned_builtins()
+
+    def test_a_legacy_record_with_a_non_string_source_still_reads(self, app_home):
+        self._write(app_home, "legacy-record", {"name": "legacy-record", "source": 1})
+        assert _read_installed("legacy-record").name == "legacy-record"

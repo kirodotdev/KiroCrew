@@ -220,6 +220,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         SEND_DISCARD_QUEUE_CANCEL,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
+        SESSION_SEND_QUEUED_META,
         _audit_queue_drain,
         _has_channel_mirror,
         _in_runner_turn,

@@ -99,7 +99,7 @@ export const DEFAULT_STATUS_FILTER = 'active'
 export const FALLBACK_SUPPORTED_FORMATS = [
   '.adoc', '.asciidoc',
   '.c', '.cpp', '.cs', '.csv', '.docx', '.go', '.h', '.htm', '.html', '.java',
-  '.js', '.json', '.jsonl', '.kt', '.kts', '.log', '.md', '.ndjson', '.org',
+  '.js', '.json', '.jsonl', '.kt', '.kts', '.log', '.md', '.msg', '.ndjson', '.org',
   '.pdf', '.php', '.phtml', '.ps1', '.psd1', '.psm1', '.py', '.rb', '.rs', '.scala', '.sh',
   '.swift', '.ts', '.txt', '.yaml', '.yml',
 ]

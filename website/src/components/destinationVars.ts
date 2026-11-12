@@ -9,10 +9,9 @@
  */
 import { i18nT } from '../i18n/t'
 
-export type CapabilitiesTab = 'connections' | 'knowledge' | 'skills'
+export type CapabilitiesTab = 'knowledge' | 'skills'
 
 const CAPABILITIES_TAB_LABEL_KEY: Record<CapabilitiesTab, string> = {
-  connections: 'pages.capabilitiesPage.connections_label',
   knowledge: 'pages.capabilitiesPage.knowledge_label',
   skills: 'pages.capabilitiesPage.skills_label',
 }
@@ -22,5 +21,14 @@ export function capabilitiesVars(tab: CapabilitiesTab): { capabilities: string; 
   return {
     capabilities: i18nT('nav.agent_capabilities'),
     tab: i18nT(CAPABILITIES_TAB_LABEL_KEY[tab]),
+  }
+}
+
+/** The same two placeholders for the MCP Servers rail entry and its Servers
+ *  view, where an MCP server is added, enabled and checked. */
+export function mcpServersVars(): { capabilities: string; tab: string } {
+  return {
+    capabilities: i18nT('nav.mcp_servers'),
+    tab: i18nT('pages.mcpPage.view_servers'),
   }
 }

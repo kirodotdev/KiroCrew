@@ -49,6 +49,19 @@ class TestBuildDeepLink:
             == "kirocrew://chat?sid=hook%3Acos%3Amenubar-chat"
         )
 
+    def test_accepts_the_percent_encoded_sid_from_the_dashboard_url(self):
+        # The help says to paste the dashboard URL's ?sid= value, which is encoded.
+        try:
+            url = build_deep_link(session="hook%3Acos%3Amenubar-chat")
+        except DeepLinkError as exc:
+            pytest.fail(f"the dashboard's encoded sid was refused: {exc}")
+        assert url == "kirocrew://chat?sid=hook%3Acos%3Amenubar-chat"
+        with pytest.raises(DeepLinkError):
+            build_deep_link(session="x%2Fy")
+        # Decoded once only: a twice-encoded key still carries '%' and is refused.
+        with pytest.raises(DeepLinkError):
+            build_deep_link(session="hook%253Acos%253Amenubar-chat")
+
     @pytest.mark.parametrize(
         "session", ["a b", "-leading", "a" * 201, "x/y", "../x", "cos-quick-chat\n"]
     )

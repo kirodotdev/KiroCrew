@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronRight, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon } from 'lucide-react'
+import { AlertTriangle, Check, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon, Share2 } from 'lucide-react'
 import {
   api,
   ApiError,
@@ -17,6 +17,8 @@ import {
   type TabItem,
 } from '../../components/ui/tabs'
 import { TABS_RAIL_ROW_CLASS } from '../../components/ui/tabsPill'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { guideAnchor } from '../../uiLocations/targetRegistry'
 import { Btn } from '../../components/ui'
 import {
   Dialog,
@@ -76,8 +78,8 @@ import { retryPolicy } from '../../api/queryClient'
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
  * sharing switch, the measured numbers, the open-chats banner), the approval
- * card, and a collapsed "Advanced" holding the per-server table, npm
- * pre-install and the Sharing assessment.
+ * card, then (on the MCP Servers page) the Servers and Sharing views. Sharing
+ * holds the per-server table, npm pre-install and the Sharing assessment.
  *
  * Turning sharing ON asks first, naming every server it shares: the ones
  * enabled by hand and the shareable ones nobody chose for, which it enables,
@@ -109,11 +111,19 @@ import { retryPolicy } from '../../api/queryClient'
 /** The pre-install row's one-line explanation, which also describes its button. */
 const RESOLVE_DESC_ID = 'mcp-resolve-desc'
 
+/** The MCP Servers page's two views under the sharing hero. */
+export type McpPageView = 'servers' | 'sharing'
+
 export function McpManagement({
-  initialAdvancedOpen = false,
+  serversList,
+  pageView = 'servers',
+  onPageViewChange,
 }: {
-  /** Advanced starts collapsed; a test of what lives inside it opens it. */
-  initialAdvancedOpen?: boolean
+  /** The server list, shown as the page's Servers view. Without it the
+   *  sharing body renders on its own, with no view strip. */
+  serversList?: ReactNode
+  pageView?: McpPageView
+  onPageViewChange?: (view: McpPageView) => void
 } = {}) {
   const qc = useQueryClient()
   // While the sibling MCP Servers list holds unapplied edits, an ErrorNotice
@@ -341,7 +351,6 @@ export function McpManagement({
     () => waitingForApproval(servers, status?.launch_refused),
     [servers, status?.launch_refused],
   )
-  const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedOpen)
 
   // The hero's numbers and the stale-chat banner: one reading of this host.
   // The reading is owner-only, and this panel also renders for non-owner
@@ -646,91 +655,8 @@ export function McpManagement({
     }
   }
 
-  return (
-    <div className="min-w-0 space-y-4">
-      <ErrorNotice
-        message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-      />
-      {/* Page-wide, not inside Advanced: a failed server list disables the
-          hero switch, so its reason must show while Advanced is closed. */}
-      <ErrorNotice
-        message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-      />
-      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} onDismiss={() => setError(null)} />
-      {restartNotice && (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
-        >
-          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
-          <span>{restartNotice}</span>
-        </div>
-      )}
-      {/* The endpoint's compare-and-set rejected the write and handed back the
-          newer launch, which that row's Details shows. A rejected request, so
-          an ErrorNotice; it stands while that server still waits. */}
-      <ErrorNotice
-        message={
-          launchMovedFor !== null && waiting.some(s => s.name === launchMovedFor)
-            ? i18nT('pages.mcpManagement.launch_moved_row_notice', { name: launchMovedFor })
-            : null
-        }
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-        onDismiss={() => setLaunchMovedFor(null)}
-      />
-
-      <SharingHero
-        on={!!status?.enabled}
-        switchDisabled={
-          busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
-          || (!status?.enabled && !canEnableSharing)
-        }
-        switchNote={!supported ? i18nT('pages.mcpManagement.unsupported_platform') : null}
-        onToggle={() => {
-          setError(null)
-          setNotice(null)
-          // Turning sharing ON moves servers out of the chat sandboxes, so it
-          // asks first, naming every server it shares. Turning it OFF only ever
-          // narrows, and keeps every per-server choice for the next ON.
-          if (!status?.enabled) prepareSharing.mutate()
-          else setSharing.mutate(false)
-        }}
-        footprint={footprintQ.data}
-        footprintFailed={footprintQ.isError}
-        footprintRefused={footprintRefused}
-        staleCount={staleChats.length}
-        reloadBusy={reload.isPending}
-        reloadNote={reloadNote}
-        reloadError={reloadError}
-        onReload={() => setConfirmReload(true)}
-      />
-
-      <ApprovalCard waiting={waiting} onReview={openReview} />
-
-      <section className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--card)]">
-        <h2 className="m-0">
-          <button
-            type="button"
-            aria-expanded={advancedOpen}
-            aria-controls="mcp-advanced"
-            onClick={() => setAdvancedOpen(o => !o)}
-            className="flex w-full items-center gap-2 rounded-xl px-4 py-3 text-left text-[14px] font-medium text-[var(--text)] hover:bg-[var(--hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-          >
-            <ChevronRight
-              size={15}
-              aria-hidden="true"
-              className={['shrink-0 text-[var(--muted)] transition-transform', advancedOpen ? 'rotate-90' : ''].join(' ')}
-            />
-            {i18nT('pages.mcpManagement.advanced')}
-          </button>
-        </h2>
-        {advancedOpen && (
-          <div id="mcp-advanced" className="min-w-0 border-t border-[var(--border)] p-3 md:p-4">
+  // The per-server Share table, npm pre-install and the Sharing assessment.
+  const sharingBody = (
     <Tabs
       value={view}
       onValueChange={v => setView(v as McpView)}
@@ -1038,9 +964,110 @@ export function McpManagement({
       </section>
       </TabsContent>
     </Tabs>
+  )
+
+  return (
+    <div className="min-w-0 space-y-4">
+      <ErrorNotice
+        message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+      />
+      {/* Page-wide, above the hero: a failed server list disables the hero
+          switch, so its reason shows on every view. */}
+      <ErrorNotice
+        message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+      />
+      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} onDismiss={() => setError(null)} />
+      {restartNotice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
+        >
+          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+          <span>{restartNotice}</span>
+        </div>
+      )}
+      {/* The endpoint's compare-and-set rejected the write and handed back the
+          newer launch, which that row's Details shows. A rejected request, so
+          an ErrorNotice; it stands while that server still waits. */}
+      <ErrorNotice
+        message={
+          launchMovedFor !== null && waiting.some(s => s.name === launchMovedFor)
+            ? i18nT('pages.mcpManagement.launch_moved_row_notice', { name: launchMovedFor })
+            : null
+        }
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+        onDismiss={() => setLaunchMovedFor(null)}
+      />
+
+      <SharingHero
+        on={!!status?.enabled}
+        switchDisabled={
+          busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
+          || (!status?.enabled && !canEnableSharing)
+        }
+        switchNote={!supported ? i18nT('pages.mcpManagement.unsupported_platform') : null}
+        onToggle={() => {
+          setError(null)
+          setNotice(null)
+          // Turning sharing ON moves servers out of the chat sandboxes, so it
+          // asks first, naming every server it shares. Turning it OFF only ever
+          // narrows, and keeps every per-server choice for the next ON.
+          if (!status?.enabled) prepareSharing.mutate()
+          else setSharing.mutate(false)
+        }}
+        footprint={footprintQ.data}
+        footprintFailed={footprintQ.isError}
+        footprintRefused={footprintRefused}
+        staleCount={staleChats.length}
+        reloadBusy={reload.isPending}
+        reloadNote={reloadNote}
+        reloadError={reloadError}
+        onReload={() => setConfirmReload(true)}
+      />
+
+      <ApprovalCard waiting={waiting} onReview={openReview} />
+
+      {serversList === undefined ? sharingBody : (
+        // Servers | Sharing sit under the hero and the approval card, so the
+        // page-wide switch stays in view however many servers are installed.
+        <Tabs
+          value={pageView}
+          onValueChange={v => onPageViewChange?.(v as McpPageView)}
+          layoutId="mcp-page-view"
+          className="min-w-0"
+        >
+          <div className={`${TABS_RAIL_ROW_CLASS} mb-4`}>
+            <TabsList aria-label={i18nT('pages.mcpPage.title')}>
+              <TabsTrigger value="servers">
+                <ServerIcon size={14} />
+                {/* On the label: the index and the guide need an element that
+                    takes the markers as-is. One spread: the anchor's
+                    registering ref rides in as the location's own. */}
+                <span {...uiLocation('mcp.servers-view', guideAnchor('mcp.servers-tab').ref)} data-guide-anchor="mcp.servers-tab">
+                  {i18nT('pages.mcpPage.view_servers')}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="sharing">
+                <Share2 size={14} />
+                <span>{i18nT('pages.mcpPage.view_sharing')}</span>
+              </TabsTrigger>
+            </TabsList>
           </div>
-        )}
-      </section>
+          {/* Mounted on the Sharing view too (hidden): the server list holds staged,
+              unapplied scope and tool edits in its own state. */}
+          <TabsContent value="servers" guideScope="open:mcp.servers-view" className="min-w-0" forceMount hidden={pageView !== 'servers'}>
+            {serversList}
+          </TabsContent>
+          <TabsContent value="sharing" className="min-w-0">
+            {sharingBody}
+          </TabsContent>
+        </Tabs>
+      )}
 
       <ConfirmSharing
         open={confirmSharing}

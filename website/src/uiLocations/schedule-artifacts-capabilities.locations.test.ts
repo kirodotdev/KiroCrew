@@ -105,8 +105,8 @@ const EXPECTED: Record<string, Expect> = {
   'mcp.probe': {
     kind: 'button', labelKey: 'pages.overview.mcpTab.probe_mcp_servers', source: MCP_SRC,
     placement: {
-      surface: 'capabilities', route: '/capabilities?tab=mcp',
-      parents: ['page.capabilities', 'tab.capabilities.mcp', 'connections.mcp-servers-tab'], entry: 'toolbar', requires: [],
+      surface: 'mcp', route: '/mcp',
+      parents: ['page.mcp', 'mcp.servers-view'], entry: 'toolbar', requires: [],
     },
   },
 }
@@ -144,6 +144,6 @@ describe('schedule, artifacts and capabilities wave-3 locations', () => {
     expect(byId.get('schedule.create-first')!.placements[0].requires).toEqual(cond('no_schedules'))
     expect(byId.get('schedule.add-job')!.placements[0].requires).toEqual(cond('has_schedules'))
     expect(byId.get('artifacts.import')!.placements[0].parent_ids).toEqual(['page.artifacts', 'artifacts.add-menu'])
-    expect(byId.get('mcp.add-custom')!.placements[0].parent_ids).toEqual(['page.capabilities', 'tab.capabilities.mcp', 'connections.mcp-servers-tab'])
+    expect(byId.get('mcp.add-custom')!.placements[0].parent_ids).toEqual(['page.mcp', 'mcp.servers-view'])
   })
 })

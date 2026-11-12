@@ -67,7 +67,7 @@ def _share_notice(withheld: WithheldOut) -> str:
     label = ", ".join(shown + ([f"{hidden} more"] if hidden else []))
     return (
         f"ℹ {label} may be missing some of its settings in this chat. To fix it, "
-        "turn on Share for it in Customize → Connections → MCP Management."
+        "turn on Share for it in MCP Servers → Sharing."
     )
 
 

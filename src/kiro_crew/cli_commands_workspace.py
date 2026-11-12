@@ -38,7 +38,7 @@ from kiro_crew.validation import WORKSPACE_NAME_RE
 # keystone policy files. The refusal is deliberate — say so, and say what to pass
 # instead, rather than a bare "invalid directory path".
 _WS_DIR_OUTSIDE_HOME = (
-    "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "  # brand-ok -- moved verbatim; user-visible refusal text, respelling is a separate change
+    "Error: --dir must resolve inside the Kiro Crew data home ({home}); got {given!r}. "
     "Pass a relative directory name (e.g. 'workspace-myproject')."
 )
 

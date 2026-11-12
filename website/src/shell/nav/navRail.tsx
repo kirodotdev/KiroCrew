@@ -317,12 +317,13 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           </div>
         </div>
 
-        {/* Bottom-fixed: Agent Capabilities, Settings, and the community row.
+        {/* Bottom-fixed: Agent Capabilities, MCP Servers, Settings, and the community row.
             Pinned to the rail's bottom edge — the Apps frame above absorbs
             the scroll. */}
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
+          const mcp = NAV_ITEMS.find(n => n.id === 'mcp')!
           return (
             <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
               {terminalEnabled && (
@@ -379,6 +380,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 />
               )}
               <div>{renderNavRow(cap)}</div>
+              <div>{renderNavRow(mcp)}</div>
               {/* Phone only: the account modal (balance, sign-in state) has no
                   other phone entry -- the readout capsule that opens it on the
                   desktop is not rendered on the phone. Shown on exactly the

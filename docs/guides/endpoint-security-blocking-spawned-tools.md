@@ -16,13 +16,32 @@ This is distinct from the desktop-app renderer case covered in the
 child processes); here it is the ordinary command-line tools the agent spawns
 that are blocked.
 
-## Why it happens (macOS and Linux)
+## Why it happens on Windows
 
-The mechanism described below is **specific to macOS and Linux**. On Windows the
-agent launches tools directly, so this interpreter-then-exec shape does not
-occur there — if you are on Windows and the agent's tools are blocked, read a
-real detection entry (see below) to find the actual trigger rather than assuming
-the cause described here.
+On the default backend (KAS), Kiro Crew does not start the agent's shell itself.
+The shell (`pwsh.exe` or `powershell.exe`) is a child of the **`node.exe`** the
+KAS engine runs under, so every shell tool call looks like "Node starts
+PowerShell" to an endpoint product. Rules that block a script host starting
+PowerShell (for example Kaspersky's Adaptive Anomaly Control) match that shape,
+and the agent reports that the command could not run with `EPERM`. Releases
+before KAS became the default ran the agent on Kiro CLI, which is why an
+upgrade can be where the blocks start.
+
+Which `node.exe` it is depends on the KAS route, which `kirocrew doctor` prints
+on its `route:` row:
+
+- **Relay** (kiro-cli is installed and signed in): the `node.exe` kiro-cli ships
+  beside `kiro-cli.exe`, `%LOCALAPPDATA%\Kiro-Cli\node.exe` on a default kiro-cli
+  install.
+- **Bundle**: the `node.exe` of Kiro Crew's own engine, under
+  `<data home>\engines\kas\<version>\node\`, or the copy staged in the desktop
+  app's resources. `kirocrew doctor` prints its exact path on the `node:` row.
+
+The detection entry's image path is the authority; the list above tells you
+what to expect there. The interpreter-then-exec mechanism in the next section
+does not apply on Windows.
+
+## Why it happens on macOS and Linux
 
 On macOS and Linux, for safety reasons Kiro Crew does not launch tools directly.
 It starts each one through a tiny exec-shim — a short run of the Python
@@ -51,21 +70,29 @@ process it launches" rule would take the sensor off every command the agent
 spawns — and those are exactly the processes that act on untrusted external
 content, so you do not want them unmonitored.
 
-The process that starts and then replaces itself is **the Python interpreter
-Kiro Crew runs under**, not a `kirocrew` launcher. Security products key
-exceptions on the image path, so the exception must name that interpreter's real
-path — the path reported by `sys.executable` for the running gateway, typically
-the `python3` inside the install's virtual environment — otherwise the exception
-will not match the process the heuristic flagged and the blocks continue.
+Security products key exceptions on the image path, so the exception must name
+the real parent image, otherwise it will not match the process the rule flagged
+and the blocks continue:
+
+- **Windows:** the KAS engine's `node.exe` from
+  [Why it happens on Windows](#why-it-happens-on-windows), paired with the
+  "Node starts PowerShell" detection. It is not `KiroCrew.exe` and not Kiro
+  Crew's Python.
+- **macOS and Linux:** the process that starts and then replaces itself is **the
+  Python interpreter Kiro Crew runs under**, not a `kirocrew` launcher: the path
+  reported by `sys.executable` for the running gateway, typically the `python3`
+  inside the install's virtual environment.
 
 To build an accurate exception:
 
 1. Open your security product's console (or the OS detection log) and read the
    detection entry: note the **detection id** that fired and the **exact image
-   path** of the process it blocked.
-2. Confirm the running interpreter path with `python3 -c "import sys; print(sys.executable)"`
-   from the same environment Kiro Crew runs in, and check it matches the blocked
-   image path from the detection entry.
+   path** of the process it blocked or whose child it blocked.
+2. Check that path against the image you expect. On Windows, run
+   `kirocrew doctor` and compare with the `node.exe` for the route on its
+   `route:` row. On macOS
+   and Linux, run `python3 -c "import sys; print(sys.executable)"` from the same
+   environment Kiro Crew runs in.
 3. Hand the detection id and that image path to whoever administers endpoint
    security on the device, and ask for an exception scoped to that pair.
 

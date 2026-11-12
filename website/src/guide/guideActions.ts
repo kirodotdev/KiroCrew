@@ -240,8 +240,9 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
       titleVars: {},
       steps: [
         {
-          // Already on the MCP Servers view: the Add Custom button is visible
-          // and this step is reached at once.
+          // The MCP Servers page's Servers view. Already showing (the page's
+          // default): the Add Custom button is visible and this step is
+          // reached at once.
           target: { kind: 'anchor', anchor: GUIDE_ANCHORS.mcpServersTab },
           complete: { kind: 'reach', targets: [anchor(GUIDE_ANCHORS.mcpAddCustom), anchor(GUIDE_ANCHORS.mcpCustomForm)] },
           textKey: 'components.guideLayer.step_mcp_open_tab',
@@ -260,7 +261,7 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
           textKey: 'components.guideLayer.step_mcp_custom_json',
         },
       ],
-      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp' },
+      enter: { kind: 'navigate', to: () => '/mcp' },
     },
   }
 }

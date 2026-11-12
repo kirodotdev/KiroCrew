@@ -22,7 +22,7 @@ import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { sseStatus } from '../store/dashboardSlice'
+import { setUpdateProgress, sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
@@ -595,5 +595,37 @@ describe('AboutPanel gateway restart', () => {
       const btn = screen.getByTestId('gateway-restart')
       expect(btn.getAttribute('disabled')).not.toBeNull()
     })
+  })
+
+  it('a restart the gateway refuses after its 200 clears the busy button and shows why (#35351)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      const restart = init?.method === 'POST' && url.includes('/api/restart')
+      return {
+        ok: true, status: 200,
+        json: async () => (restart ? { ok: true, status: 'restarting' } : {}),
+        text: async () => (restart ? '{"ok":true,"status":"restarting"}' : '{}'),
+        headers: new Headers({ 'content-type': 'application/json' }),
+      }
+    }))
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_command: 'curl -fsSL https://example.test/cli.sh | sh',
+      update_channel: 'stable',
+    })
+    mountWeb()
+
+    await screen.findByTestId('manual-update-command')
+    fireEvent.click(screen.getByTestId('gateway-restart'))
+    fireEvent.click(screen.getByTestId('gateway-restart'))
+    await waitFor(() => expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).not.toBeNull())
+
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'Sessions did not drain in time.' })) })
+    expect(await screen.findByTestId('manual-update-restart-error')).toHaveTextContent('Sessions did not drain in time.')
+    expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).toBeNull()
+    act(() => { store.dispatch(setUpdateProgress(null)) })
   })
 })

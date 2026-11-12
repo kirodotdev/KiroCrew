@@ -457,9 +457,10 @@ class TestTheLeaseDoesNotOutliveItsPass:
 @pytest.mark.asyncio
 async def test_transient_renewal_failure_keeps_heartbeat_running(tmp_path, monkeypatch, failure):
     monkeypatch.setattr("kiro_crew.history_consolidation._CONSOLIDATION_LEASE_RENEW_SECS", 0)
-    log = _seed_log(tmp_path)
+    # Seed and acquire off the loop: a Windows rename on the loop thread is not retried.
+    log = await asyncio.to_thread(_seed_log, tmp_path)
     c = _make_consolidator(log)
-    token = c._acquire_consolidation_lease(KEY)
+    token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
     assert token
     original_read = log._read_metadata_status
     original_write = log._update_metadata_locked

@@ -794,7 +794,7 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
+| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases). Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](#folders-beside-the-data-home)) |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |

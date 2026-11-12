@@ -6767,6 +6767,11 @@ Presence is probed with `HasField`, never truthiness: a protobuf's singular
 submessage is never `None`, so reading an absent one returns a default instance
 and truthiness reports every field present. Content that cannot be ingested (a
 location, a poll, a contact card) produces a visible note rather than silence.
+The ingested files live only until `receive`'s dispatch returns, so a busy
+session never steers a message whose text names one of them: a steer returns
+before the running turn reads it, which would hand the turn a deleted path. The
+sender gets `BUSY_NOTE` and resends; a voice note's text is its transcript, names
+no file, and still steers.
 Outbound, `whatsapp/files.py` runs the shared extractor at the seal and uploads
 each raster from BYTES, never by re-opening the path, because every security gate
 was applied to one inode. Its ceilings are this repo's policy, not sourced

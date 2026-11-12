@@ -74,7 +74,15 @@ def bundled_python() -> str | None:
     ``realpath`` matters: the launcher is frequently a symlink from
     ``~/.local/bin`` into the venv, and the sibling lookup has to run in the
     venv, not next to the symlink.
+
+    The ACP parent's ``KIROCREW_RUNTIME_PYTHON`` wins over that lookup: it is
+    the interpreter already running Kiro Crew, and an agent's ``kirocrew`` on
+    Windows is a ``kirocrew.cmd`` forwarder in the crew home, which ``realpath``
+    cannot follow to the venv.
     """
+    injected = os.environ.get("KIROCREW_RUNTIME_PYTHON", "").strip()
+    if injected and os.path.isfile(injected):
+        return injected
     launcher = shutil.which("kirocrew")
     if not launcher:
         return None

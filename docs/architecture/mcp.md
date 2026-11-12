@@ -1316,7 +1316,7 @@ file under the same prefix, and the same spelling in any other slot (the package
 directory as a `--plugin-root` value, or under another env key), hashes
 literally and is a changed launch. Every process that hashes a launch (the rewriter, gatewayd, the broker stub) computes the table from itself and they agree because they run from one install; the one spelling they can disagree on is Windows' 8.3 short name, which the stub is launched through when the install path holds a space (`rewriter._cmd_safe_command`), so on Windows each of the three also enters under its long name (`GetLongPathNameW` of the process's own path, never of a token; no link is followed). An approval whose digest was recorded without this encoding
 reads as `changed_needs_reapproval` and needs one re-approve in
-**Customize → Connections → MCP Servers** (MCP Management, reachable without developer mode). No digest without
+**MCP Servers** (MCP Management, reachable without developer mode). No digest without
 the encoding is accepted. Two installs sharing one data home (the desktop app and a
 dev venv, say) therefore admit each other's approvals of a `python3`-pinned
 launch, since each reads the alias as its own interpreter; that widens nothing,
@@ -1326,7 +1326,7 @@ without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
-recorded approval needs one in **Customize → Connections → MCP Servers** before it pools. Cached recommendation
+recorded approval needs one in **MCP Servers** before it pools. Cached recommendation
 seeding may add a stub route, but it grants no launch approval; the seeded
 row stays on the session-sandboxed path until the operator approves it.
 A rewrite pass checks a launch's approval before the per-server launch cap
@@ -1396,8 +1396,8 @@ environment requires the same re-approve flow.
 `kirocrew config set mcp_gateway.stub_servers` (on `--local` and `--file` too)
 writes the list unchanged, then names on stderr each listed server the store
 holds no approved launch for: the next gateway start refuses it as
-`added_outside_dashboard` until it is approved in **Customize → Connections →
-MCP Servers**, and a `secret://` reference in its env resolves only once the
+`added_outside_dashboard` until it is approved on **MCP Servers → Sharing**,
+and a `secret://` reference in its env resolves only once the
 gateway runs it. A reserved `kirocrew-*` server, whose managed launch needs no
 approval, and a never-pooled one are not named.
 
@@ -1409,7 +1409,7 @@ shareable ones nobody chose for, each pinned to the launch read for it. It
 never enables a server turned off by hand (a `false` entry in
 `stub_overrides`), a credential vendor, or a server waiting for approval.
 
-Under **Advanced**, each row's control is one switch, **Enable MCP sharing**.
+On the **Sharing** view, each row's control is one switch, **Enable MCP sharing**.
 Turning it on reads the launch, then sends the stub write carrying that
 `expected_launch`. Turning a row's switch off turns a share off. A row refused
 as `changed_needs_reapproval` reads **Paused · command changed**. It runs
@@ -2374,7 +2374,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary`, `session_queue` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |

@@ -258,3 +258,63 @@ def test_an_unresolved_harness_leaves_the_field_off_the_row() -> None:
             "chat-1-1", "m", object(), "acp", now, harness=harness
         )
         assert "harness" not in record
+
+
+def test_each_run_of_a_cron_job_on_one_slot_is_its_own_session(parse) -> None:
+    shards, run = parse
+    today = _noon(0)
+    _write_shard(
+        shards,
+        _day(today),
+        [
+            # One cron job, one slot, three runs: three ACP sessions.
+            _row(today, "claude_code", slot="cron:nightly", acp_session_id="s-1"),
+            _row(today, "claude_code", slot="cron:nightly", acp_session_id="s-2"),
+            _row(today, "claude_code", slot="cron:nightly", acp_session_id="s-3"),
+            # Two turns of one conversation stay one session.
+            _row(today, "acp", slot="cron:hourly", harness="codex", acp_session_id="s-4"),
+            _row(today, "acp", slot="cron:hourly", harness="codex", acp_session_id="s-4"),
+        ],
+    )
+    r = run()
+    # The kiro-cli transcript, three nightly runs and one hourly conversation.
+    assert (r["total_sessions"], r["total_messages"]) == (5, 11)
+
+
+def test_a_row_from_before_the_session_id_still_groups_by_slot(parse) -> None:
+    shards, run = parse
+    today = _noon(0)
+    _write_shard(
+        shards,
+        _day(today),
+        [
+            _row(today, "claude_code", slot="cron:nightly"),
+            _row(today, "claude_code", slot="cron:nightly"),
+        ],
+    )
+    r = run()
+    assert (r["total_sessions"], r["total_messages"]) == (2, 5)
+
+
+@pytest.mark.asyncio
+async def test_the_usage_row_records_the_acp_session_of_its_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+
+    class _Provider:
+        session_id = "acp-session-7"
+
+    await usage_mod.persist_token_record_async(
+        "cron:nightly", "m", {}, provider="acp", model_source=_Provider(), emit_metric=False
+    )
+    await usage_mod.persist_token_record_async(
+        "cron:nightly", "m", {}, provider="acp", emit_metric=False
+    )
+    # Day files in date order, so a run across midnight still reads oldest first.
+    rows = [
+        json.loads(ln)
+        for p in sorted(tmp_path.glob("*.jsonl"))
+        for ln in p.read_text().splitlines()
+    ]
+    assert [r.get("acp_session_id") for r in rows] == ["acp-session-7", None]

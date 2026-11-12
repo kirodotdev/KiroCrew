@@ -256,8 +256,8 @@ features do not depend on the pod service manager.
 
 ### MCP tools not working
 
-Start at **Customize → Connections → MCP Servers**
-(`/capabilities?tab=mcp&view=mcp-servers`): it shows whether each server is on
+Start at **MCP Servers**
+(`/mcp`): it shows whether each server is on
 and answering, and it is where a server is added or turned on. Kiro Crew
 rebuilds `~/.kiro/agents/kirocrew.json` from your MCP sources on every gateway
 start, so do not add a server by editing that file. A server whose program is
@@ -278,8 +278,8 @@ command path is install-specific. If tools still fail:
    `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
    Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
-2. Check that your own server is listed and on under **Customize →
-   Connections → MCP Servers**, which also lists the servers in
+2. Check that your own server is listed and on under **MCP Servers**,
+   which also lists the servers in
    `~/.kiro/settings/mcp.json`
 3. Re-run `kirocrew setup --agent-only`
 
@@ -321,7 +321,7 @@ needs: `docs/guides/enterprise-mcp-governance.md`.
 ### A server from your organization's MCP registry shows "Not verified"
 
 A server you installed from your organization's MCP registry (through Kiro IDE or
-the Kiro CLI) shows **Not verified** under Connections → MCP Servers, with no
+the Kiro CLI) shows **Not verified** on the **MCP Servers** page, with no
 command. That is expected. The Kiro CLI wrote it into `~/.kiro/settings/mcp.json`
 as a pointer, `{"type": "registry"}`, and loads the real server from the registry
 when a session starts. Kiro Crew cannot read the registry, so the dashboard does
@@ -334,7 +334,7 @@ tools. Sessions on the Claude or KAS backends do not load registry servers.
 ### A remote MCP server shows "Not verified"
 
 Remote MCP servers that authenticate with OAuth — Atlassian, for example — can
-show **Not verified** under Connections → MCP Servers while working perfectly in
+show **Not verified** on the **MCP Servers** page while working perfectly in
 chat. Nothing is wrong with the server. The badge describes what the dashboard
 can see, not what the server can do.
 
@@ -601,7 +601,9 @@ and macOS, where scratch stays at the default `~/.kiro/crew/scratch`. Note
 for child processes, and setting it yourself does nothing.
 
 Setting `KIROCREW_HOME` to a data drive relocates the whole data home,
-scratch included, if you want everything off `C:` rather than scratch alone.
+scratch included, if you want it off `C:` rather than scratch alone. Some
+folders stay under `~/.kiro` on `C:` whatever it is set to (see
+[Folders beside the data home](../../../docs/guides/install.md#folders-beside-the-data-home)).
 
 ### Subagent completion event seems cut off
 

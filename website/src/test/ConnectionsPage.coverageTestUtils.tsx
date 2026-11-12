@@ -2,8 +2,10 @@
 // ConnectionsPage.coverage.connect.test.tsx both read. The api mock they drive
 // stays in each test file: its vi.mock factory reads that file's own vi.fn spies.
 import { StrictMode } from 'react'
+import { fireEvent } from '@testing-library/react'
 import type { ChatMessage, McpServer, RootState } from '../types'
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import { GOOGLE_ENTRY_SLUG, isGoogleSlug } from '../pages/connections/connectionsLinks'
 import { createTestStore, renderWithProviders } from './helpers'
 
 export const NOTION_URL = 'https://mcp.notion.com/mcp'
@@ -31,7 +33,7 @@ interface ChatSeed {
 }
 
 export function mount(
-  { servicesEnabled = true, chat = {}, strict = false }: { servicesEnabled?: boolean; chat?: ChatSeed; strict?: boolean } = {},
+  { servicesEnabled = true, chat = {}, strict = false, route = '/' }: { servicesEnabled?: boolean; chat?: ChatSeed; strict?: boolean; route?: string } = {},
 ) {
   const store = createTestStore({
     chat: {
@@ -40,14 +42,29 @@ export function mount(
     } as unknown as RootState['chat'],
   })
   const tree = <ConnectionsPage servicesEnabled={servicesEnabled} />
-  return renderWithProviders(strict ? <StrictMode>{tree}</StrictMode> : tree, { store })
+  return renderWithProviders(strict ? <StrictMode>{tree}</StrictMode> : tree, { store, route })
 }
 
-/** The card for one provider, addressed the way the DOM exposes it. */
+/** Click a closed card (or the closed Google entry) open, as a user does. */
+function open(el: HTMLElement | null): void {
+  const toggle = el?.querySelector<HTMLElement>(':scope > header h3 button[aria-expanded="false"]')
+  if (toggle) fireEvent.click(toggle)
+}
+
+/** The card for one provider, addressed the way the DOM exposes it, opened.
+ *  A Google product is a row of the Google entry, so that entry opens first. */
 export function card(slug: string): HTMLElement {
+  if (isGoogleSlug(slug)) open(document.getElementById(`connection-${GOOGLE_ENTRY_SLUG}`))
   const el = document.getElementById(`connection-${slug}`)
   if (!el) throw new Error(`no card rendered for ${slug}`)
+  open(el)
   return el
+}
+
+/** Open every card on the page, for a test that reads buttons page-wide. */
+export function openAllCards(): void {
+  open(document.getElementById(`connection-${GOOGLE_ENTRY_SLUG}`))
+  document.querySelectorAll<HTMLElement>('article[data-state]').forEach(open)
 }
 
 /** A promise whose settlement this test controls. */

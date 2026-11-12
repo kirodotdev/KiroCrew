@@ -154,7 +154,8 @@ def test_a_crewmate_control_is_not_the_pick_while_its_preview_is_off() -> None:
 
 
 def test_a_tie_with_no_pick_forbids_claiming_a_guide() -> None:
-    d = find_ui("add mcp server")
+    # Three "New folder" controls on three pages: nothing settles which.
+    d = find_ui("new folder")
     assert d.get("ambiguous") is True
     nxt = _find_ui_next(d) or ""
     assert "guide_ref" not in nxt and "never write that a guide" in nxt

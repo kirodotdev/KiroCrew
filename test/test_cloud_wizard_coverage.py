@@ -222,6 +222,8 @@ def test_a_failed_plugin_install_is_reported_and_refused(monkeypatch, capsys):
     result = ssm.PluginInstallResult(ok=False, message="sudo: a password is required")
     monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
     monkeypatch.setattr(ssm, "reinstall_cannot_clear_refusal", lambda: False)
+    monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+    monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: True)
     monkeypatch.setattr(ssm, "install_session_manager_plugin", lambda: result)
     assert wizard._ensure_session_manager_plugin(assume_yes=True) is False
     out = capsys.readouterr().out

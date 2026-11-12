@@ -421,7 +421,11 @@ class TestSteeringAWakeIntoARunningTurn:
         assert steer.await_args.kwargs["nudge_meta"] == {
             "cycle": loop.cycle_count + 1,
             "loop_id": loop.id,
-        }, "the wake is automation, so its row is the loop's nudge chip (#22747)"
+            "generation": loop.config_generation,
+        }, (
+            "the wake is automation, so its row is the loop's nudge chip (#22747), and "
+            "the turn that carries it charges this loop's generation (#32250)"
+        )
 
     @pytest.mark.asyncio
     async def test_the_steer_carries_the_whole_wake_and_fences_nothing(self):

@@ -62,6 +62,8 @@ def _fails_the_ingest(exc: BaseException) -> bool:
 
 
 _PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
+# Fields of an entity or relation record that the ingest treats as text.
+_RECORD_TEXT_KEYS = frozenset({"name", "type", "description", "source", "target"})
 
 
 def _extraction_shaped(value: object) -> bool:
@@ -238,10 +240,27 @@ class EntityExtractor:
 
     @staticmethod
     def _validate(data: dict) -> dict:
+        # A model reply can parse as JSON yet carry the wrong types. Each field
+        # keeps its default unless it has the shape the ingest reads, so one
+        # odd reply cannot fail the whole document.
+        def _text(key: str, default: str) -> str:
+            value = data.get(key, default)
+            return value if isinstance(value, str) else default
+
+        def _records(key: str) -> list[dict]:
+            value = data.get(key, [])
+            if not isinstance(value, list):
+                return []
+            return [
+                {k: v for k, v in rec.items() if k not in _RECORD_TEXT_KEYS or isinstance(v, str)}
+                for rec in value
+                if isinstance(rec, dict)
+            ]
+
         return {
-            "title": data.get("title", ""),
-            "entities": data.get("entities", []),
-            "relations": data.get("relations", []),
-            "category": data.get("category", "document"),
-            "summary": data.get("summary", ""),
+            "title": _text("title", ""),
+            "entities": _records("entities"),
+            "relations": _records("relations"),
+            "category": _text("category", "document"),
+            "summary": _text("summary", ""),
         }

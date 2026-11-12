@@ -777,7 +777,8 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // still exists on disk).
   const filePath = useMemo(() => extractToolFilePath(input), [input])
   // Inline diff presentation: an edit tool's input IS a unified diff
-  // (backend-derived from the ACP diff content block, see acp/_dispatch.py).
+  // (backend-derived from the ACP diff content block, see
+  // acp/_dispatch_parts/session_update_parser.py).
   // Small diffs promote to a DiffBlock card below the pill, folded to its chip
   // until the reader opens it; over-cap diffs degrade to a summary chip
   // (filename, −N +M) that expands the details panel — never to nothing,

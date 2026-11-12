@@ -23,6 +23,7 @@ import { EditionPreviewRows } from './EditionPreviewRows'
 import { ReplyThreadsRow } from './ReplyThreadsRow'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 import { LOCKED_FEATURE_PREVIEWS, useControlLocked } from '../../utils/editionLocks'
 
 
@@ -212,15 +213,21 @@ export function FeaturePreviewsSection() {
   const sharedCrewNeedsRestart = !!sharedCrewSetting && (sharedCrewSetting.restart_required
     || (!sharedCrewSetting.env_override && sharedCrewSetting.enabled !== sharedCrewSetting.active))
   // A dropped restart response is ambiguous until the setting can be read back.
+  const restartRefusal = useRestartRefusal(() => {
+    setGatewayRestarting(false)
+    setRestartFailed(true)
+  })
   const restartGateway = useMutation({
     mutationFn: () => api.restartGateway(),
-    onMutate: () => setRestartFailed(false),
+    onMutate: () => { setRestartFailed(false); restartRefusal.begin() },
     onSuccess: () => setGatewayRestarting(true),
     onError: (e: unknown) => {
       // The person declined the "work is running" confirmation: nothing failed.
       if (e instanceof WorkConfirmDeclined) {
+        restartRefusal.end()
         setGatewayRestarting(false)
       } else if (e instanceof ApiError) {
+        restartRefusal.end()
         setGatewayRestarting(false)
         setRestartFailed(true)
       } else {

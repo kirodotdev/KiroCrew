@@ -124,6 +124,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/discord/session_resume.py", "recent"),
         # SEL `recent`, not a transcript.
         ("kiro_crew/feature_videos.py", "recent"),
+        # SEL audit log `recent` (the recurring-failure scan), not a transcript.
+        ("kiro_crew/failure_recurrence.py", "recent"),
         # The log and its read projection ARE the plain reads.
         ("kiro_crew/history.py", "_read_messages"),
         ("kiro_crew/history.py", "_read_messages_locked"),

@@ -183,6 +183,8 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Reads another tracked channel's messages, which a channel agent would relay
     # into a thread other people read; same exfiltration reason.
     "read_slack_history",
+    # Reads and reorders a worker's queued instructions; same exfiltration reason.
+    "session_queue",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's

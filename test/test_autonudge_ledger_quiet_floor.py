@@ -250,6 +250,31 @@ async def test_a_wake_inside_a_failure_streak_is_retried_when_its_own_turn_fails
 
 
 @pytest.mark.asyncio
+async def test_a_wake_whose_turn_fails_before_its_delivery_returns_is_retried(
+    tmp_path, monkeypatch
+):
+    # A steered wake can be consumed, and its carrying turn die, while the steer is
+    # still awaiting its drain: the fault is charged before the fire settles.
+    ledger = _Ledger("rev-1")
+    service = _service(tmp_path, monkeypatch, ledger, [])
+    loop = _loop(service, ledger_revision="rev-1", ledger_delivered_revision="rev-1")
+
+    async def on_fire(fired_loop):
+        await service.notify_cycle_failed(
+            _SLOT, loop_id=fired_loop.id, expected_generation=fired_loop.config_generation
+        )
+        return True
+
+    service._on_fire = on_fire
+    try:
+        await _deliver_a_wake(service, ledger, loop)
+        assert loop.consecutive_failed_cycles == 1
+        assert await service._monitor_tick_is_quiet(loop) is False, "the dead wake is retried"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_landed_wake_owes_no_retry_to_a_later_failed_turn(tmp_path, monkeypatch):
     fired: list[str] = []
     ledger = _Ledger("rev-1")
