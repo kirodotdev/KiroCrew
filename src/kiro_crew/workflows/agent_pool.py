@@ -645,6 +645,9 @@ def admitted_agent_fn(
     lane = lane_for(session_key, source)
 
     async def _admitted(prompt: str, opts: dict) -> Any:
+        # Measured before the lane slot is taken: a script may pass a non-string
+        # prompt, and a raise between ``admit`` and the call would hold the slot.
+        prompt_chars = len(str(prompt))
         n = next(call_no)
         row_id = workflow_task_id(run_id, n)
         rec = await admission.accept_async(
@@ -669,7 +672,7 @@ def admitted_agent_fn(
             session_key=session_key,
         )
         try:
-            marked = await handle.running_async({"call": n, "prompt_chars": len(prompt)})
+            marked = await handle.running_async({"call": n, "prompt_chars": prompt_chars})
         except asyncio.CancelledError:
             # Synchronous, like the call's own cancel arm below, which is not
             # reached yet: the handle already holds the lane slot and the row's
