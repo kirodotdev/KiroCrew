@@ -47,6 +47,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
             ("logout", "Revoke all active dashboard sessions"),
             ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
+            ("tmp", "Remove your idle, unused leftovers from /tmp and /var/tmp"),
             ("update", "Update Kiro Crew to the latest version"),
         ),
     ),
