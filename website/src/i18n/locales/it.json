@@ -12958,6 +12958,7 @@
         "retry_session_busy": "Sessione occupata — riprendi da dove si è fermato.",
         "retry_turn_stalled": "Turno bloccato — riprendi da dove si è fermato.",
         "retry_tool_stalled": "Lo strumento sembra bloccato — riprendi da dove si è fermato.",
+        "retry_tools_not_ready": "L’agente non è riuscito ad avviarsi perché i suoi strumenti integrati non erano pronti in tempo. Il tuo messaggio è ancora qui — riprendi per riprovare. Se continua a succedere, il log del gateway contiene i dettagli.",
         "retry_backend_hiccup": "L’agente ha avuto un problema momentaneo — riprendi da dove si è fermato.",
         "default_model": "Cambia il modello predefinito",
         "default_model_hint": "Apri Impostazioni → Chat → Modello predefinito. Le nuove sessioni partono da questo valore.",
@@ -13623,6 +13624,7 @@
         "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Kiro Agent → Accesso a Kiro, poi invia di nuovo il messaggio.",
         "kas_signed_out_sign_in_below": "Non hai effettuato l’accesso a Kiro. Accedi qui sotto, poi invia di nuovo il messaggio.",
         "windows_spawn_blocked": "Windows non è riuscito ad avviare il programma dell’agente ({{binary}}). Probabilmente l’ha bloccato AppLocker, un prodotto EDR o un criterio di gruppo su questo computer. Chiedi all’amministratore IT di consentire quel file, poi avvia una nuova chat.",
+        "tools_not_ready": "L’agente non è riuscito ad avviarsi perché i suoi strumenti integrati non erano pronti in tempo. Il tuo messaggio è ancora qui. Riprova tra un momento. Se continua a succedere, il log del gateway contiene i dettagli.",
         "kas_route_relay": "Il tuo agente passa da kiro-cli.",
         "kas_route_bundle": "Il tuo agente gira sul motore di {{productName}}.",
         "kas_route_lead": "{{route}} {{message}}"

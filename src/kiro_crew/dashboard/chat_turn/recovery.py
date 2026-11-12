@@ -262,7 +262,7 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Ten structural tags, read here without looking at the prose. Four are set
+    Eleven structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
     a spent plan allowance (``usage_limit``) and a context overflow
@@ -288,9 +288,11 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     dedicated client); its row lets a feature-request chat offer the form. The
     ninth, ``windows_spawn_blocked``, is set where Windows policy refused the
     agent binary at spawn (``AcpSpawnBlocked``); its row carries a notice token
-    naming the file. The tenth, ``model_unavailable``, ranks last: it is a
-    capacity or rollout refusal of a served model, so every more specific verdict
-    wins over it.
+    naming the file. The tenth, ``mcp_readiness_timeout``, is set where Crew's
+    managed MCP servers missed the KAS readiness deadline; its row carries a
+    notice token so the card reads plainly. The eleventh, ``model_unavailable``,
+    ranks last: it is a capacity or rollout refusal of a served model, so every
+    more specific verdict wins over it.
 
     Ahead of all but the entitlement verdict, a start the declared-name resolver
     refused over contested specs (an ``AmbiguousAgentSpecError`` anywhere in the
@@ -332,6 +334,10 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
             gn.GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED,
             binary=binary if isinstance(binary, str) else "",
         )
+    if getattr(exc, "mcp_readiness_timeout", False) is True:
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        return gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOLS_NOT_READY)
     # Last, and only on a frame the raise-time classifier tagged: a capacity or
     # rollout refusal of the selected model that reached the terminal card. The
     # ladder already re-sent the turn to that model and the fallback chain had

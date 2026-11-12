@@ -122,6 +122,7 @@ const NOTICE_FAMILIES = {
   capability_tool_limits_unsupported: { role: 'error', card: 'error' },
   kas_signed_out: { role: 'error', card: 'error' },
   windows_spawn_blocked: { role: 'error', card: 'error' },
+  tools_not_ready: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -209,6 +210,7 @@ const COPY_KEY = {
   capability_tool_limits_unsupported: 'pages.chat.gatewayNotice.capability_tool_limits_unsupported',
   kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
   windows_spawn_blocked: 'pages.chat.gatewayNotice.windows_spawn_blocked',
+  tools_not_ready: 'pages.chat.gatewayNotice.tools_not_ready',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -226,6 +228,7 @@ const RESUME_KEY = {
   session_busy_give_up: 'pages.chat.errorCard.retry_session_busy',
   turn_stalled_give_up: 'pages.chat.errorCard.retry_turn_stalled',
   tool_stalled_give_up: 'pages.chat.errorCard.retry_tool_stalled',
+  tools_not_ready: 'pages.chat.errorCard.retry_tools_not_ready',
 } as const satisfies Partial<Record<GatewayNoticeToken, string>>
 
 const RESTORED_KEY = 'pages.chat.transientNotice.restored'

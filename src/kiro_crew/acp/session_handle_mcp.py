@@ -607,7 +607,9 @@ def _readiness_timeout(
             "an agent with many servers may need a larger "
             "`agent.session_start_timeout_secs`."
         )
-    return AcpRequestTimeout(message)
+    timeout_error = AcpRequestTimeout(message)
+    timeout_error.mcp_readiness_timeout = True
+    return timeout_error
 
 
 @dataclass

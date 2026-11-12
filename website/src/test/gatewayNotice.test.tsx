@@ -550,7 +550,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(81)
+    expect(backend).toHaveLength(82)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 
@@ -657,5 +657,25 @@ describe('the KAS signed-out row', () => {
     expect(resolveGatewayNotice(bare, [bare], 0)?.text).toBe(GN.kas_signed_out)
     expect(resolveGatewayNotice(relay, [relay], 0)?.text).toBe(lead(RELAY, GN.kas_signed_out))
     expect(resolveGatewayNotice(bundle, [bundle], 0)?.text).toBe(lead(BUNDLE, GN.kas_signed_out))
+  })
+})
+
+describe('the row for an agent whose built-in tools were not ready', () => {
+  // The wire content is the readiness timeout's own message, kept for the log.
+  const row = msg('error', {
+    content: 'KAS managed MCP readiness timed out after 90s: kirocrew-core: unreported',
+    meta: { notice: 'tools_not_ready' },
+  } as Partial<ChatMessage>)
+
+  it('reads plainly, and names Resume only on the card that offers it', () => {
+    renderWith(mainRegistry, row)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(en.pages.chat.errorCard.retry_tools_not_ready)
+    expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent(/KAS|MCP|readiness/)
+    cleanup()
+    renderWith(defaultMessageRenderers, row)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(GN.tools_not_ready)
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    cleanup()
   })
 })

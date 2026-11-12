@@ -12958,6 +12958,7 @@
         "retry_session_busy": "Sessão ocupada — retome para continuar de onde parou.",
         "retry_turn_stalled": "Turno travado — retome para continuar de onde parou.",
         "retry_tool_stalled": "A ferramenta parece travada — retome para continuar de onde parou.",
+        "retry_tools_not_ready": "O agente não conseguiu iniciar porque suas ferramentas integradas não ficaram prontas a tempo. Sua mensagem continua aqui — retome para tentar de novo. Se continuar acontecendo, o log do gateway tem os detalhes.",
         "retry_backend_hiccup": "O agente teve um problema momentâneo — retome para continuar de onde parou.",
         "default_model": "Alterar o modelo padrão",
         "default_model_hint": "Abra Configurações → Chat → Modelo padrão. Novas sessões começam com este valor.",
@@ -13623,6 +13624,7 @@
         "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Kiro Agent → Login do Kiro e envie sua mensagem de novo.",
         "kas_signed_out_sign_in_below": "Você não entrou no Kiro. Entre abaixo e envie sua mensagem de novo.",
         "windows_spawn_blocked": "O Windows não conseguiu iniciar o programa do agente ({{binary}}). É provável que o AppLocker, um produto EDR ou uma política de grupo neste computador o tenha bloqueado. Peça ao seu administrador de TI para liberar esse arquivo e depois inicie um novo chat.",
+        "tools_not_ready": "O agente não conseguiu iniciar porque suas ferramentas integradas não ficaram prontas a tempo. Sua mensagem continua aqui. Tente de novo em instantes. Se continuar acontecendo, o log do gateway tem os detalhes.",
         "kas_route_relay": "Seu agente roda pelo kiro-cli.",
         "kas_route_bundle": "Seu agente roda no mecanismo próprio do {{productName}}.",
         "kas_route_lead": "{{route}} {{message}}"
