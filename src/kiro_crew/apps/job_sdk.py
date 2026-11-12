@@ -998,9 +998,9 @@ class JobSDK:
                 run.run_id,
                 run.kind,
             )
-        except Exception as exc:  # noqa: BLE001 - a runner's failure is data, not a crash
+        except BaseException as exc:  # noqa: BLE001 - sys.exit() must not strand `running`
             run.status = FAILED
-            run.error = _redact(str(exc))[:2000]
+            run.error = _redact(str(exc) or type(exc).__name__)[:2000]
             logger.warning(
                 "App %s job %s (%s) failed: %s",
                 self._app_name,
