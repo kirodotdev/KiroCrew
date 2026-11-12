@@ -510,6 +510,44 @@ def test_type_by_ref_focuses_then_inserts_and_submits(fake: FakeBrowser) -> None
     ]
 
 
+def test_type_clears_a_rich_editor_selection_before_inserting(fake: FakeBrowser) -> None:
+    # Word on the web keeps only as many inserted characters as the selection
+    # held, so the selection is deleted first and the text goes in at a caret.
+    fake.page["activeField"] = {
+        "focused": True,
+        "password": False,
+        "tag": "div",
+        "selected": True,
+    }
+    out = run(ops.run_op("type", {"text": "users \u00d7 spend"}, fake.ctx()))
+    assert out["ok"] is True
+    assert fake.calls[-2:] == [
+        ("press_key", {"key": "Delete", "modifiers": 0}),
+        ("type_text", {"text": "users \u00d7 spend"}),
+    ]
+
+
+def test_type_at_a_caret_sends_no_delete(fake: FakeBrowser) -> None:
+    for active in (
+        {"focused": True, "password": False, "tag": "div", "selected": False},
+        {"focused": True, "password": False, "tag": "input"},
+        {"focused": True, "password": False, "tag": "div", "selected": "yes"},
+    ):
+        fake.calls.clear()
+        fake.page["activeField"] = active
+        assert run(ops.run_op("type", {"text": "abc"}, fake.ctx()))["ok"] is True
+        assert "press_key" not in fake.helper_names()
+
+
+def test_type_on_a_selected_password_field_is_refused_before_any_delete(
+    fake: FakeBrowser,
+) -> None:
+    fake.page["activeField"] = {"focused": True, "password": True, "tag": "div", "selected": True}
+    assert run(ops.run_op("type", {"text": "x"}, fake.ctx()))["code"] == "password_field"
+    assert "press_key" not in fake.helper_names()
+    assert "type_text" not in fake.helper_names()
+
+
 def test_type_refuses_a_password_field_by_ref(fake: FakeBrowser) -> None:
     fake.page["focus"] = {"ok": False, "code": "password_field"}
     out = run(ops.run_op("type", {"ref": "e2", "text": "hunter2"}, fake.ctx()))
@@ -569,6 +607,22 @@ def test_type_steps_run_text_and_keys_in_order_and_stop_at_the_first_refusal(
         ("press_key", {"key": "Tab", "modifiers": 0}),
     ]
     assert "2,500" not in json.dumps(fake.calls)
+
+
+def test_type_steps_clear_a_rich_editor_selection_before_each_text_step(
+    fake: FakeBrowser,
+) -> None:
+    # A text step goes through the plain `type` path, so a selection held when the
+    # step runs is deleted first, exactly as for a single `type`.
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div", "selected": True}
+    steps = [{"key": "Home"}, {"text": "users \u00d7 spend"}]
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out["ok"] is True
+    assert _inputs(fake) == [
+        ("press_key", {"key": "Home", "modifiers": 0}),
+        ("press_key", {"key": "Delete", "modifiers": 0}),
+        ("type_text", {"text": "users \u00d7 spend"}),
+    ]
 
 
 def test_type_steps_are_all_checked_before_anything_runs(fake: FakeBrowser) -> None:

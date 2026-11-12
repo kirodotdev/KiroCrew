@@ -410,32 +410,59 @@ async def _guard_count(ctx: OpContext, method: str) -> int | None:
 
 async def _frames_unchecked(ctx: OpContext) -> int | None:
     """How many frames, objects and embeds no one looks inside, or ``None`` when
-    that cannot be told.
+    that cannot be told (:func:`_frame_check`)."""
+    return (await _frame_check(ctx))[0]
 
-    Every one whose document the top page's walk cannot read counts
-    (``unreadableFrames``), live stream or not: the live stream's frame inspector
-    (``FrameOps``) does not yet prove it checked every such frame, so it is not
-    trusted to. Every ``object`` and ``embed`` counts too, since no field count
-    walks their documents. The walk cannot reach a frame in a closed shadow root,
-    so the browser's own count of frame owners (``frame_owner_count``) is compared
-    with the ones the walk reached (``framesSeen``): any it missed count as well.
+
+async def _frame_check(ctx: OpContext) -> tuple[int | None, str]:
+    """``(frames no one looks inside, why)``: the count is ``None`` when it cannot
+    be told, and *why* names what is unchecked when the count is not 0.
+
+    Every frame whose document the top page's walk cannot read counts
+    (``unreadableFrames``). Every ``object`` and ``embed`` counts too, since no
+    field count walks their documents. The walk cannot reach a frame in a closed
+    shadow root, so the browser's own count of frame owners
+    (``frame_owner_count``) is compared with the ones the walk reached
+    (``framesSeen``): any it missed count as well.
+
+    With a live stream on the tab, its frame inspector attaches every
+    out-of-process frame, nested ones included, and those frames count as checked
+    once :meth:`~kiro_crew.browser_harness.frames.FrameOps.coverage` proves each
+    unreadable frame, at every depth, is one of them and sits on a URL the browse
+    gate allows (:func:`_frame_url_allowed`). The secret-field counts
+    then reach inside them (:func:`_guard_count`). Anything short of that proof
+    leaves the whole count standing, so the guards refuse as before.
     """
     unreadable = await _isolated_count(ctx, "unreadableFrames")
     seen = await _isolated_count(ctx, "framesSeen")
     try:
         owners = await ctx.helper("frame_owner_count")
     except Exception:  # noqa: BLE001 - no tree: the caller fails closed
-        return None
+        return None, "the frame tree could not be read"
     if unreadable is None or seen is None:
-        return None
+        return None, "the page's frames could not be counted"
     if not isinstance(owners, int) or isinstance(owners, bool) or owners < 0:
-        return None
+        return None, "the frame tree could not be read"
     if seen > owners:
         # The walk reached more frames than the browser holds: the page changed
         # between the two reads (frames added for one, gone for the other), so
         # neither can be trusted to account for the other.
-        return None
-    return unreadable + (owners - seen)
+        return None, "the page changed while its frames were counted"
+    unchecked = unreadable + (owners - seen)
+    if unchecked == 0:
+        return 0, ""
+    frames = ctx.frames()
+    if frames is None:
+        return unchecked, "no live view holds the tab, so nothing can look inside its frames"
+    try:
+        why = await frames.coverage(unchecked, lambda url: _frame_url_allowed(ctx, url))
+    except Exception:  # noqa: BLE001 - no proof: the frames stay unchecked
+        return unchecked, "the frames could not be checked"
+    if not isinstance(why, str):
+        return unchecked, "the frames could not be checked"
+    if why:
+        return unchecked, why
+    return 0, ""
 
 
 async def _closed_secrets(ctx: OpContext) -> int | None:
@@ -810,7 +837,9 @@ async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     if unread:
         out["note"] = (
             f"{unread} cross-origin iframe(s) could not be read, so their fields have no "
-            "refs. To sign in there, use `ask` kind credentials with no targets: the user "
+            "refs. A frame that is still loading reads this way: wait_for load and "
+            "snapshot again before working by coordinates. To sign in there, use `ask` "
+            "kind credentials with no targets: the user "
             "types into Kiro's sheet and the browser fills the site where it can, else "
             "they sign in on the page themselves. Never ask for a password in chat."
         )
@@ -1005,6 +1034,10 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     if not field["ok"]:
         return field
     await _step(ctx, f"Type into {ref or field['tag'] or 'the field'}")
+    if field.get("selected"):
+        # Word drops inserted characters beyond the selected span unless the
+        # selection is removed before Input.insertText.
+        await ctx.helper("press_key", key="Delete", modifiers=0)
     await ctx.helper("type_text", text=text)
     submitted = bool(args.get("submit"))
     if submitted:
@@ -1031,7 +1064,11 @@ async def _focus_field(ctx: OpContext, ref: Any) -> dict[str, Any]:
         return _password_refusal(ref)
     if active.get("asked"):
         return _asked_refusal(ref)
-    return {"ok": True, "tag": active.get("tag") or ""}
+    return {
+        "ok": True,
+        "tag": active.get("tag") or "",
+        "selected": active.get("selected") is True,
+    }
 
 
 async def _paste(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1399,18 +1436,18 @@ async def _screenshot_blocked(ctx: OpContext, *, after: bool = False) -> dict[st
         if after
         else ""
     )
-    unreadable = await _frames_unchecked(ctx)
+    unreadable, why = await _frame_check(ctx)
     if unreadable is None:
         return refusal(
             "secret_check_failed",
-            lead + "could not check the page's frames; use snapshot instead",
+            lead + f"could not check the page's frames ({why}); use snapshot instead",
         )
     if unreadable:
         return refusal(
             "unreadable_frame_on_page",
             lead + "the page embeds a frame, object or embed from another site that "
-            "cannot be checked for secret fields, so no screenshot is taken; use "
-            "snapshot instead",
+            f"cannot be checked for secret fields ({why}), so no screenshot is taken; "
+            "use snapshot instead",
         )
     closed = await _closed_secrets(ctx)
     if closed is None:
