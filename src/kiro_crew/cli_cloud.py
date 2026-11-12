@@ -684,7 +684,9 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             ui.detail(f"Install it with: {install}")
             ui.detail("Then rerun `kirocrew cloud doctor`.")
         else:
-            ui.detail(ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor"))
+            ui.detail(
+                ssm.session_manager_plugin_install_hint(retry="rerun `kirocrew cloud doctor`")
+            )
     # AWS reachability.
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:

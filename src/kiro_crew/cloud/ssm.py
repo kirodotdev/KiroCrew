@@ -444,11 +444,18 @@ def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
     return ""
 
 
-def session_manager_plugin_install_hint(rerun: str = "kirocrew cloud connect") -> str:
-    """Human-readable install hint for the local SSM plugin prerequisite."""
+_CLI_CONNECT_RETRY = "rerun `kirocrew cloud connect`"
+
+
+def session_manager_plugin_install_hint(retry: str = _CLI_CONNECT_RETRY) -> str:
+    """Human-readable install hint for the local SSM plugin prerequisite.
+
+    *retry* is the step after the install, in the words of the surface that
+    shows the hint: a CLI command, or the dashboard's Connect button.
+    """
     return (
         "session-manager-plugin is not installed locally. Install the AWS "
-        f"Session Manager plugin, then rerun `{rerun}`: "
+        f"Session Manager plugin, then {retry}: "
         f"{_SESSION_MANAGER_PLUGIN_DOC_URL}"
     )
 
@@ -473,17 +480,18 @@ REFUSAL_NEXT_STEP = {
 }
 
 
-def session_manager_plugin_unavailable_message() -> str:
+def session_manager_plugin_unavailable_message(retry: str = _CLI_CONNECT_RETRY) -> str:
     """Why the plugin cannot be used: the refusal when one was found, else the install hint.
 
     A plugin that is installed but refused by the provenance check is not "not
     installed", and the install hint would hide the reason. The message then
     names the file, the check's reason and, when one is known, the command that
-    clears it. Changes nothing about what is accepted.
+    clears it. Changes nothing about what is accepted. *retry* goes to the
+    install hint.
     """
     refusal = session_manager_plugin_refusal()
     if refusal is None:
-        return session_manager_plugin_install_hint()
+        return session_manager_plugin_install_hint(retry)
     message = (
         f"session-manager-plugin is installed at {refusal.path} but was refused: "
         f"{refusal.reason}."

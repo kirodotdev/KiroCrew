@@ -310,7 +310,9 @@ async def connect(
             if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
                 return self._error_status(
                     inst,
-                    await asyncio.to_thread(cloud_ssm.session_manager_plugin_unavailable_message),
+                    await asyncio.to_thread(
+                        cloud_ssm.session_manager_plugin_unavailable_message, "connect again"
+                    ),
                 )
 
         # Reclaim our own forwarder if a prior gateway hard-kill leaked it

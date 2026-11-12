@@ -298,7 +298,7 @@ class TestDoctor:
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
         monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "")
         assert cli_cloud._cloud_doctor(_args()) == 1
-        hint = ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor")
+        hint = ssm.session_manager_plugin_install_hint(retry="rerun `kirocrew cloud doctor`")
         assert ("detail", hint) in shown
         assert "then rerun `kirocrew cloud doctor`:" in hint
 

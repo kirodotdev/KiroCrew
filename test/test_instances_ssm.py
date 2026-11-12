@@ -1158,6 +1158,9 @@ class TestSsmTransportSelection:
         st = await mgr.connect("ec2")
         assert st.state == TunnelState.ERROR
         assert "session-manager-plugin" in st.error
+        # The dashboard shows this (Connect in Settings, Retry in the crew panel), not a CLI.
+        assert "then connect again:" in st.error
+        assert "kirocrew cloud connect" not in st.error
         # No tunnel was spawned for a missing prerequisite.
         assert mgr.status("ec2") is None
         await mgr.shutdown()
