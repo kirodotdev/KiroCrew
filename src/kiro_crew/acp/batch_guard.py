@@ -11,9 +11,10 @@ denied-command rule: the gate judges one call with no session state.
 A write batched with a read is refused only when its argument text carries a
 token (:func:`tokens_of`: a sha, an item, session or artifact id, a PR or run
 number) the session has not seen (:class:`SeenTokens`). A write whose tokens
-were all seen before does not depend on the read and passes. A write that mints
+were all seen before does not depend on the read and passes. A call that mints
 ids (:func:`is_creator`) counts as a producer like a read, so a ``bind`` quoting
-the item id its batch's ``create`` returns is refused too.
+the item id its batch's ``create`` returns is refused too, and so is a send to
+the session key its batch's ``session_create`` returns.
 
 Four parts:
 
@@ -149,6 +150,17 @@ _WRITE_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
         ("kirocrew-dashboard", "session_broadcast"),
         ("kirocrew-core", "send_message"),
         ("kirocrew-core", "session_ledger_record"),
+    }
+)
+#: Session tools whose result is the key of a session they just created. They
+#: stay unclassified (:func:`classify` judges none of them), but as a peer each
+#: is a creator: a write of the same batch naming a session key nobody has seen
+#: can only have guessed the one being created.
+_SESSION_CREATOR_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("kirocrew-dashboard", "session_create"),
+        ("kirocrew-dashboard", "session_fork"),
+        ("kirocrew-dashboard", "work_dispatch"),
     }
 )
 _READ_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
@@ -462,10 +474,13 @@ def classify(event: Any, extra_write_commands: tuple[str, ...] = ()) -> str:
 
 
 def is_creator(event: Any, extra_write_commands: tuple[str, ...] = ()) -> bool:
-    """Whether *event* is a write whose RESULT carries new ids that a later call
-    may quote: a ledger ``create``, a ``gh pr``/``issue create``, a ``git commit``
-    or ``push``, or an ``aws`` ``start-``/``create-`` operation. Only calls that
-    are write-class already can be creators."""
+    """Whether the RESULT of *event* carries new ids that a later call may quote:
+    a ledger ``create``, a ``gh pr``/``issue create``, a ``git commit`` or
+    ``push``, an ``aws`` ``start-``/``create-`` operation, or a session tool that
+    returns a new session key (:data:`_SESSION_CREATOR_MCP_TOOLS`). Among the
+    other calls only write-class ones can be creators."""
+    if _tool_identity(event) in _SESSION_CREATOR_MCP_TOOLS:
+        return True
     if classify(event, extra_write_commands) != WRITE:
         return False
     if _is_shell_call(event):
@@ -811,12 +826,13 @@ class BatchWindow:
     ) -> None:
         """Update a held member with what a later event resolved (its permission
         request may name a tool its frame did not). A member the window does not
-        hold, or an event that resolves no class, changes nothing; the member's
-        open or settled state is never touched."""
+        hold, or an event that resolves neither a class nor a creator, changes
+        nothing; a creator has no class, so it keeps the one the member holds.
+        The member's open or settled state is never touched."""
         key = liveness_key(call_id)
-        if klass and key in self._members:
+        if (klass or creator) and key in self._members:
             new = _Member(
-                klass,
+                klass or self._members[key].klass,
                 command[:MAX_CLASSIFIED_COMMAND_CHARS],
                 self._tokens(text or command),
                 creator,
