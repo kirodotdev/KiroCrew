@@ -134,6 +134,13 @@ class CronJob:
     schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
     channel: str | None = None
     thread_ts: str | None = None
+    # A destination on another messaging channel, in ``send_message``'s grammar:
+    # ``channel_type`` names the transport (``"telegram"``) and ``target_id`` its
+    # configured target (``user:<id>``, ``topic:<user id>:<topic id>``). Set
+    # together or not at all, and never with ``channel``/``thread_ts``: a job has
+    # one pinned destination. ``""`` = not pinned.
+    channel_type: str = ""
+    target_id: str = ""
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
     # Monotonic per-job order for explicit pause/resume requests, including a

@@ -730,21 +730,6 @@ async def _send_to_channel_target(
     Every non-2xx body carries a machine-readable ``code``: backend strings have
     no i18n catalog path, so the caller needs something stable to branch on.
     """
-    transports = getattr(state, "channel_transports", None) or {}
-    transport = transports.get(channel_type)
-    if transport is None:
-        return web.json_response(
-            {"error": f"channel {channel_type} is not connected", "code": "channel_not_connected"},
-            status=404,
-        )
-    if not getattr(transport.capabilities, "supports_proactive_send", False):
-        return web.json_response(
-            {
-                "error": f"channel {channel_type} cannot start a conversation",
-                "code": "channel_no_proactive_send",
-            },
-            status=400,
-        )
     # Vet under the CALLER's identity, not the destination's. The ``channels``
     # scope resolves against the surface that ORIGINATED the send, so a cron
     # profile permitting only Slack must deny a Webex target; a key synthesized
@@ -754,11 +739,9 @@ async def _send_to_channel_target(
     # is a non-cron caller (a browser operator, or a direct call): the host
     # sentinel is what operators bind host-side governance to.
     session_key = caller_session or HOST_SESSION_KEY
-    app_refusal = await asyncio.to_thread(_vet_app_messaging, request_app, session_key)
-    if app_refusal:
-        return web.json_response(
-            {"error": app_refusal, "code": "channel_not_permitted"}, status=403
-        )
+    transport = await _channel_target_transport(state, channel_type, session_key, request_app)
+    if isinstance(transport, web.Response):
+        return transport
     # Offloaded: the governance evaluation stats and reads the profile files (and
     # writes a SEL record either way), which is filesystem latency on the shared
     # gateway loop. The sibling ``_deliver_channel_dm`` already runs its own vet
@@ -894,6 +877,60 @@ async def _send_to_channel_target(
         resources=f"channel={channel_type} parts={len(parts)}",
     )
     return web.json_response({"ok": True, "delivered_to": channel_type, "parts": len(parts)})
+
+
+async def _channel_target_transport(
+    state: DashboardState, channel_type: str, session_key: str, request_app: str
+) -> Any:
+    """Gates 1 and 2 of :func:`_send_to_channel_target` and the app's own grant.
+
+    Returns the registered transport, or the refusal response.
+    """
+    transports = getattr(state, "channel_transports", None) or {}
+    transport = transports.get(channel_type)
+    if transport is None:
+        return web.json_response(
+            {"error": f"channel {channel_type} is not connected", "code": "channel_not_connected"},
+            status=404,
+        )
+    if not getattr(transport.capabilities, "supports_proactive_send", False):
+        return web.json_response(
+            {
+                "error": f"channel {channel_type} cannot start a conversation",
+                "code": "channel_no_proactive_send",
+            },
+            status=400,
+        )
+    app_refusal = await asyncio.to_thread(_vet_app_messaging, request_app, session_key)
+    if app_refusal:
+        return web.json_response(
+            {"error": app_refusal, "code": "channel_not_permitted"}, status=403
+        )
+    return transport
+
+
+async def _vet_channel_target(
+    state: DashboardState, channel_type: str, target_id: str, *, request_app: str = ""
+) -> web.Response | None:
+    """The four gates of :func:`_send_to_channel_target`, asked once, with nothing sent.
+
+    ``None`` when *target_id* passes them all. A cron job's pinned destination is
+    checked through it when it is written, so a destination the job could never
+    reach is refused at save rather than at its first run; the send asks every
+    gate again, per part, under the job's own ``cron:<id>`` key.
+    """
+    transport = await _channel_target_transport(state, channel_type, HOST_SESSION_KEY, request_app)
+    if isinstance(transport, web.Response):
+        return transport
+    refusal = await asyncio.to_thread(_vet_channel_send, channel_type, HOST_SESSION_KEY)
+    if refusal:
+        return web.json_response({"error": refusal, "code": "channel_denied"}, status=403)
+    if await transport.resolve_configured_target(target_id) is None:
+        return web.json_response(
+            {"error": "target is not configured for this channel", "code": "target_not_allowed"},
+            status=403,
+        )
+    return None
 
 
 class _ChannelSendFailed(Exception):

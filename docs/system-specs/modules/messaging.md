@@ -2001,7 +2001,11 @@ abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
   reads the text after `user:` as the recipient's identity; a `topic:` target
   hands the link no principal, which Telegram's `may_send_to` does not need. It
   is not advertised by `configured_targets`: the Bot API cannot list a chat's
-  topics. `may_resume_from` is **unchanged**: it still refuses any
+  topics. The Schedule form's destination picker reads the topics the bot already
+  talks in from `GET /api/chat/channel-topics` instead: each open dashboard
+  conversation's persisted Telegram mirror link with a thread, kept when
+  `resolve_configured_target` accepts its `topic:` id, labelled with the
+  conversation's title. Owner-only, and not the mirror-link target list. `may_resume_from` is **unchanged**: it still refuses any
   threaded link (`thread_id is None` with a single-owner roster). That predicate
   governs only the dashboard **mirror-link** target (the outbound binding a
   dashboard connect may mark `direction: both`), so a private topic is never
@@ -3567,6 +3571,17 @@ of its own and so can never name the surface itself.
   down on a confirmed channel delivery, a channel leg that ignores the pin does
   not merely add a surface, it REPLACES the pinned one — the alert lands on the
   origin conversation and never where the user asked.
+- **A `job.channel_type` + `job.target_id` pin replaces the origin conversation.**
+  The pair is `send_message`'s explicit destination (a Telegram topic is
+  `channel_type="telegram"`, `target_id="topic:<user id>:<topic id>"`), set on the
+  Schedule page. `_deliver_cron_to_channel` sends it through that same leg,
+  `_send_to_channel_target`, whose four gates re-run under the run's `cron:{id}`
+  key, so it carries the same three legs and the same rule: the Slack owner-DM leg
+  stands down only on a confirmed send. A job holds ONE pin:
+  `cron_service.fields.check_delivery_pin` refuses the pair beside a Slack
+  `channel` (a `thread_ts` alone is not one: it names a thread only inside
+  `channel`), and the dashboard vets the pair through the same gates
+  (`_vet_channel_target`) when it is saved. The grant fingerprint binds it.
 - **Otherwise a DELIVERED channel send takes it and the Slack owner-DM leg stands
   down.** Every leg gates on the boolean `_deliver_cron_to_channel` actually
   returned, never on a prediction that the channel *would* take it: governance can
@@ -3613,7 +3628,8 @@ of its own and so can never name the surface itself.
   egress, not at whichever caller exists today.
 - **The SEL trail names the surfaces the alert LEFT ON.** `downstream_service`
   lists `slack` only when the Slack post itself landed, and the channel namespace
-  only when the channel send returned True. A configured client is not a delivery:
+  that took it (a pinned job's `channel_type`, else its origin's) only when the
+  channel send returned True. A configured client is not a delivery:
   reading `self.slack` there recorded a Slack egress for every Discord-only alert,
   which corrupts the one question the record answers — where did this content go —
   in the direction that overstates exposure.

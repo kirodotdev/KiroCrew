@@ -144,6 +144,8 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("message", MAX_CRON_MESSAGE),
     ("channel", CHANNEL_MAX_LEN),
     ("thread_ts", 30),
+    ("channel_type", MAX_SHORT_STRING),
+    ("target_id", MAX_SHORT_STRING),
     ("agent_id", MAX_SHORT_STRING),
     ("member_id", MAX_SHORT_STRING),
     ("created_by", MAX_SHORT_STRING),
@@ -187,6 +189,24 @@ def validate_managed_by(key: str) -> str:
             "and start with a letter or digit"
         )
     return key
+
+
+def check_delivery_pin(channel: str | None, channel_type: str, target_id: str) -> None:
+    """Refuse a job left with two pinned destinations, or half of the channel pair.
+
+    ``channel_type`` and ``target_id`` name one destination together, as in
+    ``send_message``; ``channel`` names a Slack one. Both at once would leave
+    delivery to guess which one the user meant. A ``thread_ts`` is not judged:
+    it names a thread only inside ``channel``, and nothing on the Schedule page
+    can clear one left by a job made in a Slack thread.
+    """
+    if bool(channel_type) != bool(target_id):
+        raise ValueError("channel_type and target_id are set together")
+    if channel_type and channel:
+        raise ValueError(
+            "a job delivers to one destination: a Slack channel, or "
+            "channel_type and target_id, not both"
+        )
 
 
 def _validate_cron_string_fields(
@@ -668,6 +688,13 @@ def apply_job_update(
         _project_path = resolve_project_path(kwargs["project_path"] or "")
         if _project_path and (job.command or job.script):
             raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    # Judged on the destination this update leaves, and only when it names one.
+    if {"channel", "channel_type", "target_id"} & kwargs.keys():
+        check_delivery_pin(
+            kwargs.get("channel", job.channel),
+            kwargs.get("channel_type", job.channel_type),
+            kwargs.get("target_id", job.target_id),
+        )
     # Resolved here, before the first assignment, because a member schedule
     # re-resolves its member's template and that can refuse: the job must be
     # left untouched when it does.
@@ -693,6 +720,11 @@ def apply_job_update(
         # thread_ts is in the grant's delivery fingerprint
         # (cron_script.delivery_fingerprint) until the operator re-approves.
         job.thread_ts = kwargs["thread_ts"] or None
+    if "channel_type" in kwargs:
+        job.channel_type = kwargs["channel_type"] or ""
+    if "target_id" in kwargs:
+        # In the grant's delivery fingerprint too, like ``thread_ts``.
+        job.target_id = kwargs["target_id"] or ""
     if "approval_mode" in kwargs:
         job.approval_mode = kwargs["approval_mode"] or ""
     if "silent" in kwargs:

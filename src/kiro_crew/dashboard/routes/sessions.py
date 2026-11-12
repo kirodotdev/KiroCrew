@@ -192,6 +192,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
     app.router.add_post("/api/chat/slots/{slot}/mirror-pause", chat.api_chat_slot_mirror_pause)
     app.router.add_get("/api/chat/channel-targets", chat.api_channel_targets)
+    app.router.add_get("/api/chat/channel-topics", chat.api_channel_topics)
     app.router.add_get("/api/slack/channels", chat.api_slack_channels)
 
     # OpenAI-compatible API
