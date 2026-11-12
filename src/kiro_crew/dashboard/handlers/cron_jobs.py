@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 from aiohttp import web
 
 from kiro_crew import model_registry
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
@@ -394,6 +395,66 @@ def _invalid_new_chat_per_run() -> web.Response:
     )
 
 
+#: The job flags this handler reads leniently: a non-bool is coerced with
+#: ``bool(...)`` downstream, under which the string ``"false"`` is truthy and
+#: would turn the flag ON. These four feed no cross-field refusal, so reading
+#: ``"false"`` as ``False`` changes no request's accept/reject outcome -- only
+#: the stored value, to the one the caller named. ``persistent_session`` is NOT
+#: here: downstream refusals key on it (a chat folder needs it on, a
+#: new-chat-per-run job needs it off), so flipping a string value there would
+#: turn a request main answers 200 into a 400; that flag is warned about, never
+#: coerced (see ``_warn_only_bool_flag``). ``enabled`` and ``new_chat_per_run``
+#: 400 on a non-bool and are not here either.
+_COERCED_BOOL_FLAGS = (
+    "silent",
+    "strict_schedule",
+    "hide_in_chat",
+    "minimal_context",
+)
+
+
+def _coerce_bool_flag(name: str, value: Any) -> tuple[Any, str | None]:
+    """Read a bool-named flag leniently, warning rather than rejecting it.
+
+    A real bool is returned unchanged with no warning. A string is read by
+    ``config.fields._coerce_bool``, the shared reader of the spellings a hand
+    edit produces (``"false"``, ``"0"``, ``"off"`` ... mean False), so a later
+    ``bool(...)`` sees the intended value, not a truthy string; it carries a
+    warning to send a JSON bool. Any other non-bool is returned unchanged, so the
+    downstream ``bool(...)`` still decides it, also with a warning. Nothing is
+    rejected.
+    """
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, str):
+        coerced = _coerce_bool(value, bool(value))
+        return coerced, (
+            f"{name} was the string {value!r}; read as {coerced}. Send a JSON "
+            f"boolean (true/false), not a string."
+        )
+    return value, (
+        f"{name} should be a JSON boolean (true/false); got {type(value).__name__}, "
+        f"read with bool()."
+    )
+
+
+def _warn_only_bool_flag(name: str, value: Any) -> str | None:
+    """A warning for a non-bool flag whose value this handler must NOT change.
+
+    ``persistent_session`` feeds cross-field refusals, so its reading is left
+    exactly as ``bool(...)`` decides it; this only tells the caller to send a
+    JSON bool. A real bool earns no warning.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return (
+            f"{name} was the string {value!r}; it is read with bool() "
+            f"(a non-empty string is True). Send a JSON boolean (true/false)."
+        )
+    return f"{name} should be a JSON boolean (true/false); got {type(value).__name__}."
+
+
 def _refuse_mate_home_chat_folder(
     request: web.Request,
     state: DashboardState,
@@ -488,12 +549,22 @@ async def _persist_holding_folder(
     return await state.hold_folders(_section)
 
 
-def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
-    """Add a ``warnings`` list to a saved job's success body when its cron never fires."""
+def _with_schedule_warnings(
+    body: dict[str, Any], job: Any, extra_warnings: list[str] | None = None
+) -> dict[str, Any]:
+    """Add a ``warnings`` list to a saved job's success body.
+
+    Carries the never-fires schedule warning and any ``extra_warnings`` the
+    route gathered (e.g. a bool flag that arrived as a string), merged into one
+    list so a caller reads them all in one place.
+    """
+    warnings = list(extra_warnings or [])
     schedule = getattr(job, "schedule", None)
     warning = never_fires_warning(schedule) if schedule is not None else ""
     if warning:
-        body["warnings"] = [warning]
+        warnings.append(warning)
+    if warnings:
+        body["warnings"] = warnings
     return body
 
 
@@ -633,6 +704,31 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if not isinstance(new_chat_per_run, bool):
         return _invalid_new_chat_per_run()
     persistent_session = body.get("persistent_session", not new_chat_per_run)
+    # Read the four side-effect-free flags leniently: a real bool is unchanged,
+    # "true"/"false" is read as the bool it names, and any other non-bool keeps
+    # the bool() reading the record build below applies. persistent_session is
+    # only warned about -- it feeds cross-field refusals, so changing a string
+    # reading could newly reject a request main answers 200. A string or odd
+    # value adds a warning to the success body; nothing is rejected.
+    flag_warnings: list[str] = []
+    _create_flags = dict(
+        zip(_COERCED_BOOL_FLAGS, (silent, strict_schedule, hide_in_chat, minimal_context))
+    )
+    for _flag_name, _flag_value in _create_flags.items():
+        if _flag_name not in body:
+            continue
+        _coerced, _warn = _coerce_bool_flag(_flag_name, _flag_value)
+        _create_flags[_flag_name] = _coerced
+        if _warn:
+            flag_warnings.append(_warn)
+    silent = _create_flags["silent"]
+    strict_schedule = _create_flags["strict_schedule"]
+    hide_in_chat = _create_flags["hide_in_chat"]
+    minimal_context = _create_flags["minimal_context"]
+    if "persistent_session" in body:
+        _ps_warn = _warn_only_bool_flag("persistent_session", persistent_session)
+        if _ps_warn:
+            flag_warnings.append(_ps_warn)
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
@@ -811,7 +907,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # The fingerprint of the job as this write made it: a card step records it,
     # so its Undo's baseline is what the card made, not a later edit.
     created: dict[str, Any] = {"ok": True, "id": job.id, "revision": cron_job_revision(job)}
-    return web.json_response(_with_schedule_warnings(created, job))
+    return web.json_response(_with_schedule_warnings(created, job, flag_warnings))
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:
@@ -990,6 +1086,22 @@ async def api_cron_update(request: web.Request) -> web.Response:
     refused = _refuse_app_auto_approval(request, kwargs.get("approval_mode"), "crons.update")
     if refused is not None:
         return refused
+    # Same lenient read as create for the four side-effect-free bool flags PATCH
+    # passes through to a later bool(): "false" is read as False, and a string or
+    # odd value adds a warning instead of being rejected. persistent_session is
+    # only warned about, never changed, so a string value keeps main's reading
+    # and no cross-field refusal (chat folder, new-chat-per-run) newly trips.
+    update_flag_warnings: list[str] = []
+    for _flag_name in _COERCED_BOOL_FLAGS:
+        if _flag_name in kwargs:
+            _coerced, _warn = _coerce_bool_flag(_flag_name, kwargs[_flag_name])
+            kwargs[_flag_name] = _coerced
+            if _warn:
+                update_flag_warnings.append(_warn)
+    if "persistent_session" in kwargs:
+        _warn = _warn_only_bool_flag("persistent_session", kwargs["persistent_session"])
+        if _warn:
+            update_flag_warnings.append(_warn)
     if "new_chat_per_run" in kwargs:
         if not isinstance(kwargs["new_chat_per_run"], bool):
             return _invalid_new_chat_per_run()
@@ -1190,7 +1302,9 @@ async def api_cron_update(request: web.Request) -> web.Response:
             getattr(job, "chat_folder_id", ""),
         )
     state.push_refresh("crons")
-    return web.json_response(_with_schedule_warnings({"ok": True, "id": job.id}, job))
+    return web.json_response(
+        _with_schedule_warnings({"ok": True, "id": job.id}, job, update_flag_warnings)
+    )
 
 
 async def api_cron_enable(request: web.Request) -> web.Response:
