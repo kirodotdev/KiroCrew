@@ -273,7 +273,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # `get_or_create_slot` normalizes the key with string operations, so a
         # non-string name would surface there as an unhandled 500.
         name = str(name)
-    agent = body.get("agent", "")
+    # A falsy agent (missing, null, "") keeps meaning "the default"; any other
+    # non-string would be stored on the new slot and break every read of it.
+    agent = body.get("agent") or ""
+    agent_error = string_field_error("agent", agent)
+    if agent_error is not None:
+        return agent_error
     # The selection NAMESPACE, when the caller states one. "member" names a
     # configured crew, "template" a shared provider template; an omitted kind
     # keeps the legacy name-only resolution. The kind is selection input, never
