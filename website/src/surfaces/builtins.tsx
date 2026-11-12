@@ -208,6 +208,11 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.capabilities,
   icon: <KiroGhostMark size={16} />,
+  // Stub surface, like Projects: shell/nav/railBadges.ts mirrors the count of
+  // shared servers waiting for an approval into `appBadges['capabilities']`,
+  // because MCP Servers is a Customize tab. The key here is what the fallback
+  // path's aria-label and tooltip read.
+  badgeLabelKey: 'nav.mcp_servers_waiting_badge',
 })
 
 registerBuiltinSurface({

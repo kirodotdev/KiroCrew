@@ -1466,6 +1466,21 @@ does an approved launch that changed, whatever was added beside it. The control 
 same **Approve update**, and `kirocrew doctor` names such a server `new launch
 not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
 `refusalOnlyAddsLaunches` in `mcpManagementModel.ts`).
+The hint under a **Paused · command changed** row says what moved
+(`changedHintKey`): the command when the approved and the new command lines
+differ as a set, otherwise the environment variables. One line is drawn per
+launch, so one program listed more often, as when launches differ only in an
+expanded `PATH`, is not a changed command. A redaction tag hides the value, so
+lines carrying one never read as the same program: a list that differs keeps
+the command wording, and an unchanged one gets the general line.
+The **Customize** rail row, and the **MCP Servers** tab inside Customize, carry
+the count of servers set to share that wait for an approval (the status read's
+`share_refused`). The shell and the tab read it through
+`pages/overview/mcpShareRefusedQuery.ts`, the same query the servers list's
+notice uses. A refusal is recorded when the gateway starts, so the shell
+re-reads on each socket connect (`hooks/useWebSocket.ts`) and otherwise only
+every five minutes. That poll stops only for a viewer the gateway refuses; it
+keeps running while sharing is off, so a tab notices sharing turned on elsewhere.
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
 **Enable all shareable** lists the candidates by name and shares on one more
