@@ -102,6 +102,9 @@ export default function ProjectSkillsTrustDialog({
     <Modal
       open={open}
       onClose={onClose}
+      // Decline is off while the grant is saved; Escape, the backdrop and the X
+      // must be too, or the dialog its error renders in is gone.
+      dismissDisabled={pending}
       maxWidth={560}
       guideTrustRoot
       title={i18nT('components.projectSkillsTrust.title')}

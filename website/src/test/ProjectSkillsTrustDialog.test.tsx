@@ -147,6 +147,21 @@ describe('ProjectSkillsTrustDialog', () => {
     expect(mockApi.grantSkillTrust).not.toHaveBeenCalled()
   })
 
+  it('refuses Escape while the grant is saving, like the disabled decline', async () => {
+    let finish: (v: { trusted: boolean }) => void = () => {}
+    mockApi.grantSkillTrust.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const onClose = vi.fn()
+    render(<Harness onClose={onClose} />)
+    fireEvent.click(await enabledTrustButton())
+    await waitFor(() => expect(screen.getByRole('button', { name: /Not now/ })).toBeDisabled())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    finish({ trusted: false })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Not now/ })).not.toBeDisabled())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('does not report success when the server says the skill still is not usable', async () => {
     // The grant IS recorded, but `skills.project_skills_enabled` is off, so the
     // snapshot comes back trusted:false with no error. Reporting success here
