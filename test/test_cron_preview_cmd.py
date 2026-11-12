@@ -160,6 +160,32 @@ class TestCronPreviewValidation:
         assert out.out == ""
         assert out.err.startswith("Error: cannot load ")
 
+    def test_script_that_fails_to_import_is_reported_and_audited(self, tmp_path: Path, capsys):
+        # Not named s.py: the bytecode fixture checks only s.py.
+        _write_script(
+            tmp_path, "broken.py", "import kirocrew_no_such_module_xyz\ndef run(ctx): pass\n"
+        )
+        with _patch_resolve(tmp_path, name="broken.py"), patch(
+            "kiro_crew.cli_commands.sel"
+        ) as sel:
+            try:
+                _cron_preview(_make_args(f"{tmp_path / 'broken.py'}:run"))
+            except SystemExit as exc:
+                code = exc.code
+            except Exception as exc:
+                pytest.fail(f"the load error escaped the CLI as a traceback: {exc!r}")
+            else:
+                pytest.fail("a script that fails to import must exit 1")
+        assert code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err.startswith(
+            f"Error: cannot load {tmp_path / 'broken.py'}: ModuleNotFoundError: "
+        )
+        sel.return_value.log_api_access.assert_called_once()
+        assert sel.return_value.log_api_access.call_args.kwargs["outcome"] == "error"
+        assert "_cron_preview_module" not in sys.modules
+
     def test_missing_function(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "def other(ctx): pass\n")
         with _patch_resolve(tmp_path, func="run"):
