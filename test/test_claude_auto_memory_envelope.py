@@ -7,7 +7,8 @@ temporary) carries ``CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`` in
 ``_meta.claudeCode.options.env``, which claude-agent-acp spreads over its own
 process env, and in the flag tier's ``settings.env``, which no other settings
 tier's ``env`` overrides; a persistent session's envelope is unchanged. A
-sub-agent spawned with ``include_memory=false`` carries the same switch in any mode.
+sub-agent spawned with ``include_memory=false`` carries the same switch in any mode,
+and so does a Side Chat or reply thread opened on an incognito or temporary chat.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from unittest import mock
 
 import pytest
 import test_acp_session_mcp_client_seam as client_seam
+import test_chat_threads as threads_tests
+import test_side_turn_confinement as side_tests
 from acp_session_mcp_helpers import _installed_claude_adapter_version  # noqa: F401
 from acp_session_mcp_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_session_mcp_helpers import agents_dir_fixture  # noqa: F401
@@ -27,6 +30,8 @@ from acp_session_mcp_helpers import _write_spec
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+from kiro_crew.dashboard import chat_threads
+from kiro_crew.dashboard.handlers import side as side_mod
 
 _OFF = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 _RESTRICTED = ["incognito", "temporary"]
@@ -267,3 +272,66 @@ async def test_a_memory_withholding_session_keeps_the_flag_across_starts():
     mgr._drain_and_claim.assert_not_awaited()
     assert factory.call_args.kwargs["include_memory"] is False
     assert identity["include_memory"] is False
+
+
+# -- A Side Chat or reply thread on an incognito or temporary chat -------------
+
+
+def _claude_side_turn(tmp_path, monkeypatch, mode: str):
+    """A claude Side Chat whose parent chat runs in *mode*; returns
+    ``(state, parent, created)``, ``created`` the kwargs of each acquisition."""
+    side_tests._configure_backend(monkeypatch, ACP_BACKEND_CLAUDE)
+    monkeypatch.setattr(side_mod, "claude_adapter_honours_session_options", lambda: True)
+    monkeypatch.setattr(side_mod, "stream_and_collect", mock.AsyncMock(return_value="ok"))
+    state, parent, _events, created = side_tests._side_turn_fixture(tmp_path, "run-1")
+    parent.memory_mode = mode
+    return state, parent, created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [*_RESTRICTED, "persistent"])
+async def test_a_side_chat_withholds_memory_on_a_restricted_chat(tmp_path, monkeypatch, mode):
+    state, parent, created = _claude_side_turn(tmp_path, monkeypatch, mode)
+    await side_mod._run_side_turn(state, parent, "run-1", "q?", is_first_turn=True)
+    assert created[0]["side_read_only"] is True
+    assert created[0].get("include_memory", True) is (mode == "persistent")
+
+
+@pytest.mark.asyncio
+async def test_a_side_session_kept_from_before_a_tightening_is_rebound(tmp_path, monkeypatch):
+    """The parent turned incognito after its Side Chat's session started: the next
+    side turn destroys that session and starts one with memory withheld."""
+    state, parent, created = _claude_side_turn(tmp_path, monkeypatch, "persistent")
+    await side_mod._run_side_turn(state, parent, "run-1", "q?", is_first_turn=True)
+    state.sessions.get_provider = mock.MagicMock(return_value=mock.MagicMock())
+    state.sessions.destroy = mock.AsyncMock()
+    parent.memory_mode = "incognito"
+    parent._side.append_user("q2?")
+    parent._side.last_run_id = "run-2"
+    parent._side.is_complete = False
+
+    await side_mod._run_side_turn(state, parent, "run-2", "q2?", is_first_turn=False)
+
+    state.sessions.destroy.assert_awaited_once_with(f"side:parent:{parent._side.gen}")
+    assert "include_memory" not in created[0]
+    assert created[1]["include_memory"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [*_RESTRICTED, "persistent"])
+async def test_a_reply_thread_withholds_memory_on_a_restricted_chat(tmp_path, monkeypatch, mode):
+    state = threads_tests._make_state(tmp_path)
+    slot, mid = threads_tests._member_slot(state)
+    slot.memory_mode = mode
+    calls = threads_tests._arm_turn(state, monkeypatch, answer="ok", backend="claude")
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: True)
+    assert threads_tests._seed_reply(state, slot, mid, "user", "hi") == "ok"
+    identity = threads_tests._identity(state, slot)
+
+    await chat_threads._run_thread_turn(
+        state, slot, mid, "run-1", "hi", threads_tests._parent(), [], f"{slot.key}:{mid}", identity
+    )
+
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["side_read_only"] is True
+    assert acquired.get("include_memory", True) is (mode == "persistent")

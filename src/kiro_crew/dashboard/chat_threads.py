@@ -1081,6 +1081,10 @@ async def _thread_turn_body(
         else:
             agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.REJECT_ALL
+        if slot.is_restricted:
+            # Memory withheld as in the incognito or temporary parent (on claude,
+            # Claude Code's auto-memory off), as on a Side Chat.
+            session_kwargs["include_memory"] = False
 
         # A thread turn never reuses a session: the one it acquires is destroyed
         # in the finally below, so every reply cold-starts under the agent, the

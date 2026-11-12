@@ -71,14 +71,16 @@ class SideState:
     #: destroy, acquire or release the old session — never the replacement's.
     gen: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     #: The binding the live side session was created under, as
-    #: ``(derived agent name, cwd, derived-spec digest)`` — set by
-    #: ``_run_side_turn`` after ``get_or_create``. A later turn whose binding
-    #: differs (the slot's project or agent changed, or the base spec changed so
-    #: the derived spec's content did) destroys the session first: kiro-cli
-    #: loads the spec at spawn, so a retained session would keep running under
-    #: the old agent, in the old cwd, with the old grants. ``None`` = no live
-    #: session has been bound through this sidecar yet.
-    binding: tuple[str, str, str] | None = None
+    #: ``(derived agent name, cwd, derived-spec digest)``, plus
+    #: ``"memory_withheld"`` while the parent chat is incognito or temporary —
+    #: set by ``_run_side_turn`` after ``get_or_create``. A later turn whose
+    #: binding differs (the slot's project or agent changed, the base spec changed
+    #: so the derived spec's content did, or the parent was tightened) destroys
+    #: the session first: kiro-cli loads the spec at spawn, so a retained
+    #: session would keep running under the old agent, in the old cwd, with the
+    #: old grants. ``None`` = no live session has been bound through this
+    #: sidecar yet.
+    binding: tuple[str, ...] | None = None
     #: The asyncio task driving the in-flight turn, so a stop request can cancel
     #: it by lookup. The turn's own handle is otherwise only in
     #: ``state._background_tasks`` (a set with no per-slot key), which a stop
