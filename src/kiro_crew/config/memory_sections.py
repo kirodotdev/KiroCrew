@@ -38,6 +38,8 @@ LESSON_FOLD_MODES = ("off", "shadow", "enforce")
 
 #: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
 RULE_AUTHORITY_ORDER_MODES = ("off", "shadow", "enforce")
+#: ``memory.relevance_rule`` values; :mod:`kiro_crew.memory_relevance_rule` says what each does.
+RELEVANCE_RULE_MODES = ("off", "shadow", "enforce")
 
 #: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
 MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
@@ -493,6 +495,22 @@ class MemoryConfig:
             enum=list(MEMBER_LESSON_DEDUP_MODES),
         ),
     )
+    relevance_rule: str = field(
+        default="off",
+        metadata=_meta(
+            "Relevance Rule",
+            "Which word matches let past findings, task facts and the activity "
+            "block (projects, history) into a new session. 'off' (default) keeps "
+            "today's blocks. 'shadow' keeps today's blocks and only records, in "
+            "the injection receipt and within fixed size caps, which rows the new "
+            "rule would add or drop. 'enforce' counts only words of 3 or more "
+            "letters or digits and two-character pairs of Chinese or Japanese "
+            "text, and admits a task fact only with the evidence the private "
+            "store already asks for. The rule block is unchanged and no stored "
+            "row is changed.",
+            enum=list(RELEVANCE_RULE_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -616,6 +634,13 @@ def member_lesson_dedup_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in MEMBER_LESSON_DEDUP_MODES:
         return raw
     return str(field_default(MemoryConfig, "member_lesson_dedup"))
+
+
+def relevance_rule_mode_from(raw: object) -> str:
+    """A stored ``memory.relevance_rule``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in RELEVANCE_RULE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "relevance_rule"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:
