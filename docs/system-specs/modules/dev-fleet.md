@@ -1778,6 +1778,10 @@ pointer at startup and `execve`s into the named checkout's own `kirocrew` binary
 the installed build booting in the directory it started in. No service definition is
 ever mutated.
 
+The exec's `PATH` is the checkout's venv `bin`, then the inherited `PATH`, or, when
+none is inherited, the platform's default search path (`os.defpath`) without its
+empty or `.` entries, which would name the current directory.
+
 The mechanism is the version-selector shape used by `rustup` (reads
 `rust-toolchain.toml`), the Go toolchain (`go` execs from the `toolchain` line
 in `go.mod`), and `pyenv`/`rbenv` shims.
