@@ -77,6 +77,11 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/code_channels/board/publisher.py": (
+        1,
+        "work board's needs-you reply: needs_you_text escapes already-redacted row fields, "
+        "no command, gated by _writable just before the send",
+    ),
     "slack/code_channels/routing.py": (
         1,
         "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",

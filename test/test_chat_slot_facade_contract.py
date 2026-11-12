@@ -119,6 +119,7 @@ _TO_DICT_KEYS = (
     "attribution",
     "participants",
     "participants_dropped",
+    "work_aggregate",
 )
 
 

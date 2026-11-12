@@ -53,7 +53,11 @@ def _feature_on(_floor_monkeypatch):
 
 
 def _cfg(on: bool):
-    return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
+    # Every channel at its default activation (a refresh obeys Off and Review).
+    return SimpleNamespace(
+        slack=SimpleNamespace(code_channels=on),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
+    )
 
 
 async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
@@ -112,6 +116,7 @@ class FakeBinding:
     project_dir: str | None = None
     title: str = "Fix the widget"
     archived_at: float = 0.0
+    origin_channel_id: str = ""  # a real Binding always carries it
 
 
 class FakeClient:
@@ -1207,15 +1212,39 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
 
 
+def store_channel_binding(tmp_path, monkeypatch) -> None:
+    """The channel's stored binding: the folder watch reads it for every record.
+
+    A store a test's own fixture installed (it has an explicit path) is used as
+    it is, binding added: patching over it would make monkeypatch's undo, which
+    runs after that fixture's teardown, put it back for every later test.
+    """
+    from kiro_crew.slack.code_channels import store as cc_store
+
+    current = cc_store._STORE
+    if current is not None and getattr(current, "_path", None) is not None:
+        bound = current
+    else:
+        bound = cc_store.CodeChannelStore(tmp_path / "slack-code-channels-bound.json")
+        bound.load()
+        monkeypatch.setattr(cc_store, "_STORE", bound)
+    bound.put_binding(
+        cc_store.Binding(
+            channel_id="C1", team_id="T1", session_key="chat-conductor", anchor_ts="1.0"
+        )
+    )
+
+
 def _conductor_harness(tmp_path, monkeypatch):
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):
@@ -1537,6 +1566,7 @@ def test_core_plan_session_resolves_the_default_project_with_the_cores_own_helpe
     cfg = SimpleNamespace(
         slack=SimpleNamespace(code_channels=True),
         dashboard=SimpleNamespace(default_project=str(repo)),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
     )
     monkeypatch.setattr(cc_binding, "live_config", lambda orch=None: cfg)
     seen: list[str] = []

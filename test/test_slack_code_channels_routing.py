@@ -1087,6 +1087,43 @@ async def test_bang_stop_in_a_code_channel_stops_the_bound_session(env: Env) -> 
     assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
 
 
+async def test_bang_stop_with_helper_agents_running_says_where_to_stop_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    helpers = SimpleNamespace(
+        running_helpers=lambda binding: 2, _forget_worker_status=lambda binding: None
+    )
+    monkeypatch.setattr(workspace, "service", lambda: helpers)
+    _bind(env)
+    env.info("C0CODE")
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
+    assert (await _gate(env, event)).gate is Gate.DROP
+    [(_channel, text, _ts)] = env.slack.posts
+    assert text.startswith("This channel's session isn't running, but 2 helper agents still are.")
+    assert "work board" in text and "*Stop generation*" in text
+
+
+async def test_an_idle_stop_lets_the_watch_show_the_helper_agents_state_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GPT on 4bfd4f1556: Stop set ``active`` while the watch still thought it showed ``suspended``."""
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    forgot: list[str] = []
+    helpers = SimpleNamespace(
+        running_helpers=lambda binding: 1,
+        _forget_worker_status=lambda binding: forgot.append(binding.channel_id),
+    )
+    monkeypatch.setattr(workspace, "service", lambda: helpers)
+    _bind(env)
+    env.info("C0CODE")
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
+    assert (await _gate(env, event)).gate is Gate.DROP
+    assert forgot == ["C0CODE"]
+
+
 async def test_whole_channel_stop_reaches_us_through_the_agent_session_runtime(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -670,4 +670,8 @@ class SlotProjection:
             "participants": ordered_participants(slot),
             # How many the list's cap dropped; the row's "+N" counts them too.
             "participants_dropped": participants_dropped(slot),
+            # A code-channel conductor's workers at a glance, for the sidebar row:
+            # ``{"state", "label", "counts"}`` (see ``board.model.work_aggregate``),
+            # or ``None`` for every other session. Counts and fixed words only.
+            "work_aggregate": getattr(slot, "_work_aggregate", None),
         }

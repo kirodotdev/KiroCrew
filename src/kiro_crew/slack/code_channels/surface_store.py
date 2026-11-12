@@ -3,7 +3,8 @@
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
 Kiro Crew data home, keyed by channel id. It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
-the command set last registered, and which message is the current wrap-up. The
+the command set last registered, which message is the current wrap-up, and the
+pinned work board's ts, digest and already-sent alert tokens. The
 wrap-up and archive STAMPS live on the binding (``Binding.wrapped_up_at`` /
 ``archived_at``), not here. Never message
 content beyond the agent's short context-bar labels.
@@ -73,15 +74,26 @@ class SurfaceRecord:
     #: goes first past MAX_RECORDS. Any later write (an unarchived channel's
     #: first) clears it.
     archived_at: float = 0.0
+    #: The pinned work-board message (``""`` before one), the digest of what it
+    #: last showed, whether it is pinned, and the needs-you alerts already sent
+    #: (``<item_id>:<report stamp>``, newest last, bounded).
+    board_ts: str = ""
+    board_digest: str = ""
+    board_pinned: bool = False
+    board_alerts: tuple[str, ...] = ()
+    #: Worker sessions already filed into the channel's folder once.
+    board_filed: tuple[str, ...] = ()
     updated_at: float = field(default=0.0)
 
 
 _FIELDS = {f.name for f in fields(SurfaceRecord)}
-#: The type each scalar field must have on disk (``context_bar`` is checked apart).
+#: Fields read apart from the scalar check: the lists, and the work board's one bool.
+_NON_SCALAR = frozenset({"context_bar", "board_alerts", "board_filed", "board_pinned"})
+#: The type each scalar field must have on disk (the fields above are checked apart).
 _SCALAR_TYPES: dict[str, type | tuple[type, ...]] = {
     f.name: ((int, float) if f.type in ("float", float) else str)
     for f in fields(SurfaceRecord)
-    if f.name != "context_bar"
+    if f.name not in _NON_SCALAR
 }
 
 
@@ -107,6 +119,13 @@ def _from_dict(raw: Any) -> SurfaceRecord | None:
     for name, kinds in _SCALAR_TYPES.items():
         if name in data and (not isinstance(data[name], kinds) or isinstance(data[name], bool)):
             return None  # a wrong-typed value is an unreadable row, never written back
+    if not isinstance(data.get("board_pinned", False), bool):
+        return None  # a wrong-typed value is an unreadable row, never written back
+    for name in ("board_alerts", "board_filed"):
+        values = data.get(name, [])
+        if not isinstance(values, list) or not all(isinstance(a, str) for a in values):
+            return None  # an unreadable row, never silently shortened
+        data[name] = tuple(values)
     try:
         return SurfaceRecord(**data)
     except TypeError:
@@ -228,6 +247,9 @@ class SurfaceStore:
         if "context_bar" in changes:
             changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
         changes.setdefault("archived_at", 0.0)  # a channel written to is live
+        for name in ("board_alerts", "board_filed"):
+            if name in changes:
+                changes[name] = tuple(str(a) for a in changes[name])
         with self._lock:
             if not self._ensure_loaded():
                 raise SurfaceStoreUnavailable(str(self.path))
