@@ -77,7 +77,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
 | `src/kiro_crew/dashboard/handlers/agent_templates_unlisted.py` | The roster's `unlisted` list (the spec files it does not show although each still takes its stem), the delete's lookup of an unreadable file by its exact stem, and the `409 name_taken` sentence that names such a file |
-| `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
+| `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (`EnrollAsBotDialog.tsx`: a Bot under a free name, then the agent's abilities added to it; the created Bot invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `website/src/pages/overview/UnlistedSpecFiles.tsx` | The tab's **Files not shown** section: each `unlisted` entry with its reason, and **Delete file** or the rename-by-hand instruction |
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Bot teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Bots page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
@@ -721,9 +721,29 @@ duplicate, delete); **Chat with this custom agent** creates a slot with
 nothing; while the draft is dirty it stays enabled and asks the same discard
 confirm a row switch does, rather than greying out with the reason in a
 title); **Enroll as
-Bot** is the ordinary `POST /api/agents` with the template as
-`kiro_agent`, and its menu row says what it starts (a Bot with its own
-memory, nothing running). A successful enroll invalidates `['kirocrew-agents']`
+Bot** opens a dialog (`EnrollAsBotDialog.tsx`) that does the two steps a Bot
+built on a custom agent takes, because `POST /api/agents` refuses both a Bot
+named after a template (`template_name_in_use`: the Bot's own file is resolved
+under its name) and a create from any template but the built-in worker
+(`mate_template_unsupported`). Step one asks for the Bot's name with a free one
+filled in (`<agent>-bot`, then `-2`, `-3`, …, skipping every custom agent's name
+and every Bot's name and display name) and creates the Bot on the built-in
+worker. The form's own check on the name is a hint under the field; a create
+the server refused, and a Bot list that could not be read, are each an
+`ErrorNotice`. Step two is the Bot editor's
+**Add abilities** pane (`WorkerKitPane`) with this agent already picked, so its
+abilities are previewed and written only on confirm. Until the add has landed
+the pane's own Add is the one primary button and the footer offers only
+**Finish without abilities**; it becomes **Done** afterwards, and the dialog cannot
+be closed while a create or an add is in flight, so a failed write is seen. The
+page then says the Bot has the agent's abilities and that later changes to the
+agent do not reach it. Neither that line nor the menu hint says "copy": on this
+page "Bots with their own copy" counts Bots that forked the agent's file, and an
+enrolled Bot is not one of them. A Bot never carries the
+template's name, so the menu row is never disabled as "already enrolled"; it
+says what enrolling gives (a Bot with its own
+memory and the agent's abilities, which later changes to the agent do not
+reach; nothing running). A created Bot invalidates `['kirocrew-agents']`
 and `['kirocrewConfig']`: the QueryClient sets `staleTime: Infinity` and
 `POST /api/agents` pushes no `refresh` frame, so without it the Bots tab
 would keep serving a cached roster that lacks the new mate. The unsaved-changes bar names how many Bots a
