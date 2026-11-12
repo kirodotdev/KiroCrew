@@ -25,7 +25,11 @@ from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
 from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.fields import _coerce_bool, _safe_str
-from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
+from kiro_crew.config.integration_sections import (
+    AppSettingsConfig,
+    AwsConfig,
+    TemplateSettingsConfig,
+)
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
     _build_agent_config,
@@ -768,6 +772,28 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
     return apps
 
 
+def _parse_template_settings(raw: Any) -> dict[str, TemplateSettingsConfig]:
+    """The ``templates`` table: one :class:`TemplateSettingsConfig` per template name.
+
+    Total: a table that is not an object, or an entry that is not one, reads as
+    absent, so every template keeps its own pin. A name no installed template
+    carries simply matches nothing.
+    """
+    if not isinstance(raw, dict):
+        logger.warning(
+            "Config 'templates' is not a JSON object (got %s); every template keeps its pin",
+            type(raw).__name__,
+        )
+        return {}
+    templates: dict[str, TemplateSettingsConfig] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not name or not isinstance(entry, dict):
+            continue
+        model = _sections.SectionReader(TemplateSettingsConfig, entry).get("model")
+        templates[name] = TemplateSettingsConfig(model=model if isinstance(model, str) else "")
+    return templates
+
+
 def build_config(
     doc: ConfigDocument, config_cls: type[KiroCrewConfig] = KiroCrewConfig
 ) -> KiroCrewConfig:
@@ -1126,6 +1152,7 @@ def build_config(
         memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
 
     apps = _parse_app_settings(data.get("apps", {}))
+    templates = _parse_template_settings(data.get("templates", {}))
 
     # The top-level keys read against KiroCrewConfig's own fields, and the slack
     # keys that land on top-level fields under the same names. Against the base
@@ -1210,6 +1237,7 @@ def build_config(
         memory_stores=memory_stores,
         default_memory_store=default_memory_store_val,
         apps=apps,
+        templates=templates,
         stt=_build_stt_config(stt_data),
         # Every numeric knob is clamped to the same ceiling the MCP tool
         # schemas enforce, so a hand-edited config.json cannot ask for an

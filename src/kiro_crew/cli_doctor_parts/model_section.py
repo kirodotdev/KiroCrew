@@ -171,6 +171,19 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     # when it applies, so the list never shows a tier the resolver skipped.
     tiers: list[tuple[str, str]] = [("agent override", override)]
     if bound != "kirocrew":
+        from kiro_crew.config.loader import _model_scope_filter
+
+        # Scoped as the resolver scopes it: a pick the active harness cannot
+        # claim defers, so it is never shown as the deciding tier.
+        template_pick = _model_scope_filter(cfg)(
+            normalize_agent_model(getattr(cfg.templates.get(bound), "model", ""))
+        )
+        tiers.append(
+            (
+                f"template model pick ({render._safe_display(bound)})",
+                template_pick,
+            )
+        )
         tiers.append((f"bound agent pin ({render._safe_display(bound)})", bound_model))
     tiers.append(("global agent.model", normalize_agent_model(cfg.agent.model)))
     tiers.append(("default spec pin", default_model))

@@ -275,6 +275,26 @@ class AppSettingsConfig:
 
 
 @dataclass
+class TemplateSettingsConfig:
+    """The user's own settings for one agent template, ``templates.<name>``."""
+
+    model: str = field(
+        default="",
+        metadata=_meta(
+            "Model",
+            "Model every session on this agent template starts on, in place of the "
+            "model the template's own file pins. Empty inherits that pin, so the "
+            "template runs exactly as it would without this setting. A model picked "
+            "for the session and a model pinned on a crew that uses the template "
+            "win over it; it wins over the app and global defaults. Only the model "
+            "is read: a crew sharing the template's name lends a template session "
+            "nothing. A model this account cannot run is withheld like any other "
+            "pin.",
+        ),
+    )
+
+
+@dataclass
 class ExternalRegistryConfig:
     """An external app registry source (org-owned repo with app.json files)."""
 

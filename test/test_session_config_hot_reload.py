@@ -108,11 +108,12 @@ class TestSubscription:
             "default_workspace",
             "aws",
             "apps",
+            "templates",
         )
         assert mgr._config_sub is subs[0]
 
     def test_factory_paths_are_under_the_subscribed_prefixes(self) -> None:
-        prefixes = ("agent.", "session.", "workspaces", "default_workspace")
+        prefixes = ("agent.", "session.", "workspaces", "default_workspace", "templates")
         for path in SessionManager._FACTORY_CONFIG_PATHS:
             assert path.startswith(prefixes)
 
@@ -197,6 +198,54 @@ class TestAdoptOnChange:
         refresh.assert_awaited_once_with(cfg=new_cfg)
         assert mgr._cfg is new_cfg
         assert mgr._provider_factory is not old_factory, "the factory was rebuilt"
+
+    @pytest.mark.asyncio
+    async def test_no_old_provider_is_claimable_once_the_new_config_is_in_force(self) -> None:
+        """The drain empties the queue in the same step that installs the new
+        config, so a claim made while an old provider shuts down finds nothing
+        launched under the previous config."""
+        mgr, _ = _make_manager()
+        for _ in range(2):
+            mgr._warm_pool.put_nowait((MagicMock(), 0.0))
+        claimed_mid_drain: list[object] = []
+
+        async def _discard(provider, context):
+            claimed_mid_drain.append(mgr._claim_from_pool(mgr._pool_agent or None))
+
+        with (
+            patch.object(mgr, "_discard_pool_provider", side_effect=_discard),
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+        ):
+            await mgr.refresh_defaults(cfg=_make_cfg())
+        assert claimed_mid_drain == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_drain_still_ends_every_provider_it_took(self) -> None:
+        """A drain interrupted mid-discard hard-kills the providers it had not
+        reached yet: they have left the queue, so nothing else would end them."""
+        mgr, _ = _make_manager()
+        first, rest = MagicMock(), MagicMock()
+        mgr._warm_pool.put_nowait((first, 0.0))
+        mgr._warm_pool.put_nowait((rest, 0.0))
+
+        async def _discard(provider, context):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(mgr, "_discard_pool_provider", side_effect=_discard),
+            patch.object(mgr, "_dispatch_hard_kill") as hard_kill,
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await mgr.refresh_defaults(cfg=_make_cfg())
+        hard_kill.assert_called_once_with(rest)
+        assert mgr._warm_pool.empty()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

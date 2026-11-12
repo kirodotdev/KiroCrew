@@ -98,7 +98,7 @@ from kiro_crew.config.integration_sections import (  # noqa: F401
     AwsConfig,
 )
 from kiro_crew.config.loader_agents import resolve_agent_identity
-from kiro_crew.config.loader_config import KiroCrewConfig
+from kiro_crew.config.loader_config import KiroCrewConfig, template_model_pin
 from kiro_crew.config.migration import (  # noqa: F401
     _REPORTED_SUPERSEDED_KEYS,
     CONNECTIONS_UI_MIGRATION_MARKER,
@@ -482,6 +482,20 @@ def app_model_pin(config: KiroCrewConfig, app_name: str | None) -> str:
     return normalize_agent_model(getattr(entry, "model", ""))
 
 
+def _template_model(config: KiroCrewConfig, template: str, in_scope: Callable[[str], str]) -> str:
+    """The model *template* runs on: the user's ``templates.<name>.model``, else its pin.
+
+    ``""`` for the built-in ``kirocrew`` template, which tracks the global, and
+    when neither names a model the active harness can claim.
+    """
+    if not template or template == "kirocrew":
+        return ""
+    chosen = in_scope(template_model_pin(config, template))
+    if chosen:
+        return chosen
+    return in_scope(normalize_agent_model(config._resolve_named_agent_model(template)))
+
+
 def _agent_tier_model(
     config: KiroCrewConfig,
     agent_name: str | None,
@@ -492,9 +506,10 @@ def _agent_tier_model(
 ) -> str:
     """The model the agent itself pins: its crew's ``model``, else its template's.
 
-    Tiers 1 and 2 of :func:`resolve_effective_model`. ``""`` when neither pins a
-    model the active harness can claim. A *template* the caller names is the
-    template tier itself, with no crew above it.
+    Tiers 1 and 2 of :func:`resolve_effective_model`; the template tier is
+    :func:`_template_model`. ``""`` when neither pins a model the active harness
+    can claim. A *template* the caller names is the template tier itself, with no
+    crew above it.
     """
     if template is not None:
         kiro_agent, model_pin = template, ""
@@ -504,11 +519,7 @@ def _agent_tier_model(
         )
     if in_scope(model_pin):
         return model_pin
-    if kiro_agent and kiro_agent != "kirocrew":
-        pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
-        if in_scope(pinned):
-            return pinned
-    return ""
+    return _template_model(config, kiro_agent or "", in_scope)
 
 
 def _model_scope_filter(config: KiroCrewConfig, backend: str | None = None) -> Callable[[str], str]:
@@ -528,8 +539,9 @@ def resolve_app_spawn_model(config: KiroCrewConfig, app_name: str, agent_name: s
     """The model an app's background spawn of *agent_name* runs on, or ``""``.
 
     The app's own ``apps.<name>.model`` when the user set one, unless the spawned
-    template itself pins a model, which wins as it does for an app session. That
-    pin is the spawn's whole agent tier: an app spawn is a template spawn, which
+    template has a model of its own (the user's ``templates.<name>.model``, else
+    its pin), which wins as it does for an app session. That model is the spawn's
+    whole agent tier: an app spawn is a template spawn, which
     allocates with ``crew_agent=""``, so its session (``session._session_model``)
     never reads a crew's pin, not even one of a crew that shares the template's
     name. ``""`` leaves the spawn exactly as it is without the setting.
@@ -538,9 +550,8 @@ def resolve_app_spawn_model(config: KiroCrewConfig, app_name: str, agent_name: s
     app_pin = in_scope(app_model_pin(config, app_name))
     if not app_pin:
         return ""
-    if agent_name and agent_name != "kirocrew":
-        if in_scope(normalize_agent_model(config._resolve_named_agent_model(agent_name))):
-            return ""
+    if _template_model(config, agent_name, in_scope):
+        return ""
     return app_pin
 
 
@@ -560,8 +571,9 @@ def resolve_effective_model(
     (``create_provider_factory._acp``) cannot drift apart. Tiers, highest first:
 
     1. the KiroCrew agent's own ``model``
-    2. the bound kiro agent's pinned ``model`` (skipped for the built-in
-       ``kirocrew`` agent, which tracks the global by design)
+    2. the bound kiro agent's model: the user's ``templates.<name>.model``, else
+       the template's pinned ``model`` (skipped for the built-in ``kirocrew``
+       agent, which tracks the global by design)
     3. for a session an app owns (*app_name*), the user's ``apps.<name>.model``
     4. the global ``agent.model`` default
     5. the installed ``kirocrew.json`` / bundled ``defaults.json`` model
@@ -955,6 +967,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _TOP_LEVEL_DEFAULTS,
         ConfigDocument,
         _parse_app_settings,
+        _parse_template_settings,
         _recording_config_reader,
         build_config,
         default_project_dir,

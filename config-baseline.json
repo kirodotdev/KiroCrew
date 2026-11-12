@@ -12758,6 +12758,48 @@
       "defaultValue": false
     },
     {
+      "path": "templates",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Templates",
+      "help": "Per-template user settings, keyed by the agent template's name.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "templates.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "templates.*.model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model",
+      "help": "Model every session on this agent template starts on, in place of the model the template's own file pins. Empty inherits that pin, so the template runs exactly as it would without this setting. A model picked for the session and a model pinned on a crew that uses the template win over it; it wins over the app and global defaults. Only the model is read: a crew sharing the template's name lends a template session nothing. A model this account cannot run is withheld like any other pin.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "auto_update",
       "kind": "core",
       "type": "boolean",

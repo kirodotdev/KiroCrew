@@ -27,6 +27,31 @@ if TYPE_CHECKING:
     from kiro_crew.session_lifecycle import SessionLifecycleService, _SessionEntry
 
 
+def _take_all(queue: asyncio.Queue) -> list[Any]:
+    """Every provider queued in *queue*, removed without awaiting."""
+    taken: list[Any] = []
+    while True:
+        try:
+            provider, _ = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return taken
+        taken.append(provider)
+
+
+async def _discard_taken(owner: Any, taken: list[Any], context: str) -> None:
+    """Discard every provider in *taken*; on an interruption, hard-kill the rest.
+
+    They have left the queue, so no later drain or shutdown would find them.
+    """
+    for index, provider in enumerate(taken):
+        try:
+            await owner._discard_pool_provider(provider, context)
+        except BaseException:
+            for remaining in taken[index + 1 :]:
+                owner._dispatch_hard_kill(remaining)
+            raise
+
+
 async def refresh_defaults(self: SessionLifecycleService, cfg: Any = None) -> None:
     """Adopt config changes that only affect new sessions.
 
@@ -81,12 +106,11 @@ async def refresh_defaults(self: SessionLifecycleService, cfg: Any = None) -> No
             owner._pool_agent = pool_kiro_agent(cfg)
             owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
             owner._pool_cwd = pool_cwd
-            while not owner._warm_pool.empty():
-                try:
-                    provider, _ = owner._warm_pool.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                await owner._discard_pool_provider(provider, "Default changed")
+            # Emptied in this step, before the first discard awaits: a claim
+            # takes no lock, so a provider still queued during a shutdown
+            # could be claimed under the config just installed.
+            drained = _take_all(owner._warm_pool)
+            await _discard_taken(owner, drained, "Default changed")
     # The health sweep returns early on an empty pool, so a drained pool
     # must be explicitly restarted with the new factory.
     owner._pool_started = False
@@ -128,12 +152,7 @@ async def reload_provider_factory(self: SessionLifecycleService, cfg: Any = None
             owner._pool_agent = pool_kiro_agent(cfg)
             owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
             owner._pool_cwd = pool_cwd
-            while not owner._warm_pool.empty():
-                try:
-                    provider, _ = owner._warm_pool.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                await owner._discard_pool_provider(provider, "Stale pool drain")
+            await _discard_taken(owner, _take_all(owner._warm_pool), "Stale pool drain")
             # Intentionally clear only the registry: the original reload
             # path does not rewrite session-map or compaction state here.
             stale = list(owner._sessions.items())
