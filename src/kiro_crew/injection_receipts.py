@@ -60,11 +60,13 @@ FINDINGS: Final = "findings"
 TURN_LESSONS: Final = "turn_lessons"
 #: ``memory.rule_authority_order``: the rule-block ids its order would add or drop.
 RULE_AUTHORITY_ORDER: Final = "rule_authority_order"
+#: ``memory.lesson_fold``: the rule-block ids it would fold, as ``[leader, folded]`` pairs.
+LESSON_FOLD: Final = "lesson_fold"
 
 #: The blocks a line always names, recorded with :func:`record`.
 _BLOCK_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS, TURN_LESSONS)
 #: Stage fields, recorded with :func:`record_stage` and named only when recorded.
-STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER,)
+STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER, LESSON_FOLD)
 
 #: Every name a record is keyed by.
 KINDS: Final[tuple[str, ...]] = _BLOCK_KINDS + STAGE_KINDS
@@ -113,6 +115,7 @@ def replay(records: dict[str, dict[str, Any]]) -> None:
                 entry.get("policy"),
                 _str_list(entry.get("would_add")),
                 _str_list(entry.get("would_drop")),
+                _pair_list(entry.get("pairs")) if "pairs" in entry else None,
             )
         elif kind in KINDS and isinstance(entry, dict):
             ids = entry.get("ids")
@@ -156,13 +159,36 @@ def _str_list(raw: object) -> list[str]:
     return [i for i in raw if isinstance(i, str)] if isinstance(raw, list) else []
 
 
-def _stage_entry(mode: object, policy: object, add: list[str], drop: list[str]) -> dict[str, Any]:
-    return {
+def _pair_list(raw: object) -> list[list[str]]:
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [
+        [pair[0], pair[1]]
+        for pair in raw
+        if isinstance(pair, (list, tuple))
+        and len(pair) == 2
+        and all(isinstance(key, str) and key for key in pair)
+    ]
+
+
+def _stage_entry(
+    mode: object,
+    policy: object,
+    add: list[str],
+    drop: list[str],
+    pairs: list[list[str]] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "mode": mode if isinstance(mode, str) else "",
         "policy": policy if isinstance(policy, int) and not isinstance(policy, bool) else 0,
         "would_add": add,
         "would_drop": drop,
     }
+    # Only a stage that groups rows names pairs, so every other stage field keeps
+    # its four keys.
+    if pairs is not None:
+        entry["pairs"] = pairs
+    return entry
 
 
 def record_stage(
@@ -172,11 +198,13 @@ def record_stage(
     policy: int,
     would_add: Iterable[object] = (),
     would_drop: Iterable[object] = (),
+    pairs: Iterable[tuple[str, str]] | None = None,
 ) -> None:
     """Record what stage *kind*'s new policy would change in this composition.
 
     *would_add* and *would_drop* are rows (or their keys) the new policy would put
-    into or take out of the block the prompt carries. Like :func:`record`, a later
+    into or take out of the block the prompt carries. *pairs*, for a stage that
+    groups rows, are ``(kept key, folded key)`` pairs. Like :func:`record`, a later
     record replaces an earlier one and a call outside a collection is a no-op.
     """
     if kind not in STAGE_KINDS:
@@ -189,7 +217,13 @@ def record_stage(
         named = (row if isinstance(row, str) else row_key(row) for row in rows)
         return [key for key in named if key]
 
-    sink[kind] = _stage_entry(mode, policy, keys(would_add), keys(would_drop))
+    sink[kind] = _stage_entry(
+        mode,
+        policy,
+        keys(would_add),
+        keys(would_drop),
+        _pair_list(list(pairs)) if pairs is not None else None,
+    )
 
 
 def build_line(
@@ -238,6 +272,7 @@ def build_line(
                 stage.get("policy"),
                 _str_list(stage.get("would_add")),
                 _str_list(stage.get("would_drop")),
+                _pair_list(stage.get("pairs")) if "pairs" in stage else None,
             )
     return line
 

@@ -564,6 +564,21 @@ produce the counts that sign-off waits for. Its rules:
   `learn_add` counts only when the person sent the chat's latest turn. That count over the
   would-be demotions is the R3 pass metric.
 
+R4's rules, as built (`memory_lesson_fold.py`; R4 is not signed):
+
+- **Where.** The rule block of the session-start render and its post-compaction
+  copy, on the default and private stores. Explicit recall and the JSONL stores
+  never fold.
+- **Identity.** `same_item` (P3), the same function R5 uses. Rows are visited by
+  P2 level, then newest first; each is compared only with kept leaders. An L1
+  row is always a leader. A row with a NOT-clause its leader lacks stays a
+  leader, so no clause leaves the prompt.
+- **Modes.** `shadow` renders today's block and records `(leader, folded)` id
+  pairs in the receipt field `lesson_fold`. `enforce` drops folded rows before
+  the 37,000 budget is fitted and prints the fold line; the omission line counts
+  only rows that did not fit.
+- **Fixture.** The golden test embedder gives each topic-less row its own vector.
+
 R1 comes next because it fixes S2 on existing stores without rewriting a row.
 R4 needs one test fix first: the golden fixture that gives every topic-less
 row the same vector must give distinct vectors, or it folds everything.

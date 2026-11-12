@@ -616,6 +616,7 @@ def lessons_args(
     directive_budget: int,
     experience_budget: int,
     authority_order: str = "off",
+    lesson_fold: str = "off",
 ) -> dict[str, Any]:
     """Job arguments for a lessons read.
 
@@ -649,6 +650,7 @@ def lessons_args(
         "directive_budget": directive_budget,
         "experience_budget": experience_budget,
         "authority_order": authority_order,
+        "lesson_fold": lesson_fold,
     }
 
 
@@ -756,6 +758,7 @@ def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
                 directive_budget=args.get("directive_budget", 0),
                 experience_budget=args.get("experience_budget", 0),
                 authority_order=args.get("authority_order", "off"),
+                lesson_fold=args.get("lesson_fold", "off"),
             )
         else:
             return {"ok": False, "message": f"unknown job kind {kind!r}"}

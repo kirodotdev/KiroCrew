@@ -361,7 +361,7 @@ _STORE_SIGNATURES = {
     "get_episodic_list": "(self, limit: 'int' = 50, offset: 'int' = 0, tag_filter: 'list[str] | None' = None, *, q: 'str' = '') -> 'list[dict]'",
     "get_events": "(self, limit: 'int' = 50, offset: 'int' = 0) -> 'list[dict]'",
     "get_lessons": "(self, limit: 'int | None' = None, offset: 'int' = 0) -> 'list[dict]'",
-    "get_lessons_context": "(self, query_text: 'str' = '', cap: 'int' = 0, project_dir: 'str | Path | None' = None, *, recall_query: '_RecallQuery | None' = None, background: 'bool' = False, hard_cap: 'int' = 0, directive_budget: 'int' = 0, experience_budget: 'int' = 0, authority_order: 'str' = 'off') -> 'str'",
+    "get_lessons_context": "(self, query_text: 'str' = '', cap: 'int' = 0, project_dir: 'str | Path | None' = None, *, recall_query: '_RecallQuery | None' = None, background: 'bool' = False, hard_cap: 'int' = 0, directive_budget: 'int' = 0, experience_budget: 'int' = 0, authority_order: 'str' = 'off', lesson_fold: 'str' = 'off') -> 'str'",
     "get_preferences_context": "(self, query_text: 'str' = '', cap: 'int' = 0) -> 'str'",
     "get_rejection_stats": "(self) -> 'dict[str, int]'",
     "get_retired_episodic": "(self, limit: 'int' = 50, offset: 'int' = 0) -> 'list[dict]'",
