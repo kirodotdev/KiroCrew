@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import memory_edit, memory_stores
+from kiro_crew import memory_edit, memory_record_metadata, memory_stores
 from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
@@ -924,3 +924,100 @@ def test_editing_a_fact_with_a_finite_stored_value_still_proceeds(store):
     before = memory_edit.list_records(store, {"q": "language"}, limit=10)["entries"][0]
     after = memory_edit._after(store, before, {"type": "set", "value": "English"})
     assert json.loads(after["value_json"]) == "English"
+
+
+# -- a page of the list reads its own records, not the whole store -------------- #
+#
+# ``list_records`` returns one page and the total. The total needs every match
+# counted; it does not need every match's metadata, decoded value and fingerprint.
+
+RECORDS = 66  # what ``seed`` writes: 65 addresses and one language
+
+
+@pytest.fixture
+def record_reads(monkeypatch):
+    """How many records had their metadata read and their fingerprint computed."""
+    counts = {"metadata": 0, "fingerprint": 0}
+    real_metadata = memory_record_metadata.get_record_metadata
+    real_record = memory_edit._record
+
+    def metadata(db, record_id):
+        counts["metadata"] += 1
+        return real_metadata(db, record_id)
+
+    def record(row):
+        counts["fingerprint"] += 1
+        return real_record(row)
+
+    monkeypatch.setattr(memory_record_metadata, "get_record_metadata", metadata)
+    monkeypatch.setattr(memory_edit, "_record", record)
+    return counts
+
+
+def _seeded(store, record_reads: dict) -> dict:
+    """Seed the store, then start the counts at zero: the seeding reads records too."""
+    seed(store)
+    record_reads.update(metadata=0, fingerprint=0)
+    return record_reads
+
+
+def _whole(store, query: dict) -> list[dict]:
+    """Every match, assembled the way the unpaged callers read them."""
+    rows = list(memory_edit._rows(store, memory_edit._query(query)))
+    for row in rows:
+        memory_edit._conflict_count(store, row)
+    return rows
+
+
+def test_a_page_with_no_search_term_reads_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=10, offset=20)
+
+    assert page["total"] == RECORDS and page["has_more"]
+    assert len(page["entries"]) == 10
+    assert reads == {"metadata": 10, "fingerprint": 10}
+
+
+def test_a_searched_page_fingerprints_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {"q": "email"}, limit=10, offset=20)
+
+    assert page["total"] == 65 and page["has_more"]
+    assert len(page["entries"]) == 10
+    # A search term is matched against each record's metadata, so that is read
+    # for every record; the fingerprint is only for the records returned.
+    assert reads == {"metadata": RECORDS, "fingerprint": 10}
+
+
+@pytest.mark.parametrize("query", [{}, {"q": "email"}, {"kind": "fact"}, {"q": "chinese"}])
+def test_the_pages_together_are_the_unpaged_listing(store, query):
+    seed(store)
+    whole = _whole(store, query)
+    paged: list[dict] = []
+    offset = 0
+    while True:
+        page = memory_edit.list_records(store, query, limit=25, offset=offset)
+        assert page["total"] == len(whole)
+        paged += page["entries"]
+        offset += 25
+        assert page["has_more"] == (offset < len(whole))
+        if not page["has_more"]:
+            break
+    assert paged == whole
+
+
+def test_a_page_past_the_end_is_empty_and_still_counts_every_record(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=50, offset=500)
+
+    assert page == {"entries": [], "total": RECORDS, "has_more": False}
+    assert reads == {"metadata": 0, "fingerprint": 0}
+
+
+def test_an_unpaged_read_still_assembles_every_record(store, record_reads):
+    """The callers that act on a whole selection pass no page and get every record."""
+    reads = _seeded(store, record_reads)
+    rows = list(memory_edit._rows(store, memory_edit._query({})))
+
+    assert len(rows) == RECORDS and all(row is not None for row in rows)
+    assert reads == {"metadata": RECORDS, "fingerprint": RECORDS}
