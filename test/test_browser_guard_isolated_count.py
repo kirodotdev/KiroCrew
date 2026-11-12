@@ -240,7 +240,7 @@ def test_the_walker_counts_unreadable_frames() -> None:
     # The page-side half: a frame whose document this world cannot read is counted.
     assert "unreadableFrames: function" in ops.WALKER_SOURCE
     assert "framesSeen: function" in ops.WALKER_SOURCE
-    body = ops.WALKER_SOURCE.split("function scanFrames()", 1)[1].split("var api = {", 1)[0]
+    body = ops.WALKER_SOURCE.split("function scanFrames(", 1)[1].split("// -- the `read` op", 1)[0]
     # Every unreadable frame counts, hidden or not: visibility is no proof the
     # page will not show it for the moment the image is taken.
     assert "(!inner || !isFrame(el))" in body and "draws(" not in body and "d >= 8" in body
@@ -470,7 +470,7 @@ def test_the_worker_refuses_a_malformed_document(reply: dict[str, Any]) -> None:
 def test_a_readable_object_document_still_counts_as_unchecked() -> None:
     # The field counts do not walk into an object's document, so a readable HTML
     # object is unchecked: the walker counts it as unreadable.
-    body = ops.WALKER_SOURCE.split("function scanFrames()", 1)[1].split("var api = {", 1)[0]
+    body = ops.WALKER_SOURCE.split("function scanFrames(", 1)[1].split("// -- the `read` op", 1)[0]
     assert "(!inner || !isFrame(el))" in body
 
 
