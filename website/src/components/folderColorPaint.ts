@@ -19,6 +19,17 @@ export function folderColorWash(c: string): string {
   return `color-mix(in srgb, ${c} 18%, var(--bg-elevated))`
 }
 
+/** The chat pane's canvas for a session filed in a colored folder: the theme's
+ *  background with a 16% share of the folder color mixed in. The share is held
+ *  low so message text, code and diffs keep the contrast the theme designed
+ *  for its `--bg`; the color reads as "this theme's canvas, a little colored".
+ *  `base` is the theme's resolved `--bg`; the default reads the live variable,
+ *  which only paints the pane root (a pane that also redefines `--bg` cannot
+ *  mix against itself, so it passes the resolved value). */
+export function folderPaneTint(c: string, base = 'var(--bg)'): string {
+  return `color-mix(in srgb, ${c} 16%, ${base})`
+}
+
 /** Geometry of the disclosure chevron and the hole cut for it, in CSS px
  *  relative to the glyph box's top-left. Lucide's chevron path covers only the
  *  middle half of its viewBox, so its ink reaches about a quarter of `chevron`

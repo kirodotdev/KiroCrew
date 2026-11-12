@@ -125,6 +125,19 @@ every theme — the same reasoning as the neutral `glass-shadow` rest shadow. Ad
 of these takes a `:root` line plus a `[data-mode="light"]` line and no allowlist
 work; adding a color a pack should be able to change takes the role path below.
 
+**A folder color tints the chat pane, and it is not a theme role.** A session filed
+in a colored folder paints its pane (`pages/ChatPage.tsx`, `components/ChatPane.tsx`)
+with `folderPaneTint` from `components/folderColorPaint.ts`: the theme's `--bg` with a
+small share of the folder's palette color mixed in. The pane root redefines `--bg` for
+its subtree (`hooks/useFolderTint.ts` mixes against the resolved root value, because a
+custom property cannot mix against itself), so the header, the composer's fade and every
+`bg-bg` surface inside the pane sit on the tinted canvas instead of painting the plain
+theme color over it. Every pack and both polarities get a tint that stays on their
+canvas. It is inline style on the pane root, which is not one of the stable hooks, so a
+pack's `overrides.css` does not reach it. Text keeps the contrast the theme designed
+for `--bg` because the share is held low; raise the share in `folderPaneTint` only after
+checking `kiro-light` and a dark theme.
+
 ## Adding a new color role
 
 When you genuinely need a new color role, add the variable to **both** sides in
