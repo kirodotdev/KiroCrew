@@ -1235,7 +1235,7 @@ nothing. Sources:
 
 | Source | Rows | Notes |
 |---|---|---|
-| `<home>/subagents/<id>/state.json` without `tombstone.json` | `kind=subagent`, `state=recovering`, `attempts=1`, `result_ref=<folder>`, class `unknown` | the same set `list_orphans()` scans; a folder whose state names another id, or is unreadable, is skipped |
+| `<home>/subagents/<id>/state.json` without `tombstone.json` | `kind=subagent`, `state=recovering`, `attempts=1`, `result_ref=<folder>`, class `unknown` | the same set `list_orphans()` scans; a folder whose state names another id, or is unreadable, is skipped; a `max_turns` of `"unlimited"` (or `infinite`, `inf`, `no limit`, `none`, or a JSON `Infinity`) imports as `SUBAGENT_MAX_TURNS_CEILING`, the largest cap the runner allows, since `0` means "not set" and falls back to the configured default; any other value `int()` cannot read imports as `0` with a warning, so one bad folder never costs the others their rows |
 | TaskRunner `runs.json` entries with `status=="paused"` | `id=taskrunner:<task_id>`, `kind=taskrunner_step`, `state=recovering`, `scope_ref={"auto_approve": false}` | `runs.json` lives in the runner's work dir, so its path is a parameter of `open_default_store`; the persisted `auto_approve` is never carried |
 
 Old files are never deleted or rewritten.
