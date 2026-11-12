@@ -80,8 +80,43 @@ def _schedule_mcp_launch_approval_persist(
                 "mcp launch approvals: could not persist the approval store",
                 exc_info=True,
             )
+            return
+        # The store now holds this start's refusals: tell the owner once about a
+        # share that was approved and is paused, since no chat says so. A start
+        # with no refusal runs too, to remove an earlier note.
+        await self._publish_paused_share_note()
 
     task = asyncio.create_task(_persist(), name="mcp-launch-approval-persist")
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+
+async def _publish_paused_share_note(self: GatewayOrchestrator) -> None:
+    """Publish or resolve the paused-share bell note; a failure only logs."""
+    if self.dashboard_state is None:
+        return
+    try:
+        from kiro_crew.notifications import mcp_share_paused_note
+
+        await mcp_share_paused_note.publish(self.dashboard_state)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("mcp launch approvals: paused-share note failed", exc_info=True)
+
+
+def _schedule_paused_share_note(self: GatewayOrchestrator) -> None:
+    """Resolve the paused-share note once the process is ready, on a start with no stubs."""
+    ready = getattr(self, "_mcp_launch_approval_ready", None)
+    if ready is None:
+        ready = asyncio.Event()
+        self._mcp_launch_approval_ready = ready
+
+    async def _resolve() -> None:
+        await ready.wait()  # type: ignore[union-attr]  # narrowed above
+        await self._publish_paused_share_note()
+
+    task = asyncio.create_task(_resolve(), name="mcp-share-paused-note")
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
@@ -109,6 +144,9 @@ async def _init_mcp_gateway(
     cfg_gw = self._cfg.mcp_gateway
     stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
     if not stubs:
+        # No broker, so no approval persist: a note naming servers that left
+        # the share list is removed here instead.
+        self._schedule_paused_share_note()
         return
     self._mcp_stub_servers_started = stubs
     # Runs on every platform the transport layer covers -- an AF_UNIX socket

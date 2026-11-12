@@ -15,7 +15,7 @@ import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteLinkLabel, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
@@ -278,7 +278,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
         )}
         {/* RFC Phase 4: dashboard-internal deep link (validated path-only). */}
         {safeInternalUrl(n.url) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => navigate(safeInternalUrl(n.url)!), safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => navigate(safeInternalUrl(n.url)!), safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {noteLinkLabel(n)}</button>
         )}
       </div>
 

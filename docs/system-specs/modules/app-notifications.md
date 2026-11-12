@@ -264,7 +264,10 @@ tab's toast and Web Push, which replaces it by tag and has no catalog), the agen
 hand-off and the stored feed read those. `noteText` renders the copy on the bell
 card and banner, the feed rows and their search, and the detail panel, and falls
 back to the stored English for a note without an id, an id the maps do not hold,
-or a persisted row of the wrong shape. Notes that name a copy today: the turn-ceiling
+or a persisted row of the wrong shape. The detail panel's button for the note's
+`url` reads "Open", unless `SYSTEM_NOTE_LINK_KEY` (resolved by `noteLinkLabel`)
+names a label for the id, as it does for `mcp_share_paused` ("Review shared
+servers"). Notes that name a copy today: the turn-ceiling
 pause (`turn_limit`) and the default-model applied and failed notes
 (`default_model_applied`, `default_model_failed`), the folder Default agent note
 (`folder_agent_label`), the weekly repeated-failures note (`repeated_failures`), and the dead-turn note on

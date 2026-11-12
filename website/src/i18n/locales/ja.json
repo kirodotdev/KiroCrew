@@ -8302,7 +8302,10 @@
         "folder_agent_label_title": "フォルダーのデフォルトエージェントを確認",
         "folder_agent_label_body": "これらのフォルダーのデフォルトエージェントは Bot と同じ名前ですが、新しいチャットはその Bot では実行されません：{{folders}}。その Bot を使うには、フォルダーの設定でデフォルトエージェントとして選択してください。",
         "repeated_failures_title": "ツールの失敗が繰り返されています",
-        "repeated_failures_body": "今週、エージェントのツール呼び出しの一部が何度も失敗しました。このお知らせを開くと一覧を確認でき、教訓にできます。"
+        "repeated_failures_body": "今週、エージェントのツール呼び出しの一部が何度も失敗しました。このお知らせを開くと一覧を確認でき、教訓にできます。",
+        "mcp_share_paused_title": "共有中の MCP サーバーが一時停止しました",
+        "mcp_share_paused_body": "一時停止中：{{names}}。共有サーバーを確認して更新を承認すると、再び共有します。",
+        "mcp_share_paused_link": "共有サーバーを確認"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",

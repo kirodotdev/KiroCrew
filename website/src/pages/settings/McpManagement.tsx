@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon, Share2 } from 'lucide-react'
 import {
@@ -74,6 +75,9 @@ import {
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
+
+/** The query param that asks the Sharing view to open its Review dialog. */
+export const REVIEW_PARAM = 'review'
 
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
@@ -167,13 +171,19 @@ export function McpManagement({
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [resolveError, setResolveError] = useState<string | null>(null)
 
+  // `?review=1` is the paused-share bell note's link. The cached status may
+  // predate the restart that paused a server, so that link reads both again.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const reviewAsked = searchParams.get(REVIEW_PARAM) === '1'
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
     queryFn: () => api.mcpGatewayStatus(),
+    ...(reviewAsked ? { refetchOnMount: 'always' as const } : {}),
   })
   const serversQ = useQuery<{ servers: McpManagedServer[] }>({
     queryKey: ['mcpGatewayServers'],
     queryFn: () => api.mcpGatewayServers(),
+    ...(reviewAsked ? { refetchOnMount: 'always' as const } : {}),
   })
 
   const status = statusQ.data
@@ -633,6 +643,22 @@ export function McpManagement({
     setReviewItems(waiting.map(server => ({ server, refusal: refused[server.name] })))
   }
   const closeReview = useCallback(() => setReviewItems(null), [])
+  // `?review=1`: once the servers and their status are read on this mount, open
+  // the dialog if any wait, then drop the param so neither a reload nor a later
+  // pause opens it unasked. A failed read opens nothing and still drops it.
+  const waitingCount = waiting.length
+  const reviewReady = statusQ.isFetchedAfterMount && serversQ.isFetchedAfterMount
+  const reviewReadFailed = statusQ.isError || serversQ.isError
+  useEffect(() => {
+    if (!reviewAsked || !reviewReady) return
+    if (waitingCount > 0 && !reviewReadFailed) openReview()
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete(REVIEW_PARAM)
+      return next
+    }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- openReview reads the same render's `waiting`
+  }, [reviewAsked, reviewReady, reviewReadFailed, waitingCount])
   // The table button's own write and checks: one stub POST pinned to the
   // shown `expected_launch`. A launch that moved is refused by the endpoint,
   // and the refusal comes back as the error line the dialog shows in that

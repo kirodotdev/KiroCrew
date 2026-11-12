@@ -1093,6 +1093,8 @@ class GatewayOrchestrator:
 
     # gateway_runtime/mcp_broker.py
     _schedule_mcp_launch_approval_persist = _mcp_broker._schedule_mcp_launch_approval_persist
+    _publish_paused_share_note = _mcp_broker._publish_paused_share_note
+    _schedule_paused_share_note = _mcp_broker._schedule_paused_share_note
     _init_mcp_gateway = _mcp_broker._init_mcp_gateway
     _mark_mcp_broker_ready = _mcp_broker._mark_mcp_broker_ready
     _mcp_gateway_start_retry_delay = _mcp_broker._mcp_gateway_start_retry_delay

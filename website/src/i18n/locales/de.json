@@ -8511,7 +8511,10 @@
         "folder_agent_label_title": "Standard-Agent eines Ordners prüfen",
         "folder_agent_label_body": "Der Standard-Agent dieser Ordner trägt den Namen eines Bots, aber neue Chats darin laufen nicht auf diesem Bot: {{folders}}. Um den Bot zu nutzen, wähle ihn in den Einstellungen des Ordners als Standard-Agent aus.",
         "repeated_failures_title": "Tool-Fehler kommen immer wieder",
-        "repeated_failures_body": "Einige Tool-Aufrufe des Agenten sind diese Woche immer wieder fehlgeschlagen. Öffne diesen Hinweis, um sie zu sehen und einen davon in eine Lektion zu verwandeln."
+        "repeated_failures_body": "Einige Tool-Aufrufe des Agenten sind diese Woche immer wieder fehlgeschlagen. Öffne diesen Hinweis, um sie zu sehen und einen davon in eine Lektion zu verwandeln.",
+        "mcp_share_paused_title": "Ein geteilter MCP-Server ist pausiert",
+        "mcp_share_paused_body": "Pausiert: {{names}}. Prüfe die geteilten Server und gib das Update frei, um wieder zu teilen.",
+        "mcp_share_paused_link": "Geteilte Server prüfen"
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",

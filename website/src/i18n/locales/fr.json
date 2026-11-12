@@ -8720,7 +8720,10 @@
         "folder_agent_label_title": "Vérifie l’agent par défaut d’un dossier",
         "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier.",
         "repeated_failures_title": "Des échecs d’outils reviennent sans cesse",
-        "repeated_failures_body": "Certains appels d’outils de l’agent ont échoué encore et encore cette semaine. Ouvre cette note pour les voir et en transformer un en leçon."
+        "repeated_failures_body": "Certains appels d’outils de l’agent ont échoué encore et encore cette semaine. Ouvre cette note pour les voir et en transformer un en leçon.",
+        "mcp_share_paused_title": "Un serveur MCP partagé est en pause",
+        "mcp_share_paused_body": "En pause : {{names}}. Vérifie les serveurs partagés et approuve la mise à jour pour le partager à nouveau.",
+        "mcp_share_paused_link": "Vérifier les serveurs partagés"
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",

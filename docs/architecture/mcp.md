@@ -1468,6 +1468,20 @@ not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
 `refusalOnlyAddsLaunches` in `mcpManagementModel.ts`).
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
+A gateway start that pauses a shared server whose launch was approved before
+(`changed_needs_reapproval`) publishes one `system.approval` bell note naming
+the paused servers (`notifications/mcp_share_paused_note.py`, called once the
+start's refusals are saved; a start whose broker fails to start skips it).
+Its link, `/mcp?view=sharing&review=1`, opens this dialog when a server waits,
+and the page drops `review` either way. The note carries one key, so the bell holds one, and
+records the launch each server was refused for. A later start that finds the
+same launches paused publishes nothing, read or not; a server refused for
+another launch publishes again, after removing the stored note so the new one
+rings instead of replacing it quietly. A start that finds nothing paused removes
+the note, so the same launches can be announced if they pause again; a start
+with no shared server runs this too. Only a stored note stops a repeat: a note
+the owner deleted is published again at the next start while the servers stay
+paused. A server never approved raises no note.
 **Enable all shareable** lists the candidates by name and shares on one more
 press. Below the table, **Pre-install npm servers** carries a one-line
 description of what it installs (the approved `npx` launches of the servers with

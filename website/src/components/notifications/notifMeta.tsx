@@ -121,6 +121,7 @@ const SYSTEM_NOTE_TITLE_KEY = {
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_title',
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_title',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_title',
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
@@ -137,6 +138,7 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_stalled_body',
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_body',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_body',
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway
@@ -151,6 +153,18 @@ export function noteText(n: Notification): { title: string; body: string } {
     ? Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'string' || typeof v === 'number'))
     : undefined
   return { title: i18nT(SYSTEM_NOTE_TITLE_KEY[copy], params), body: i18nT(SYSTEM_NOTE_BODY_KEY[copy], params) }
+}
+
+/** The label of the button that follows a note's `url`, for a gateway note
+ *  whose link opens one named place. Any other note's button reads "Open". */
+const SYSTEM_NOTE_LINK_KEY: Partial<Record<SystemNoteId, string>> = {
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_link',
+}
+
+export function noteLinkLabel(n: Notification): string {
+  const id = n.i18n?.id
+  const key = typeof id === 'string' && Object.hasOwn(SYSTEM_NOTE_LINK_KEY, id) ? SYSTEM_NOTE_LINK_KEY[id as SystemNoteId] : undefined
+  return i18nT(key ?? 'components.notifications.notificationDetailPanel.open')
 }
 
 /** RFC Phase 4 security: deep-links must be dashboard-internal routes only.
