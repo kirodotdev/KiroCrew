@@ -193,6 +193,8 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
+    // The replacement names the chat it replaces, so the agent resolves in its project.
+    expect(createChatSlot.mock.calls[0][12]).toBe('slot-a')
     // deleteSlot rethrows its own 'save failed' in place of the API error.
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
     // slot-a is still alive, so it is no longer recorded as replaced.
