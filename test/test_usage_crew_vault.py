@@ -33,10 +33,14 @@ _USAGE = {
 }
 
 
-def _cred(profile_arn: str | None = "arn:aws:codewhisperer:us-east-1:1:profile/p"):
+def _cred(
+    profile_arn: str | None = "arn:aws:codewhisperer:us-east-1:1:profile/p",
+    auth_method: str | None = None,
+):
     return SimpleNamespace(
         access_token="FAKE-access",
         profile_arn=profile_arn,
+        auth_method=auth_method,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
@@ -702,7 +706,7 @@ class TestFetchWithCredential:
         arn = "arn:aws:codewhisperer:us-east-1:1:profile/p"
         posted = []
 
-        def fake_post(token, target, payload, *, endpoint=None):
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
             posted.append((target, payload))
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": arn, "profileName": "Team"}]})
@@ -757,13 +761,13 @@ class TestFetchWithCredential:
         # The kiro-cli path names the account from whoami; its request is unchanged.
         posted = []
 
-        def fake_post(token, target, payload, *, endpoint=None):
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
             posted.append(payload)
             return _resp(200, {**_CREDIT_BODY, "userInfo": {"email": "user@example.com"}})
 
         with patch.object(api, "_post", fake_post):
             attempt = api._get_usage("FAKE-tok", None, name_anchor=None, endpoint="e")
-        assert posted == [{"origin": "AI_EDITOR"}]
+        assert posted == [{"origin": "AI_EDITOR", "profileArn": api._BUILDER_ID_PROFILE_ARN}]
         assert "email" not in attempt.result.usage
 
     def test_service_refusing_the_email_flag_still_yields_the_reading(self):
@@ -771,7 +775,7 @@ class TestFetchWithCredential:
         # reading must not be lost: one retry without the flag, no e-mail shown.
         posted = []
 
-        def fake_post(token, target, payload, *, endpoint=None):
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": []})
             posted.append(payload)
@@ -784,13 +788,83 @@ class TestFetchWithCredential:
         assert result.auth_state == api.AUTH_OK
         assert result.usage["credits_plan"] == 1000.0
         assert "email" not in result.usage
-        assert posted == [{"origin": "AI_EDITOR", "isEmailRequired": True}, {"origin": "AI_EDITOR"}]
+        builder = api._BUILDER_ID_PROFILE_ARN
+        assert posted == [
+            {"origin": "AI_EDITOR", "profileArn": builder, "isEmailRequired": True},
+            {"origin": "AI_EDITOR", "profileArn": builder},
+        ]
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "example.controlplane#AccessDeniedException",
+            "example.controlplane#UnauthorizedException",
+            "AccessDeniedException",
+        ],
+    )
+    def test_a_400_refusing_the_token_is_auth_rejected_and_not_retried(self, kind):
+        # The control plane answers a dead token with a 400 AccessDeniedException
+        # where the CodeWhisperer runtime host answers 401. That is a sign-in to renew, and
+        # asking again without isEmailRequired would only resend the dead token.
+        posted = []
+
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
+            if target == api._TARGET_GET_USAGE:
+                posted.append(payload)
+            return _resp(400, {"__type": kind, "message": "Invalid token"})
+
+        with patch.object(api, "_post", fake_post):
+            result = api.fetch_usage_limits_with_credential("FAKE-tok", None)
+        assert result == api.UsageResult(None, api.AUTH_REJECTED)
+        assert len(posted) == 1
+
+    def test_a_400_validation_error_is_not_auth_rejected(self):
+        # A malformed request is not a dead sign-in: no "sign in again".
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
+            return _resp(
+                400,
+                {
+                    "__type": "example.controlplane#ValidationException",
+                    "message": "Invalid profileArn.",
+                },
+            )
+
+        with patch.object(api, "_post", fake_post):
+            result = api.fetch_usage_limits_with_credential("FAKE-tok", None)
+        assert result == api.UsageResult(None, api.AUTH_OTHER)
+
+    def test_no_listed_profile_reads_with_the_builder_id_profile(self):
+        # The control plane refuses a read that names no profile, so a Builder ID
+        # credential (no stored ARN, none listed) must send the fixed Builder ID
+        # profile kiro-cli sends; the reading itself still reports no profile.
+        posted = []
+
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            posted.append((payload, endpoint))
+            return _resp(200, _CREDIT_BODY)
+
+        with patch.object(api, "_post", fake_post):
+            result = api.fetch_usage_limits_with_credential("FAKE-tok", None)
+        assert result.auth_state == api.AUTH_OK
+        assert result.usage["_profile_arn"] is None
+        assert posted == [
+            (
+                {
+                    "origin": "AI_EDITOR",
+                    "profileArn": api._BUILDER_ID_PROFILE_ARN,
+                    "isEmailRequired": True,
+                },
+                api._USAGE_ENDPOINTS["us-east-1"],
+            )
+        ]
 
     @pytest.mark.parametrize("status", [401, 403, 500])
     def test_other_failures_are_not_retried_without_the_flag(self, status):
         posted = []
 
-        def fake_post(token, target, payload, *, endpoint=None):
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": []})
             posted.append(payload)
@@ -803,14 +877,14 @@ class TestFetchWithCredential:
         assert result.auth_state == (api.AUTH_REJECTED if status == 401 else api.AUTH_OTHER)
 
     def test_no_stored_arn_uses_listed_profile_and_its_region(self):
-        region = next(r for r in api._RTS_ENDPOINTS if r != api._DEFAULT_RTS_REGION)
+        region = next(r for r in api._USAGE_ENDPOINTS if r != api._DEFAULT_USAGE_REGION)
         arn = f"arn:aws:codewhisperer:{region}:1:profile/q"
 
-        def fake_post(token, target, payload, *, endpoint=None):
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": arn}]})
             assert payload["profileArn"] == arn
-            assert endpoint == api._RTS_ENDPOINTS[region]
+            assert endpoint == api._USAGE_ENDPOINTS[region]
             return _resp(200, _CREDIT_BODY)
 
         with patch.object(api, "_post", fake_post):
@@ -832,3 +906,43 @@ class TestFetchWithCredential:
 
     def test_empty_token_is_no_credential(self):
         assert api.fetch_usage_limits_with_credential("", None).auth_state == api.AUTH_NO_CREDENTIAL
+
+
+class TestVaultExternalIdpTokenType:
+    """An External IdP vault sign-in reads usage with ``TokenType: EXTERNAL_IDP``."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    def test_token_type_rides_both_calls(self):
+        sent = []
+
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
+            sent.append((target, token_type))
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": "arn:x"}]})
+            return _resp(200, _CREDIT_BODY)
+
+        with patch.object(api, "_post", fake_post):
+            result = api.fetch_usage_limits_with_credential(
+                "FAKE-tok", None, token_type=api.TOKEN_TYPE_EXTERNAL_IDP
+            )
+        assert result.auth_state == api.AUTH_OK
+        assert {t for t, _ in sent} == {api._TARGET_LIST_PROFILES, api._TARGET_GET_USAGE}
+        assert all(tt == "EXTERNAL_IDP" for _, tt in sent)
+
+    @pytest.mark.parametrize(
+        "auth_method, token_type", [("external_idp", "EXTERNAL_IDP"), (None, "")]
+    )
+    @pytest.mark.asyncio
+    async def test_vault_refresh_passes_the_credential_token_type(self, auth_method, token_type):
+        patches = _vault(current=AsyncMock(return_value=_cred(auth_method=auth_method)))
+        fetch = MagicMock(return_value=api.UsageResult(dict(_USAGE), api.AUTH_OK))
+        patches[-1] = patch.object(
+            sessions_mod.kiro_usage_api, "fetch_usage_limits_with_credential", fetch
+        )
+        await _run(patches)
+        fetch.assert_called_once()
+        assert fetch.call_args.kwargs["token_type"] == token_type
