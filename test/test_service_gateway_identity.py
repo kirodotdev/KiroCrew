@@ -228,3 +228,117 @@ def test_no_trusted_launchctl_is_unknown_and_runs_nothing(monkeypatch, tmp_path)
 def test_a_platform_without_a_service_manager_is_unknown(monkeypatch):
     monkeypatch.setattr(common, "current_platform", lambda: common.Platform.UNSUPPORTED)
     assert gateway_identity.service_identity() == "unknown"
+
+
+def _show_with(monkeypatch, stdout: str | None, *, systemctl: str | None = "/usr/bin/systemctl"):
+    monkeypatch.setattr(
+        gateway_restart.platform_compat,
+        "trusted_system_bin",
+        lambda name: systemctl if name == "systemctl" else None,
+    )
+    monkeypatch.setattr(common, "systemctl_user_env", lambda: {"XDG_RUNTIME_DIR": "/run/user/501"})
+    runs: list[dict] = []
+
+    def _run(argv, **kwargs):
+        runs.append({"argv": list(argv), **kwargs})
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.setattr(gateway_restart.subprocess, "run", _run)
+    return runs
+
+
+def test_the_unit_reader_asks_one_scope_for_the_properties_the_identity_check_reads(
+    monkeypatch,
+):
+    runs = _show_with(monkeypatch, "")
+
+    gateway_restart._systemd_show(user=True)
+    gateway_restart._systemd_show(user=False)
+
+    props = []
+    for name in (
+        "Id",
+        "LoadState",
+        "MainPID",
+        "NeedDaemonReload",
+        "ExecStart",
+        "Environment",
+        "EnvironmentFiles",
+    ):
+        props += ["-p", name]
+    unit = f"{common.SERVICE_NAME}.service"
+    assert runs[0]["argv"] == ["/usr/bin/systemctl", "--user", "show", *props, unit]
+    assert runs[0]["env"] == {"XDG_RUNTIME_DIR": "/run/user/501"}
+    assert runs[1]["argv"] == ["/usr/bin/systemctl", "show", *props, unit]
+    assert runs[1]["env"] is None
+    assert all(run["timeout"] == gateway_restart._SYSTEMCTL_TIMEOUT_SECS for run in runs)
+    assert all(run["check"] is False for run in runs)
+
+
+def test_the_unit_reader_keeps_every_value_of_a_repeated_property(monkeypatch):
+    _show_with(
+        monkeypatch,
+        "Id=kirocrew.service\n"
+        "MainPID= 4242 \n"
+        "Environment=A=1 B=2\n"
+        "Environment=C=3\n"
+        "a line with no separator\n",
+    )
+
+    props = gateway_restart._systemd_show(user=False)
+
+    assert props == {
+        "Id": ["kirocrew.service"],
+        "MainPID": ["4242"],
+        "Environment": ["A=1 B=2", "C=3"],
+    }
+
+
+def test_a_unit_reader_with_no_output_reads_no_properties(monkeypatch):
+    _show_with(monkeypatch, None)
+
+    assert gateway_restart._systemd_show(user=True) == {}
+
+
+def test_no_trusted_systemctl_is_inconclusive_and_runs_nothing(monkeypatch):
+    runs = _show_with(monkeypatch, "Id=kirocrew.service\n", systemctl=None)
+
+    with pytest.raises(gateway_restart._Inconclusive, match="trusted system directory"):
+        gateway_restart._systemd_show(user=False)
+
+    assert runs == []
+
+
+def test_the_launcher_target_is_what_its_last_exec_line_runs(tmp_path):
+    launcher = tmp_path / "launch.sh"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "exec /old/python -m kiro_crew\n"
+        "export KIROCREW_X=1\n"
+        "exec '/Applications/Kiro Crew.app/python3' -m kiro_crew \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    assert gateway_restart._launcher_target(launcher) == "/Applications/Kiro Crew.app/python3"
+
+
+@pytest.mark.parametrize("body", ["#!/bin/sh\necho no exec here\n", "#!/bin/sh\nexec \n"])
+def test_a_launcher_with_no_exec_target_names_itself(tmp_path, body):
+    launcher = tmp_path / "launch.sh"
+    launcher.write_text(body, encoding="utf-8")
+
+    assert gateway_restart._launcher_target(launcher) == str(launcher)
+
+
+def test_a_missing_launcher_names_itself(tmp_path):
+    launcher = tmp_path / "gone.sh"
+
+    assert gateway_restart._launcher_target(launcher) == str(launcher)
+
+
+def test_an_unreadable_launcher_is_inconclusive(tmp_path):
+    launcher = tmp_path / "launch.sh"
+    launcher.write_bytes(b"#!/bin/sh\nexec /usr/bin/\xff\xfe\n")
+
+    with pytest.raises(gateway_restart._Inconclusive, match="could not be read"):
+        gateway_restart._launcher_target(launcher)
