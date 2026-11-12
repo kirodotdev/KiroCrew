@@ -7055,15 +7055,15 @@ rows-per-day number would be an estimate rather than a contract.
 **Known deferral (partially mitigated here).** Resolving the `capabilities.script_hooks`
 gate walks `profiles/` synchronously, so any `async` caller resolving it inline stalls the
 event loop for that walk — a `no-blocking-call-on-event-loop` violation reachable from lane
-dispatch. Both `async` call sites in `hooks.py` therefore await ONE seam,
-`_script_hooks_capability_denied_async`, which hops to a thread. Unconditional, not keyed on
+dispatch. Both `async` call sites in `hook_runtime/script_hooks.py` (`run_script_hook` and
+the skills-only branch of `ScriptHookStore.fire`) therefore hop to a thread inline, each with
+`await asyncio.to_thread(_script_hooks_capability_denied, sk)`. Unconditional, not keyed on
 the event: scoping it to `SessionLaneChanged` was tried and withdrawn, because it put an
 equality branch in shared dispatch that every future event would grow while leaving the
-other events stalling anyway. Centralised in one wrapper rather than a hop at each call
-site, because it remains a CALLER-side workaround: the cause-level remedy is non-blocking
-resolution, or a cached fingerprint, in the owning module — and when that lands there is one
-seam to delete instead of a hop per caller. Synchronous callers outside this module still
-resolve inline and still stall.
+other events stalling anyway. Each hop remains a CALLER-side workaround: the cause-level
+remedy is non-blocking resolution, or a cached fingerprint, in the owning module, and when
+that lands both hops are deleted. Synchronous callers outside `script_hooks.py` still resolve
+inline, and stall the loop when they run on it without a hop of their own.
 
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
