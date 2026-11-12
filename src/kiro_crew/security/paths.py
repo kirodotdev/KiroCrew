@@ -1013,6 +1013,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AppRowsListing,
         _BuiltTargets,
         _cached_home_dir_targets,
+        _caller_canonical,
         _declarations_generation,
         _env_float,
         _expanded_env_root,
@@ -1033,6 +1034,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _report_expiry_pin,
         _resolved_env_root,
         _resolved_root_key,
+        caller_canonicalised,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.agent_sdk import (  # noqa: F401

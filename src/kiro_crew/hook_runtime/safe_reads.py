@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _opened_path_within_root,
         _screen_windows_links,
         bounded_read,
+        caller_canonicalised,
         canonical_path_refusal,
         is_sensitive_canonical_path,
         is_sensitive_path,
@@ -137,16 +138,19 @@ def screen_file_path(
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
-    if (is_sensitive_canonical_path if canonical_gate else is_sensitive_path)(path):
-        if not classify_sensitive:
-            return PathDecline.REFUSED
-        # The refusal stands. Its wording says which kind it is: only a
-        # confirmed match is lasting. A stall, or no refusal at all on this
-        # second reading, means the first check did not complete.
-        reason = (canonical_path_refusal if canonical_gate else sensitive_path_refusal)(path)
-        if reason is not None and not is_unverifiable_path_refusal(reason):
-            return PathDecline.REFUSED
-        return PathDecline.UNCHECKED
+    # This thread just resolved *path*, so the gate matches it without a second
+    # resolution and resolves only its anchors.
+    with caller_canonicalised(path):
+        if (is_sensitive_canonical_path if canonical_gate else is_sensitive_path)(path):
+            if not classify_sensitive:
+                return PathDecline.REFUSED
+            # The refusal stands. Its wording says which kind it is: only a
+            # confirmed match is lasting. A stall, or no refusal at all on this
+            # second reading, means the first check did not complete.
+            reason = (canonical_path_refusal if canonical_gate else sensitive_path_refusal)(path)
+            if reason is not None and not is_unverifiable_path_refusal(reason):
+                return PathDecline.REFUSED
+            return PathDecline.UNCHECKED
     return path
 
 
@@ -226,9 +230,10 @@ def safe_read_file(path: str, *, canonical_gate: bool = False) -> str:
     rather than crash.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
-    refusal = (
-        canonical_path_refusal(resolved) if canonical_gate else sensitive_path_refusal(resolved)
-    )
+    with caller_canonicalised(resolved):
+        refusal = (
+            canonical_path_refusal(resolved) if canonical_gate else sensitive_path_refusal(resolved)
+        )
     if refusal:
         # {resolved!r}, not {resolved}: the resolved target is caller/attacker
         # influenced (a symlink target is chosen by whoever wrote the link) and
@@ -246,8 +251,12 @@ def safe_read_file(path: str, *, canonical_gate: bool = False) -> str:
         fd_real = _fd_real_path(fd)
         # The gate the read chose: the canonical gate answers inline, off the pool.
         gate = is_sensitive_canonical_path if canonical_gate else is_sensitive_path
-        if fd_real is not None and gate(fd_real):
-            raise PermissionError(f"Blocked: opened sensitive path: {fd_real!r}")
+        if fd_real is None:
+            return
+        # The kernel's name for the open inode has no link left to follow.
+        with caller_canonicalised(fd_real):
+            if gate(fd_real):
+                raise PermissionError(f"Blocked: opened sensitive path: {fd_real!r}")
 
     try:
         with jsonl_util.open_regular_nofollow(
@@ -675,7 +684,10 @@ def safe_copy_file_nolink(
         fd_real = _fd_real_path(fd)
         if fd_real is None:
             return None  # cannot verify what was opened -> fail closed
-        if is_sensitive_path(fd_real) or (refuse is not None and refuse(fd_real)):
+        with caller_canonicalised(fd_real):
+            if is_sensitive_path(fd_real):
+                return None
+        if refuse is not None and refuse(fd_real):
             return None
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=".safe-copy-", suffix=os.path.splitext(fd_real)[1], dir=dest_dir
