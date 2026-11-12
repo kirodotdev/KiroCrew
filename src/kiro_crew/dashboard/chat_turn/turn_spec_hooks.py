@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -654,8 +655,9 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it. One more on a claude session
-    that runs in Default instead of the Auto it asked for, naming the ways back."""
+    off, since Crew cannot confirm the engine applied it; a chat shows that one once
+    (``_telemetry_notice_is_new``). One more on a claude session that runs in Default
+    instead of the Auto it asked for, naming the ways back."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -666,8 +668,27 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "mode_pinned_notice",
     ):
         notice = getattr(client, name, "")
-        if isinstance(notice, str) and notice:
-            append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+        if not (isinstance(notice, str) and notice):
+            continue
+        if name == "telemetry_unconfirmed_notice" and not _telemetry_notice_is_new(slot, notice):
+            continue
+        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+
+
+def _telemetry_notice_is_new(slot: "_ChatSlot", notice: str) -> bool:
+    """Whether *slot*'s chat has yet to show telemetry *notice*; marks it shown.
+
+    Every KAS session a chat creates or reloads carries the notice, and nothing the
+    user does in the chat ends it, so the chat shows it once. It shows again only
+    when the text differs from the last one shown: the opt-out stopped applying to
+    this chat, or applies again. The mark is saved on the chat's metadata line, so
+    a restart does not repeat the notice.
+    """
+    mark = hashlib.sha256(notice.encode()).hexdigest()[:16]
+    if slot._telemetry_notice_shown == mark:
+        return False
+    slot._telemetry_notice_shown = mark
+    return True
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
