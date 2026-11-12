@@ -10388,6 +10388,11 @@
         "credentials_applied_other": "{{count}} cookies applied"
       },
       "connectionsPanel": {
+        "sign_ins_title": "MCP sign-ins",
+        "remember_sign_ins": "Remember MCP sign-ins across sessions",
+        "remember_sign_ins_hint": "Keeps you signed in to your MCP servers in new chats on the Kiro Agent backend. Everyone whose chats run on this {{productName}} can use a saved sign-in, including people you share it with. Changes apply the next time {{productName}} restarts; your chats and their history are kept.",
+        "remember_sign_ins_save_failed": "Could not save the MCP sign-in setting.",
+        "remember_sign_ins_load_failed": "Could not load the MCP sign-in setting.",
         "loading": "Loading…",
         "none": "Every provider in this install registers its own OAuth client, so there is nothing to configure here.",
         "load_failed": "Could not load OAuth apps",

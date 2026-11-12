@@ -21780,6 +21780,11 @@
         "could_not_read_webhook_status": "Não foi possível ler o status do webhook — verifique se o gateway está em execução"
       },
       "connectionsPanel": {
+        "sign_ins_title": "Logins de MCP",
+        "remember_sign_ins": "Lembrar os logins de MCP entre sessões",
+        "remember_sign_ins_hint": "Mantém você conectado aos seus servidores MCP nos novos chats do backend Kiro Agent. Todas as pessoas cujos chats rodam neste {{productName}} podem usar um login salvo, inclusive aquelas com quem você o compartilha. As alterações valem na próxima vez que o {{productName}} reiniciar; seus chats e o histórico deles são mantidos.",
+        "remember_sign_ins_save_failed": "Não foi possível salvar a configuração de login de MCP.",
+        "remember_sign_ins_load_failed": "Não foi possível carregar a configuração de login de MCP.",
         "loading": "Carregando…",
         "none": "Todos os provedores desta instalação registram o próprio cliente OAuth, então não há nada para configurar aqui.",
         "load_failed": "Não foi possível carregar os apps OAuth",

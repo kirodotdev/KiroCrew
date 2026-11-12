@@ -1246,6 +1246,14 @@
       "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
     },
     {
+      "id": "connections.remember-mcp-sign-ins-across-sessions",
+      "label": "Remember MCP sign-ins across sessions",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=key%3Aagent.kas_persist_mcp_sign_in",
+      "hint": "Keeps you signed in to your MCP servers in new chats on the Kiro Agent backend. Everyone whose chats run on this Kiro Crew can use a saved sign-in, including people you share it with. Changes apply the next time Kiro Crew restarts; your chats and their history are kept.",
+      "configKey": "agent.kas_persist_mcp_sign_in"
+    },
+    {
       "id": "developer.agent-harness-for-worker-chats",
       "label": "Agent Harness for worker chats",
       "tab": "developer",
