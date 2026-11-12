@@ -20,6 +20,7 @@ import { entryActivityOpen, type ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
+import { abortActiveOlderFetch } from './paging'
 
 export const fetchHistory = createAsyncThunk(
   'chat/fetchHistory',
@@ -259,6 +260,8 @@ export const resumeFromHistory = createAsyncThunk<
     const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
+      // A resume re-bases the cursor of the chat it opens, which may own the page in flight.
+      abortActiveOlderFetch()
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}), ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
