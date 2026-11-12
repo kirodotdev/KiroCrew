@@ -797,9 +797,10 @@ class SessionCatalogProjection:
         picked = [
             (meta, False)
             # An app caller's *keys* keep the direct scan, as app-scoped listings do.
-            for meta in (
-                self._log.list_sessions if keys is not None else self._log.list_sessions_indexed
-            )()
+            # Stateless cron runs are left out, as every other search leaves them.
+            for meta in _searchable(
+                (self._log.list_sessions if keys is not None else self._log.list_sessions_indexed)()
+            )
             # The title first: it is a string test, while an app caller's *keys*
             # judges ownership per key.
             if title_filter(meta.get("title") or "") and (keys is None or meta["key"] in keys)
