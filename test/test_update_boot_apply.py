@@ -623,8 +623,8 @@ def test_a_cancel_that_is_not_a_sigterm_propagates_without_ending_the_process(
 
     exits: list[str] = []
     monkeypatch.setattr(update_boot_apply, "_exit_with_sigterm_status", lambda: exits.append("x"))
-    monkeypatch.setattr(update_boot_apply.platform_compat, "IS_POSIX", True)
     update_next_start.arm("2.0.0")
+    before = signal.getsignal(signal.SIGTERM)
 
     async def run() -> None:
         started = _block_in_child(monkeypatch)
@@ -633,19 +633,18 @@ def test_a_cancel_that_is_not_a_sigterm_propagates_without_ending_the_process(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM) is False
 
     asyncio.run(run())
 
     assert exits == []
+    # Whichever path the platform took, the SIGTERM handling is back as it was.
+    assert signal.getsignal(signal.SIGTERM) == before
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="asyncio signal handlers are POSIX-only")
-def test_a_loop_that_cannot_take_a_sigterm_handler_still_applies(calls, monkeypatch) -> None:
-    """``add_signal_handler`` refuses off the main thread; the apply runs anyway."""
+def test_a_boot_apply_off_the_main_thread_still_applies(calls) -> None:
+    """On POSIX ``add_signal_handler`` refuses off the main thread; the apply runs anyway."""
     from concurrent.futures import ThreadPoolExecutor
 
-    monkeypatch.setattr(update_boot_apply.platform_compat, "IS_POSIX", True)
     update_next_start.arm("2.0.0")
     calls.installed_after = "2.0.0"
 
