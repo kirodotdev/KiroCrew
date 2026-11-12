@@ -37,8 +37,10 @@ things that registry deliberately does not decide, plus the cap:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -58,23 +60,26 @@ logger = logging.getLogger(__name__)
 #: sharing on. Off when absent, unreadable or anything but ``True``.
 CHAT_RUNTIME_SHARING_PREVIEW: Final[str] = "chat_runtime_sharing"
 
-#: Oldest kiro-cli whose KAS relay may host several chat sessions on one process.
-#: kiro-cli 3.1.0 ships ``@kiro/agent`` 0.66.91, the first engine that admits one
-#: turn per session itself: a second prompt to a session with a running turn is
-#: queued behind it and steered into it (``steering_queued`` then
-#: ``steering_injected``) instead of racing it (``promptAdmitted`` ->
-#: ``runAdmittedPrompt``'s ``steerBehindOlderVisiblePrompt`` and
-#: ``interruptRunningTurn``; absent from 0.66.70 in kiro-cli 3.0.0). Across
-#: sessions the engine keeps its own order: a turn of a Crew custom-agent session
-#: waits in the engine's one-slot model queue (``AgentController.progressModelQueue``)
-#: while another session's turn runs, and every ``session/update`` names its
-#: session. That is why a KAS shared process needs no Crew-side chat turn gate
-#: (``AcpRuntime.chat_turn_gate``): the engine already gives each frame one owner.
-#: Measured: on a raw kiro-cli 3.1.0 relay process, two and four sessions prompted
-#: at once each got only their own text, in order, with every update naming its
-#: session; through Crew on a pod, three shared chats each got their own 30 lines
-#: in order and their turns ran one after another (the gate did not hold them).
-KAS_CHAT_SHARING_MIN_KIRO_CLI: Final[tuple[int, int, int]] = (3, 1, 0)
+#: Oldest KAS engine (``@kiro/agent``) that may host several chat sessions on one
+#: process, on either route. Two engine properties make a shared process safe.
+#: One turn per session (since 0.66.91): a second prompt to a session with a
+#: running turn is queued behind it and steered into it instead of racing it, and
+#: every ``session/update`` names its session, so a KAS shared process needs no
+#: Crew-side turn lock. And, from 0.66.104
+#: (kiro-agent#3741), turns of DIFFERENT sessions run in parallel: only a
+#: spec-generation turn waits for the engine's single active model slot. Before
+#: it (0.66.91 in kiro-cli 3.1.0, 0.66.102 in kiro-cli 3.2.1) every Crew
+#: custom-agent turn waited in that one-slot queue
+#: (``AgentController.progressModelQueue``), so chats on one process answered
+#: one at a time. A shared chat must never wait for another chat's turn, so the
+#: floor is the first engine that does not queue them.
+#: Measured on a pod, bundle route, three shared chats on 0.66.104: all three
+#: answered in parallel, and while one ran ``sleep 60`` the other two answered.
+KAS_CHAT_SHARING_MIN_ENGINE: Final[tuple[int, int, int]] = (0, 66, 104)
+
+#: The engine package's manifest below one kiro-cli ``kas/<version>-<sha256>``
+#: extract (``kas_extract_repair.SERVER_ENTRY_PARTS`` names its server entry).
+_RELAY_ENGINE_PACKAGE_PARTS: Final = ("node_modules", "@kiro", "agent", "package.json")
 
 
 def chat_runtime_sharing_enabled(cfg: Any) -> bool:
@@ -90,28 +95,112 @@ def chat_runtime_sharing_enabled(cfg: Any) -> bool:
     return isinstance(previews, Mapping) and previews.get(CHAT_RUNTIME_SHARING_PREVIEW) is True
 
 
-def kas_chat_sharing_ready() -> bool:
+def engine_shares_chats(version: str | None) -> bool:
+    """Pure gate: may a KAS engine at *version* host several chat sessions?
+
+    True only for a readable version at or above :data:`KAS_CHAT_SHARING_MIN_ENGINE`.
+    An unknown version is False: absence of evidence keeps one process per chat.
+    """
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version) if version else None
+    return parsed is not None and parsed >= KAS_CHAT_SHARING_MIN_ENGINE
+
+
+def _bundle_engine_version() -> str | None:
+    """The engine the bundle route runs: the installed pinned bundle's record.
+
+    Read the way the spec ``permissions`` gate reads it (``installed_bundle``,
+    never a spawn). Not installed yet is unknown.
+    """
+    from kiro_crew.acp import kas_bundle  # noqa: PLC0415
+
+    installed = kas_bundle.installed_bundle()
+    return installed.version if installed is not None else None
+
+
+def _relay_engine_version() -> str | None:
+    """The engine kiro-cli's relay runs, or ``None`` when it cannot be known.
+
+    kiro-cli unpacks its embedded engine into ``<data dir>/kas/<version>-<sha256>/``
+    (:mod:`kiro_crew.acp.kas_extract_repair`) and runs it from there; kiro-cli's
+    ``--version`` names no engine and the relay's ``initialize`` carries no
+    ``agentInfo``. So the version is that extract's ``@kiro/agent`` manifest, for
+    the kiro-cli version Crew spawns. No extract yet (kiro-cli never ran v3 here),
+    or a manifest that does not read, is unknown. Several extracts for one
+    kiro-cli version answer the OLDEST, so a stale one can only refuse.
+    """
+    from kiro_crew.identity_stores import state_db_candidates  # noqa: PLC0415
+    from kiro_crew.kiro_cli import installed_kiro_cli_version  # noqa: PLC0415
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    cli = installed_kiro_cli_version()
+    if cli is None:
+        return None
+    prefix = ".".join(str(n) for n in cli) + "-"
+    found: list[tuple[tuple[int, int, int], str]] = []
+    data_dirs = {db.parent for db in state_db_candidates(sys.platform, Path.home(), os.environ)}
+    for data_dir in data_dirs:
+        extracts = data_dir / "kas"
+        if not extracts.is_dir():
+            continue
+        for entry in extracts.iterdir():
+            if not entry.name.startswith(prefix) or not entry.is_dir():
+                continue
+            manifest = entry.joinpath(*_RELAY_ENGINE_PACKAGE_PARTS)
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            raw = data.get("version") if isinstance(data, dict) else None
+            if not isinstance(raw, str):
+                return None
+            parsed = parse_kiro_cli_version(raw)
+            if parsed is None:
+                return None
+            found.append((parsed, raw))
+    return min(found)[1] if found else None
+
+
+def kas_chat_sharing_ready(pin: str = "") -> bool:
     """Whether the next KAS spawn runs an engine that may host several chats.
 
-    True only on the kiro-cli relay route at or above
-    :data:`KAS_CHAT_SHARING_MIN_KIRO_CLI`. Crew's own engine bundle
-    (``agent.kas_bundle``, or the automatic switch when the relay cannot run) is
-    pinned to an older engine and keeps one process per chat. An unreadable
-    version or route answers False: absence of evidence keeps the session on its
-    own process. Blocking (reads config, may run ``kiro-cli --version`` once);
-    call it off the event loop.
+    True only when the engine that route will run is at or above
+    :data:`KAS_CHAT_SHARING_MIN_ENGINE`: on the bundle route the installed
+    pinned bundle (:func:`_bundle_engine_version`), on the relay the engine
+    kiro-cli unpacked (:func:`_relay_engine_version`). A kiro-cli version alone
+    is not enough: kiro-cli 3.1.0 through 3.2.1 ship engines that queue chats.
+    With the preview on the route is the bundle (``kas_route`` rule
+    ``REASON_SHARING_PREVIEW``); until the first spawn has installed it, there is
+    no installed engine and the chat keeps its own process. *pin* is the
+    session's own Bot pin, which decides the route as the spawn decides it.
+    An unreadable version or route answers False: absence of evidence keeps the
+    session on its own process. Each refusal is logged with its cause. Blocking
+    (reads config and files, may run ``kiro-cli --version`` once); call it off
+    the event loop.
     """
     try:
         from kiro_crew.acp.kas_route import resolve_kas_route
-        from kiro_crew.kiro_cli import installed_kiro_cli_version
 
-        if resolve_kas_route().bundle:
-            return False
-        version = installed_kiro_cli_version()
+        route = resolve_kas_route(pin=pin)
+        if route.bundle:
+            version = _bundle_engine_version()
+        else:
+            version = _relay_engine_version()
     except Exception:  # noqa: BLE001 - a failed probe keeps the unshared path
-        logger.debug("chat runtime sharing: KAS engine readiness unreadable", exc_info=True)
+        logger.info(
+            "chat-runtime-sharing: KAS engine readiness unreadable; not sharing", exc_info=True
+        )
         return False
-    return version is not None and version >= KAS_CHAT_SHARING_MIN_KIRO_CLI
+    ready = engine_shares_chats(version)
+    if not ready:
+        logger.info(
+            "chat-runtime-sharing: KAS engine not shareable route=%s engine=%s floor=%s",
+            route.name,
+            version or "unknown",
+            ".".join(str(n) for n in KAS_CHAT_SHARING_MIN_ENGINE),
+        )
+    return ready
 
 
 #: Memory modes that may share a process. A shared process OUTLIVES any single
@@ -714,7 +803,7 @@ def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bo
 
 __all__ = [
     "CHAT_RUNTIME_SHARING_PREVIEW",
-    "KAS_CHAT_SHARING_MIN_KIRO_CLI",
+    "KAS_CHAT_SHARING_MIN_ENGINE",
     "ChatRuntimeKey",
     "agent_spawns_native_subagents",
     "agent_spec_generation",
@@ -722,6 +811,7 @@ __all__ = [
     "chat_runtime_sharing_enabled",
     "chat_sharing_ineligible_reason",
     "eligible_for_chat_sharing",
+    "engine_shares_chats",
     "kas_chat_sharing_ready",
     "spec_grants_native_subagents",
 ]

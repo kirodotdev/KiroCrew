@@ -423,7 +423,9 @@ async def resolve_chat_share(
     session_key = provider._owning_session_key()
     kas_ready = False
     if backend == ACP_BACKEND_KAS:
-        kas_ready = await asyncio.to_thread(kas_chat_sharing_ready)
+        kas_ready = await asyncio.to_thread(
+            kas_chat_sharing_ready, getattr(provider, "_harness_pin", "") or ""
+        )
     refusal = chat_sharing_ineligible_reason(
         session_key=session_key,
         memory_mode=provider.memory_mode,

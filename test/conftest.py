@@ -625,6 +625,8 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     from kiro_crew.acp import kas_engine_install, kas_route
 
     _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": False)
+    _floor_monkeypatch.setattr(kas_route, "_PREVIEW_BUNDLE_FAILED", "")
+    _floor_monkeypatch.setattr(kas_route, "_PREVIEW_SKIP_LOGGED", "")
     _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
     _floor_monkeypatch.setattr(
         kas_engine_install,

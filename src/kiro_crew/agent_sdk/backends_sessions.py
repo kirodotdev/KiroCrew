@@ -104,22 +104,22 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 # safety this set asserts. A chat leaving a shared process must evict only its own
 # session and keep its resume record.
 #
-# kiro-cli: ``_kiro.dev/session/terminate`` frees the session and the
-# ``keep_transcript`` guard skips the transcript unlink, so
-# ``~/.kiro/sessions/cli/{sid}.json(l)`` survives for ``session/load``.
-#
 # KAS: the shared teardown evicts with ``session/close``, which keeps the stored
 # record (``AcpRuntime.evict_session``); the delete verb is never sent for a shared
-# chat. Membership here is necessary, not sufficient: a KAS start may share only on
-# the kiro-cli relay at or above ``KAS_CHAT_SHARING_MIN_KIRO_CLI``, whose engine
-# (``@kiro/agent`` 0.66.91) admits one turn per session itself, orders turns of
-# different sessions in its own model queue, and names the session on every
+# chat. Membership here is necessary, not sufficient: a KAS start may share only
+# when the engine its route runs is at or above ``KAS_CHAT_SHARING_MIN_ENGINE``
+# (``@kiro/agent`` 0.66.104), which admits one turn per session itself, runs
+# turns of different sessions in parallel, and names the session on every
 # ``session/update`` (``acp.chat_runtime_sharing.kas_chat_sharing_ready``).
 #
-# codex is NOT a member although it shares subagent sessions: its chat teardown's
-# record preservation has no lane cover. Every other backend is out because it is
-# not served by ``AcpRuntime`` (one process per session).
-ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# kiro-cli is NOT a member although it shares subagent sessions: some of its
+# session-control frames (compaction, ``/clear``, an agent switch) name no
+# session, so chats sharing one kiro-cli process would have to take turns to keep
+# each frame's owner unambiguous, and a shared chat must never wait for another
+# chat. codex is not a member either: its chat teardown's record preservation has
+# no lane cover. Every other backend is out because it is not served by
+# ``AcpRuntime`` (one process per session).
+ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KAS})
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux.

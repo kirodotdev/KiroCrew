@@ -11,6 +11,10 @@ and the gateway installs the pinned engine if it is missing
 The rule, in order:
 
 1. ``agent.kas_bundle`` on: the bundle route, as configured.
+1a. The ``chat_runtime_sharing`` feature preview on, the route open to the switch
+   (rule 2) and no ``KIROCREW_KIRO_BIN`` (rule 4): the bundle route
+   (:func:`sharing_preview_selects_bundle`). A spawn whose engine cannot be
+   installed or started continues with the rules below.
 2. The harness choice stored as the Kiro CLI pick (``"kiro"``): the relay. The
    choice is the session's own Bot pin (``agents.<name>.acp_backend``) when it
    has one, else ``agent.acp_backend``. That pick runs on KAS only because
@@ -53,13 +57,16 @@ __all__ = [
     "REASON_KIRO_CLI_LAUNCHER",
     "REASON_KIRO_CLI_SIGNED_OUT",
     "REASON_NO_KIRO_CLI",
+    "REASON_SHARING_PREVIEW",
     "KasRoute",
     "crew_sign_in_starts_spawn",
     "kiro_cli_signed_out",
     "last_spawn_route",
+    "note_preview_bundle_failed",
     "note_spawn_route",
     "relay_unusable_reason",
     "resolve_kas_route",
+    "sharing_preview_selects_bundle",
 ]
 
 #: ``agent.kas_bundle`` is on.
@@ -73,9 +80,16 @@ REASON_KIRO_CLI_SIGNED_OUT = "kiro_cli_signed_out"
 #: (the operator's ``KIROCREW_KIRO_BIN``, or a stored Kiro CLI pick): only
 #: kiro-cli's own sign-in starts it, so its remedy is ``kiro-cli login``.
 REASON_KIRO_CLI_LAUNCHER = "kiro_cli_launcher"
+#: The ``chat_runtime_sharing`` feature preview is on: a shared chat must run on
+#: an engine that answers several chats at once, and Crew's pinned engine is the
+#: one Crew can vouch for, so the preview moves KAS onto it without
+#: ``agent.kas_bundle``. A spawn falls back to the default route when the engine
+#: cannot be installed or started (``KasHarness.resolve_spawn``).
+REASON_SHARING_PREVIEW = "chat_runtime_sharing"
 
 _REASON_TEXT = {
     REASON_CONFIGURED: "agent.kas_bundle is on",
+    REASON_SHARING_PREVIEW: "the ACP runtime sharing preview is on",
     REASON_NO_KIRO_CLI: "kiro-cli is not installed",
     REASON_KIRO_CLI_SIGNED_OUT: "kiro-cli is not signed in",
     REASON_KIRO_CLI_LAUNCHER: "it needs kiro-cli's own sign-in",
@@ -210,17 +224,85 @@ def automatic_switch_allowed(pin: str = "") -> bool:
     return not _stored_as_kiro_pick()
 
 
+def sharing_preview_selects_bundle(
+    *, pin: str = "", environ: Mapping[str, str] | None = None
+) -> bool:
+    """Whether the ``chat_runtime_sharing`` preview moves this KAS spawn onto the bundle.
+
+    True only with the preview on, a route still open to the switch (rule 2: a
+    stored Kiro CLI pick stays on kiro-cli), no ``KIROCREW_KIRO_BIN`` (rule 4:
+    the operator's binary is never second-guessed), a usable Kiro Crew sign-in
+    (the bundle runs no kiro-cli, so it starts on Crew's sign-in alone; a host
+    signed in only through kiro-cli keeps the relay), and no earlier
+    preview-selected bundle start that failed in this process
+    (:func:`note_preview_bundle_failed`). Off, routing is exactly the rules above.
+    Blocking (reads config and the vault); never raises, and an unreadable config
+    or sign-in answers False.
+    """
+    environ = os.environ if environ is None else environ
+    if (environ.get("KIROCREW_KIRO_BIN") or "").strip() or _PREVIEW_BUNDLE_FAILED:
+        return False
+    try:
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        if not chat_runtime_sharing_enabled(KiroCrewConfig.load()):
+            return False
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the default route
+        logger.debug("could not read the chat_runtime_sharing preview", exc_info=True)
+        return False
+    if not automatic_switch_allowed(pin):
+        return False
+    try:
+        crew_signed_in = sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+    except Exception:  # noqa: BLE001 - an unreadable vault proves no Crew sign-in
+        crew_signed_in = False
+    if not crew_signed_in:
+        _log_preview_skip("Kiro Crew has no usable sign-in; KAS keeps its default route")
+    return crew_signed_in
+
+
+#: Why the preview last kept KAS off the bundle, so the reason is logged once per
+#: change rather than at every spawn.
+_PREVIEW_SKIP_LOGGED = ""
+#: The error of a preview-selected bundle start that failed in this process, or
+#: ``""``. Once set, the preview stops choosing the bundle (and the sharing gate,
+#: which reads the same route, stops sharing) until the gateway restarts.
+_PREVIEW_BUNDLE_FAILED = ""
+
+
+def _log_preview_skip(why: str) -> None:
+    global _PREVIEW_SKIP_LOGGED
+    if why != _PREVIEW_SKIP_LOGGED:
+        _PREVIEW_SKIP_LOGGED = why
+        logger.warning("chat-runtime-sharing: %s", why)
+
+
+def note_preview_bundle_failed(detail: str) -> None:
+    """Record that a start the preview put on the bundle failed; later spawns fall back."""
+    global _PREVIEW_BUNDLE_FAILED
+    _PREVIEW_BUNDLE_FAILED = detail or "start failed"
+    _log_preview_skip(
+        f"Crew's KAS engine failed to start ({_PREVIEW_BUNDLE_FAILED}); KAS keeps its "
+        "default route and chats keep their own process until the gateway restarts"
+    )
+
+
 def resolve_kas_route(
     *,
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
+    pin: str = "",
 ) -> KasRoute:
     """The route the next KAS spawn takes, computed fresh. Blocking; never raises.
 
     The same rule :meth:`kiro_crew.acp.harness.kas.KasHarness.resolve_spawn`
     applies, for the callers that describe a spawn instead of making one
-    (``kirocrew doctor``, ``kirocrew kas route``, the install probe). A failed
-    kiro-cli lookup answers the relay, whose own error names the failure.
+    (``kirocrew doctor``, ``kirocrew kas route``, the install probe, the chat
+    sharing gate). A failed kiro-cli lookup answers the relay, whose own error
+    names the failure. *pin* is the session's own Bot pin (``""``: none).
+    With the ``chat_runtime_sharing`` preview on, the bundle route is chosen
+    before the relay rules (:func:`sharing_preview_selects_bundle`).
 
     """
     from kiro_crew.config.loader import KiroCrewConfig
@@ -232,7 +314,9 @@ def resolve_kas_route(
             return KasRoute(bundle=True, reason=REASON_CONFIGURED)
     except Exception:  # noqa: BLE001 - unreadable config keeps the default route rules
         logger.debug("could not read agent.kas_bundle", exc_info=True)
-    if not automatic_switch_allowed():
+    if sharing_preview_selects_bundle(pin=pin, environ=environ):
+        return KasRoute(bundle=True, reason=REASON_SHARING_PREVIEW)
+    if not automatic_switch_allowed(pin):
         return RELAY
     try:
         from kiro_crew.acp.client import _resolve_kiro_bin

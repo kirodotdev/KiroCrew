@@ -110,7 +110,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "harness_compact_verb_advertised": ("property", False, "a6632a57e602", "acp"),
     "harness_managed_compaction_backend": ("property", False, "f21e39ec5ffb", "acp"),
     "harness_pin": ("property", False, "bb418bb7ece8", "acp"),
-    "hold_chat_turn_gate": ("function", False, "8c5dea5b3c28", "acp_turns"),
     "has_active_turn": ("function", False, "a6632a57e602", "acp"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),
     "is_acp_runtime_backend": ("property", False, "a6632a57e602", "acp"),

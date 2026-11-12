@@ -510,41 +510,6 @@ def _inline_turn_finished_cleanly(self: AcpProvider) -> bool:
     return bool(probe()) if callable(probe) else False
 
 
-class _HeldChatTurnGate:
-    """The scope :func:`hold_chat_turn_gate` opens: the backing session's hold, or nothing."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-        self._held: Any = None
-
-    async def __aenter__(self) -> None:
-        hold = getattr(self._client, "hold_chat_turn_gate", None)
-        if hold is None:
-            return
-        held = hold()
-        if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
-            await held.__aenter__()
-            self._held = held
-
-    async def __aexit__(self, *exc: Any) -> Any:
-        held, self._held = self._held, None
-        if held is not None:
-            return await held.__aexit__(*exc)
-        return None
-
-
-def hold_chat_turn_gate(self: AcpProvider) -> _HeldChatTurnGate:
-    """Hold a shared process's chat turn gate across a whole compaction.
-
-    The compaction paths wrap ``stream_command('/compact')`` and the deferred
-    ``wait_for_compaction`` receipt in this, so a co-tenant chat cannot start a
-    turn between them into which this session's ownerless compaction terminal is
-    fanned. Delegates to the backing ``AcpSessionProvider``; a placeholder client
-    before startup or a non-runtime client has no gate, and this holds nothing.
-    """
-    return _HeldChatTurnGate(self._client)
-
-
 async def wait_for_compaction(
     self: AcpProvider, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
 ) -> dict:

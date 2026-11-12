@@ -167,7 +167,6 @@ class AcpRuntime:
     release_session = _rt_registry.release_session
     delete_session_record = _rt_registry.delete_session_record
     keep_record_on_teardown = _rt_registry.keep_record_on_teardown
-    chat_turn_gate = _rt_registry.chat_turn_gate
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
@@ -826,11 +825,6 @@ class AcpRuntime:
         # Sessions whose teardown must keep the stored record while a re-injection
         # load runs (``keep_record_on_teardown``).
         self._record_keeping_sessions: set[str] = set()
-        # Serializes CHAT co-tenant turns on a shared kiro-cli process
-        # (``chat_turn_gate``). Held only by shared chat sessions; a subagent turn
-        # is exempt, because it runs while its principal's turn is still open and
-        # would deadlock on the lock the principal holds.
-        self._chat_turn_lock = asyncio.Lock()
         self._dropped_frames_flushed_at: float = 0.0
         # Monotonic time of the last attributable backend frame observed.
         # The idle sweep reads it (``session_activity_at``) because a session's

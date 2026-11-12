@@ -149,7 +149,9 @@ async def _spawn_admitted_repairing_kas_extract(self: AcpRuntime) -> None:
     except AcpRuntimeError as first:
         server_path = self._broken_kas_server_path()
         if server_path is None:
-            raise
+            if not await _fell_back_from_preview_bundle(self, first):
+                raise
+            return
         failure: AcpRuntimeError = first
     verdict = await asyncio.to_thread(kas_extract_repair.repair, server_path)
     if verdict.retry:
@@ -171,6 +173,40 @@ async def _spawn_admitted_repairing_kas_extract(self: AcpRuntime) -> None:
     self._kas_extract_broken_message = kas_extract_repair.fix_message(verdict)
     kas_extract_repair.note_blocked(verdict, server_path)
     raise failure
+
+
+async def _fell_back_from_preview_bundle(runtime: AcpRuntime, failure: AcpRuntimeError) -> bool:
+    """Retry a failed start ONCE on the default KAS route when the preview chose the bundle.
+
+    The ``chat_runtime_sharing`` preview puts KAS on Crew's own engine
+    (``kas_route.REASON_SHARING_PREVIEW``). A plan that built but whose launch or
+    ``initialize`` then failed must not cost the chat: the failure is recorded
+    (``kas_route.note_preview_bundle_failed``), which stops the preview choosing the
+    bundle and the sharing gate sharing, and this handle starts once more, where
+    ``resolve_spawn`` now takes the default route. True when that start succeeded.
+    A configured ``agent.kas_bundle`` start, a relay start and a remote-workspace
+    handle (whose relay the failed start closed) answer False, so their error
+    propagates as before.
+
+    shortcut: a chat whose placement already joined this founding during the
+    failed start lands on the fallback process; the gate refuses every placement
+    after the record, so at most the starts already in flight share it. Upgrade
+    by closing the entry to joins (``RuntimeOwnership.close_to_joins``) here if
+    that window is ever seen.
+    """
+    from kiro_crew.acp import kas_route
+
+    harness = getattr(runtime, "_harness", None)
+    if getattr(harness, "spawn_route_reason", "") != kas_route.REASON_SHARING_PREVIEW:
+        return False
+    kas_route.note_preview_bundle_failed(str(failure))
+    if (
+        getattr(runtime, "_remote_workspace", None)
+        or not await runtime._revive_after_failed_start()
+    ):
+        return False
+    await runtime._spawn_admitted_rederiving_once()
+    return True
 
 
 async def _spawn_admitted_rederiving_once(self: AcpRuntime) -> None:

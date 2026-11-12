@@ -1455,7 +1455,6 @@ class AcpProvider(LLMProvider):
     steer = _acp_turns.steer
     _inline_turn_finished_cleanly = _acp_turns._inline_turn_finished_cleanly
     wait_for_compaction = _acp_turns.wait_for_compaction
-    hold_chat_turn_gate = _acp_turns.hold_chat_turn_gate
 
 
 def is_claude_backend(provider: Any) -> bool:
