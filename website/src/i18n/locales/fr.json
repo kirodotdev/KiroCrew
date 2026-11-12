@@ -22489,6 +22489,8 @@
       "goals_new_goal_send": "Dire à {{name}} quoi viser",
       "goals_new_goal_message": "Je veux te fixer un objectif. Demande-moi ce qui compte, puis note-le pour que je l’approuve.",
       "goals_new_goal_failed": "Impossible d’envoyer au chat. Réessaie.",
+      "goals_new_goal_unconfirmed": "Envoi non confirmé — ouvre le chat et vérifie la conversation avant de renvoyer.",
+      "goals_new_goal_open_chat": "Ouvrir le chat",
       "goals_goal_number": "Objectif {{number}}",
       "goals_remove": "Retirer l'objectif",
       "goals_removed": "Objectif retiré",

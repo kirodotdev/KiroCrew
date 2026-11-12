@@ -1092,11 +1092,17 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
       expect(holdsDocument()).toBe(false)
     } else {
       const notice = await screen.findByTestId(status === 'refused' ? 'crew-goals-new-goal-error' : 'crew-goals-new-goal-unconfirmed')
-      if (status !== 'refused') expect(notice).toHaveTextContent('check the conversation above before sending it again')
-      // The modal stays open over the card, for another try.
+      if (status !== 'refused') expect(notice).toHaveTextContent('open the chat and check the conversation before sending it again')
+      // The modal stays open over the card: a refusal for another try, an
+      // unconfirmed delivery with Open chat in place of Send.
       expect(screen.getByRole('dialog', { name: 'New goal' })).toContainElement(notice)
       expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
-      expect(screen.getByTestId('crew-goals-new-goal-send')).toBeEnabled()
+      expect(screen.getByTestId(status === 'refused' ? 'crew-goals-new-goal-send' : 'crew-goals-new-goal-open-chat')).toBeEnabled()
+      if (status !== 'refused') {
+        // Open chat sends nothing and, floating over the thread, closes the card.
+        fireEvent.click(screen.getByTestId('crew-goals-new-goal-open-chat'))
+        await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
+      }
     }
     expect(api.sendChat).toHaveBeenCalledTimes(1)
     const [message, slot] = vi.mocked(api.sendChat).mock.calls[0]
