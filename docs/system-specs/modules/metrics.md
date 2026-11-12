@@ -1828,9 +1828,9 @@ config write repeats it. The hook points, `traced` included, only call `peek()`,
 returns the state already resolved and never reads or awaits anything, so a turn adds
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
-`kirocrew chat` CLI). The service boot registers `watch_config()`: a `telemetry.*` write that moves
-`traces_enabled`, `retention_days` or `max_total_mb` makes the next turn re-read the
-switch, and any other write changes nothing. A process builds at most one tracer and
+`kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
+moves `traces_enabled`, `retention_days` or `max_total_mb`, the worker thread applying it
+re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
 the same tracer is served again with the new caps set on its sink. That keeps one

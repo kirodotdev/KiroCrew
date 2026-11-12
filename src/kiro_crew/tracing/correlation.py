@@ -53,7 +53,7 @@ ID_KEYS = frozenset(
     }
 )
 
-#: Every attribute key a span may carry. Pinned by test_tracing_attrs.py.
+#: Every attribute key a span may carry. Pinned by test_tracing_ids_attrs.py.
 ALLOWED_KEYS = ID_KEYS | frozenset(
     {
         "gen_ai.operation.name",

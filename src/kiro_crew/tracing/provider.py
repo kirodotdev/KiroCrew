@@ -1,16 +1,18 @@
-"""Tracer lifecycle: off by default, built on first use, rebuilt on a config change.
+"""Tracer lifecycle: off by default, built once the switch reads on, kept across config changes.
 
-``telemetry.traces_enabled`` (default off) is read once, the first time a turn
-asks :func:`current`. Off means no OpenTelemetry SDK import, no
+``telemetry.traces_enabled`` (default off) is read on a worker thread that
+:func:`watch_config` starts at gateway boot; the turn paths only :func:`peek`
+at what that read resolved. Off means no OpenTelemetry SDK import, no
 ``TracerProvider`` and no export thread: every hook point costs one call that
 returns ``None``. On means one ``TracerProvider`` with a ``BatchSpanProcessor``
 writing to the local JSONL sink under ``<data home>/traces`` and nothing else;
 spans never leave the host from this module.
 
 Kept apart from ``metrics/provider.py``: the two signals share the shard store
-and the attribute guard, not a lifecycle. :func:`watch_config` drops the tracer
-on any ``telemetry.*`` write so the next turn re-reads the switch; a process
-that registers no watcher keeps the value it read first.
+and the attribute guard, not a lifecycle. :func:`watch_config` re-reads the
+switch after a ``telemetry.*`` write that moves one of its inputs, keeping the
+one tracer it built; a process that registers no watcher never reads the switch
+and is not traced.
 
 **Deterministic ids.** The SDK mints ids through its ``IdGenerator``. Every span
 here is started by :func:`start_span`, which pins the ids the ``tracing/ids.py``
@@ -74,7 +76,9 @@ def current() -> TraceState | None:
 
 
 def resolved() -> bool:
-    """Whether the switch has been read since the last rebuild."""
+    """Whether the switch is resolved: read since the process started or since it
+    was last cleared (a ``telemetry.*`` write that moved an input, or :func:`shutdown`).
+    """
     return _resolved
 
 
@@ -83,8 +87,9 @@ def peek() -> TraceState | None:
 
     The hook points run on the event loop and on the ACP reader task, where a
     config read, a vault key's fsync or a stalled data-home disk must not stall
-    every turn. Resolution happens in ``turns.traced``, which awaits
-    :func:`current` on a worker thread before a turn's spans open.
+    every turn. Resolution happens off the loop: on the thread
+    :func:`watch_config` starts at boot, and on the worker thread that applies a
+    ``telemetry.*`` write. A turn that starts before it finishes is not traced.
     """
     return _state if _resolved else None
 
@@ -323,9 +328,11 @@ _config_sub: object = None
 def _apply_config_change() -> None:
     """Re-read the switch after a ``telemetry.*`` write that moved one of its inputs.
 
-    Nothing is shut down: the next turn resolves again, getting the same tracer
-    with the new caps, or ``None`` when the switch went off. A turn still
-    streaming keeps ending its spans on the tracer it started with.
+    Nothing is shut down: it resolves again at once, on this worker thread,
+    serving the one tracer this process builds (the kept one, or a first one
+    when none was built yet) with the new caps, or ``None`` when the switch is
+    off or the build fails. A turn still streaming keeps ending its spans on the
+    tracer it started with.
     """
     global _resolved, _state
     try:
