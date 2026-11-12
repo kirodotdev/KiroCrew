@@ -1931,13 +1931,11 @@ on its own once a read lands. Its Dismiss holds for the rest of that outage,
 as the team-read notice's does: the notice stays away while the 30s re-reads
 keep failing, and only a failure after a good read (`dataUpdatedAt` past the
 dismissed failure) shows it again. A docked Bot's row carries
-the rail's one accent dot while the Bot has something for the person, read from
-the Bots page row's own sources: it waits on them (its DM slot, or a session it
-dispatched, waits on an approval or a question, through `mateNeedsYouByKey` in
-`website/src/lib/crewMode.ts`, the map the Bots page rows read too), its DM
-slot is unread (`unreadSlots`), or it is working (its live DM slot, falling back
-to the roster's `running`). The dot goes when none of these holds; its
-accessible name says which one put it there.
+the rail's one accent dot only while its DM slot is unread (`unreadSlots`, the
+Bots page row's own source), so the dot goes the moment the thread is read.
+Working (its live DM slot or a session it dispatched, falling back to the
+roster's `running`) shows on the avatar's face, never as the dot, and a turn
+waiting on the person puts no dot on the row either.
 `star_order` lives on the crew record next to `starred`, so it follows the
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
