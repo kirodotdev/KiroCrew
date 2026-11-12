@@ -956,8 +956,9 @@ files own it:
     settings icon-tile and goal-mark tokens, the dock pass-through and the
     global reduced-motion transition reset.
   - `content-fit.css` owns the rules that make content fit its box: font-metric
-    compensation on the nav rail, the crew-chip cut edge, image and spacer
-    reservations, the pane-dim token and the markdown-table breakout.
+    compensation on the nav rail, the Hindi and Bengali letter-spacing reset,
+    the crew-chip cut edge, image and spacer reservations, the pane-dim token
+    and the markdown-table breakout.
 
   `cli-mode.css`, `message-font-size.css` and `crew-notes.css` in the same
   directory are imported by `main.tsx` instead. A test that measures the
