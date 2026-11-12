@@ -498,6 +498,15 @@ class ValidationResult:
     ok: bool
     errors: list[str] = field(default_factory=list)
     meta: dict[str, Any] | None = None
+    # The compile-stage subset of ``errors``. A run refuses them like any error;
+    # a save path keeps saving such a script, as it did before ``validate``
+    # reported them, and returns them as warnings.
+    compile_errors: list[str] = field(default_factory=list)
+
+    @property
+    def save_errors(self) -> list[str]:
+        """The errors a save path refuses: every error but a compile-stage one."""
+        return [error for error in self.errors if error not in self.compile_errors]
 
 
 def _is_dunder(name: str) -> bool:
@@ -863,6 +872,7 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         return ValidationResult(ok=False, errors=[_TOO_DEEP_ERROR])
 
     errors: list[str] = []
+    compile_errors: list[str] = []
     try:
         visitor = _Validator()
         visitor.visit(tree)
@@ -876,9 +886,19 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         _check_undefined_names(source, errors)
         # Contract errors feed authoring retries before a malformed script can run.
         _check_dsl_contract(tree, source, errors)
+        # ``ast.parse`` only parses. The compiler also refuses ``return``/``await``
+        # outside a function and a ``nonlocal`` with no binding, and the runner
+        # compiles the same way, so such a script could never run. Compiling does
+        # not execute anything. Like the runner's ``compile``, this one inherits
+        # the module's ``from __future__ import annotations``.
+        try:
+            compile(tree, "<workflow>", "exec")
+        except SyntaxError as exc:
+            compile_errors.append(f"syntax error: {exc}")
+            errors.extend(compile_errors)
     except RecursionError:
         # Every walk above recurses with the tree's depth; a script deep enough
         # to exhaust the stack is refused, not surfaced as a server error.
         return ValidationResult(ok=False, errors=[_TOO_DEEP_ERROR])
 
-    return ValidationResult(ok=not errors, errors=errors, meta=meta)
+    return ValidationResult(ok=not errors, errors=errors, meta=meta, compile_errors=compile_errors)

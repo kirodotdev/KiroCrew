@@ -592,6 +592,17 @@ Static rejections:
   authoring time instead of dying mid-run with `NameError`. Conservative by design:
   only names the symbol table marks as referenced-global-and-never-assigned are
   flagged, and walrus / `global` bindings are treated as bound.
+- **Compile-stage syntax errors**: `ast.parse` only parses, so `validate` also
+  compiles the parsed tree (nothing runs). `return` / `await` outside a function
+  and a `nonlocal` with no binding are reported as `syntax error: ...`; the runner
+  compiles the same way, so each such script already failed at `exec`, and
+  authoring now regenerates it instead of launching a run that cannot start.
+  These errors are also kept apart as `ValidationResult.compile_errors`. A run
+  (`start`, `author`, `rerun_subtree`) refuses them like any error; a save path
+  (`save_definition`, `update_definition`, `promote_run_definition` and the
+  workflow save/update change card) checks only `save_errors`, so it keeps saving
+  such a script as it did before `validate` reported them, and the reply carries
+  them as `warnings` with a log line.
 - **DSL-contract misuse** (`_DslContractVisitor`). These are structurally legal
   Python, so the security pass and the name pass both wave them through; only a
   contract-aware pass catches them. A type checker would too, but mypy is not
