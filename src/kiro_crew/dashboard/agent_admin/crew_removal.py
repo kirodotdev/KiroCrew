@@ -268,6 +268,27 @@ def _reclaim_deleted_member_page_offer(name: str, cfg: KiroCrewConfig) -> None:
         )
 
 
+def _reclaim_deleted_member_dashboard(name: str, cfg: KiroCrewConfig) -> None:
+    """Remove the dashboard instance of a member the roster does not hold.
+
+    It lives under ``members/<slug>/dashboard``, which nothing else in this teardown
+    reaches. Kept, a later crewmate that derives the same slug would open on this
+    one's page, and an import card's Undo would leave the page it adopted.
+
+    Decided exactly as :func:`_reclaim_deleted_member_page_offer` is. Call it while
+    holding ``memory_store_namespace_lock``. Best-effort and never raises.
+    """
+    try:
+        from kiro_crew.dashboard_templates import instance
+        from kiro_crew.members import member_slug
+
+        slug = member_slug(name, cfg)
+        if not _member_slug_is_claimed(slug):
+            instance.forget(slug)
+    except Exception:
+        logger.warning("crew delete: could not remove the dashboard of %r", name, exc_info=True)
+
+
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
     """Remove the private template copy that existed only for a now-deleted crew.
 
@@ -562,6 +583,8 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
             # The asked-once page offer, under the same hold and on the same slug:
             # it sits in ``crew-panels``, which no other step here reaches.
             _reclaim_deleted_member_page_offer(name, cfg)
+            # And its dashboard instance, under the same hold and on the same slug.
+            _reclaim_deleted_member_dashboard(name, cfg)
             return retired_store
 
         try:

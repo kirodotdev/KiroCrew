@@ -74,6 +74,7 @@ from kiro_crew.change_card_catalog_plans import (
     DASHBOARD_KEYS,
     DASHBOARD_LIST_OP_KEYS,
     IMPORT_STEP_CRON,
+    IMPORT_STEP_DASHBOARD,
     IMPORT_STEP_FILES,
     IMPORT_STEP_GOAL,
     IMPORT_STEP_RULES,
@@ -474,6 +475,7 @@ def result_summary(
                     IMPORT_STEP_GOAL: "its goal",
                     IMPORT_STEP_RULES: "its rules",
                     IMPORT_STEP_FILES: "its skills, scripts and picture",
+                    IMPORT_STEP_DASHBOARD: "its dashboard",
                     IMPORT_STEP_CRON: "its schedules",
                 }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
                 return (
@@ -655,6 +657,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/members/{slug}/import-files"),
         ("DELETE", "/api/members/{slug}/import-files"),
         ("POST", "/api/members/{slug}/dashboard/page-offer"),
+        ("POST", "/api/members/{slug}/dashboard/template"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
         ("POST", "/api/mcp/remove"),
@@ -699,6 +702,7 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),
+    ("POST", "/api/members/{slug}/dashboard/template"),
     ("PUT", "/api/members/{slug}/rules"),
     ("POST", "/api/members/{slug}/import-files"),
     ("DELETE", "/api/members/{slug}/import-files"),

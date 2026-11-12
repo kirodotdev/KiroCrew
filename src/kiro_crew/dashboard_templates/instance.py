@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -720,6 +721,33 @@ def read(slug: str) -> Instance:
     record, and rollback is how a change is undone.
     """
     return _instance_from_raw(slug, _read_record(slug))
+
+
+def forget(slug: str) -> None:
+    """Remove a crewmate's dashboard instance: its versions, current copy and staged preview.
+
+    For the teardown of a crewmate that left the roster, so a later one deriving the
+    same slug starts with no page. Refuses, and removes nothing, when any part of
+    ``<data home>/members/<slug>/dashboard`` is a link or the real path is not exactly
+    that: a link could lead the delete into another crewmate's page. The caller treats a
+    refusal as a failure to clean up and goes on. shortcut: a package page snapshot under
+    ``crew-panels`` is left to its own pruning; add its removal here if those pile up.
+    """
+    if is_session_key(slug):
+        raise InstanceError("a session dashboard is not a crewmate's")
+    if slug in (".", "..") or Path(slug).name != slug:
+        raise InstanceError("a member slug is one path segment")
+    # ``data_home`` is already the resolved home, so a link at the home itself is the
+    # operator's own placement and shows here as the real directory.
+    home = data_home()
+    directory = instance_dir(slug)
+    for part in (home, home / "members", home / "members" / slug, directory):
+        if part.is_symlink():
+            raise InstanceError("a linked dashboard path is not followed")
+    if directory.resolve() != home.resolve() / "members" / slug / "dashboard":
+        raise InstanceError("the dashboard path does not resolve to the member's own")
+    if directory.is_dir():
+        shutil.rmtree(directory)
 
 
 def _updated_ms(raw: dict[str, Any]) -> int:
