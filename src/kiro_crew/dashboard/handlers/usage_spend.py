@@ -131,24 +131,43 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
     return out
 
 
-def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
-    """Credits spent per LOCAL calendar day over the last *days*.
+def _finite_number(raw: object) -> float | None:
+    """*raw* as a finite float, or ``None`` for a bool, a non-number or a non-finite value.
 
-    ``{"YYYY-MM-DD": credits}`` for every day that has at least one counted
-    row. Rows are admitted by the same three tests :func:`slot_spend` applies
-    (a ``tokens`` row, inside the per-row epoch cutoff, with a finite numeric
-    ``credits``) and keyed by :func:`_parse_row_day`, the local day the shard
-    partition itself uses. There is deliberately NO slot filter: every turn the
-    backend billed counts, background slots included, so a day's figure is the
-    day's whole spend rather than only its conversations.
+    ``float`` comes before the finite test, because ``math.isfinite`` on an int
+    wider than a double raises rather than answers.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    try:
+        value = float(raw)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
 
-    Numeric hygiene: ``credits`` is coerced through ``float`` before the finite
-    test, because ``math.isfinite`` on an int wider than a double raises rather
-    than answers, and a row whose addition would push a day's total past the
-    finite range is dropped so the payload can never carry ``Infinity``.
+
+#: The per-turn spend fields :func:`daily_spend` sums: credits, and the dollar
+#: ``cost`` a dollar-billed harness reports.
+_DAILY_SPEND_FIELDS: tuple[str, ...] = ("credits", "cost")
+
+
+def daily_spend(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, dict[str, float]]:
+    """Credits and dollar cost spent per LOCAL calendar day over the last *days*.
+
+    ``{"YYYY-MM-DD": {"credits": ..., "cost": ...}}``. A day is present when it
+    has at least one counted row, and each field is present when at least one of
+    that day's rows carries a finite number for it. Rows are admitted by the same
+    tests :func:`slot_spend` applies (a ``tokens`` row, inside the per-row epoch
+    cutoff) and keyed by :func:`_parse_row_day`, the local day the shard partition
+    itself uses. There is deliberately NO slot filter: every turn the backend
+    billed counts, background slots included, so a day's figure is the day's
+    whole spend rather than only its conversations.
+
+    A row whose addition would push a day's total past the finite range is
+    dropped from that field, so the payload can never carry ``Infinity``.
     """
     cutoff = time.time() - (days * 86400)
-    out: dict[str, float] = {}
+    out: dict[str, dict[str, float]] = {}
     for path in _shards_in_window(days):
         try:
             with path.open("rb") as fh:
@@ -163,27 +182,33 @@ def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
                     ts_epoch = _parse_row_ts(str(ts_raw or ""))
                     if ts_epoch is None or ts_epoch < cutoff:
                         continue
-                    credits = obj.get("credits")
-                    if isinstance(credits, bool) or not isinstance(credits, (int, float)):
-                        continue
-                    try:
-                        value = float(credits)
-                    except OverflowError:
-                        continue
-                    if not math.isfinite(value):
+                    values = {f: _finite_number(obj.get(f)) for f in _DAILY_SPEND_FIELDS}
+                    if all(v is None for v in values.values()):
                         continue
                     day = _parse_row_day(ts_raw)
                     if day is None:
                         continue
-                    total = out.get(day, 0.0) + value
-                    if not math.isfinite(total):
-                        continue
-                    out[day] = total
+                    sums = out.setdefault(day, {})
+                    for field, value in values.items():
+                        if value is None:
+                            continue
+                        total = sums.get(field, 0.0) + value
+                        if math.isfinite(total):
+                            sums[field] = total
         except (OSError, UnicodeDecodeError):
             # Same policy as every other shard reader here: a corrupt or
             # unreadable shard costs its own rows, not the whole window.
             continue
-    return out
+    return {day: sums for day, sums in out.items() if sums}
+
+
+def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
+    """Credits spent per LOCAL calendar day over the last *days*.
+
+    ``{"YYYY-MM-DD": credits}`` for every day that has at least one row with a
+    finite numeric ``credits``: the ``credits`` half of :func:`daily_spend`.
+    """
+    return {day: sums["credits"] for day, sums in daily_spend(days).items() if "credits" in sums}
 
 
 #: Numeric per-turn fields copied from a shard row into a usage-turns row, in

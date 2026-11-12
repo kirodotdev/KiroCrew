@@ -16916,6 +16916,8 @@
         "cache_creation": "キャッシュ作成",
         "cache_read": "キャッシュ読み込み",
         "credits": "クレジット",
+        "cost_usd": "コスト",
+        "cost_usd_compact": "コスト: {{cost}}",
         "credits_used": "使用クレジット",
         "credits_used_compact": "使用クレジット: {{credits}} · {{pct}}",
         "credits_used_pct": "使用クレジット (%)",

@@ -76,6 +76,9 @@ export default function UsageTab() {
   const s = data.sessions
   const b = data.billing
   const pct = b?.percentUsed ?? null
+  // The Cost column appears only when a day in the window carries dollars, so a
+  // credit-billed install keeps its table exactly as it was.
+  const showCost = s.dailyHistory.some(d => d.costUsd != null)
 
   return (
     <div className="space-y-4">
@@ -194,12 +197,14 @@ export default function UsageTab() {
                   <th className="pb-2 font-medium text-right max-[600px]:hidden" title={i18nT('pages.overview.usageTab.credits_used_pct_title')}>
                     {i18nT('pages.overview.usageTab.credits_used_pct')}
                   </th>
+                  {showCost && <th className="pb-2 pl-4 font-medium text-right whitespace-nowrap max-[600px]:hidden">{i18nT('pages.overview.usageTab.cost_usd')}</th>}
                 </tr>
               </thead>
               <tbody>
                 {[...s.dailyHistory].reverse().map(d => {
                   const credits = fmtCredits(d.credits)
                   const pct = fmtCreditsPct(d.credits, b?.limit)
+                  const cost = d.costUsd == null ? EM_DASH : formatCost(d.costUsd)
                   return (
                     <Fragment key={d.date}>
                       <tr className="border-t border-border">
@@ -209,6 +214,7 @@ export default function UsageTab() {
                         <td className="py-1.5 text-right">{d.toolCalls}</td>
                         <td className="py-1.5 text-right max-[600px]:hidden">{credits}</td>
                         <td className="py-1.5 text-right max-[600px]:hidden">{pct}</td>
+                        {showCost && <td className="py-1.5 pl-4 text-right whitespace-nowrap max-[600px]:hidden">{cost}</td>}
                       </tr>
                       {/* Phone: six columns would wrap every cell, and the repo forbids a
                           sideways-scrolling table, so the two credit figures fold onto a
@@ -216,6 +222,7 @@ export default function UsageTab() {
                       <tr className="hidden max-[600px]:table-row text-muted text-[12px]" data-phone-line="">
                         <td colSpan={4} className="pb-1.5 text-right">
                           {i18nT('pages.overview.usageTab.credits_used_compact', { credits, pct })}
+                          {showCost && <div>{i18nT('pages.overview.usageTab.cost_usd_compact', { cost })}</div>}
                         </td>
                       </tr>
                     </Fragment>

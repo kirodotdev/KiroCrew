@@ -18245,6 +18245,8 @@
         "cache_creation": "Создание кэша",
         "cache_read": "Чтение кэша",
         "credits": "Кредиты",
+        "cost_usd": "Стоимость",
+        "cost_usd_compact": "Стоимость: {{cost}}",
         "credits_used": "Использовано кредитов",
         "credits_used_compact": "Использовано кредитов: {{credits}} · {{pct}}",
         "credits_used_pct": "Использовано кредитов (%)",

@@ -16916,6 +16916,8 @@
         "cache_creation": "캐시 생성",
         "cache_read": "캐시 읽기",
         "credits": "크레딧",
+        "cost_usd": "비용",
+        "cost_usd_compact": "비용: {{cost}}",
         "credits_used": "사용한 크레딧",
         "credits_used_compact": "사용한 크레딧: {{credits}} · {{pct}}",
         "credits_used_pct": "사용한 크레딧 (%)",
