@@ -437,11 +437,15 @@ async def reclaim_stale_gateway_port(
     if ok:
         log.warning("Reclaimed port %d from stale gateway (pid %s).", port, kiro_pids)
         return RECLAIMED
+    # Deferred like the cli_server imports above: the CLI modules import the
+    # dashboard, so a top-level import here would be circular.
+    from kiro_crew.cli_server_stop import _force_stop_command
+
     log.error(
         "Failed to terminate stale gateway (pid %s) on port %d — you may need to "
-        "kill it manually: kill -9 %s",
+        "kill it manually: %s",
         _describe_holders(kiro_pids),
         port,
-        " ".join(str(p) for p in kiro_pids),
+        _force_stop_command(kiro_pids),
     )
     return RECLAIM_FAILED

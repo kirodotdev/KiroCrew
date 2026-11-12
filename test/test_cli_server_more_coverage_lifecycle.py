@@ -406,6 +406,53 @@ class TestStopOnWindows:
         assert "No permission to stop pid 4242" in capsys.readouterr().out
         assert sel_rec.calls[-1]["outcome"] == "denied"
 
+    def test_permission_error_points_at_an_elevated_terminal_not_sudo(
+        self, monkeypatch, capsys
+    ) -> None:
+        """Windows has no sudo: taskkill is denied across an elevation boundary."""
+
+        def denied(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", denied)
+        with pytest.raises(SystemExit):
+            cli_server._stop(None)
+        out = capsys.readouterr().out
+        assert "Administrator terminal" in out
+        assert "sudo" not in out
+
+    def test_permission_error_on_posix_keeps_the_sudo_line(self, monkeypatch, capsys) -> None:
+        """Only the Windows text changes; POSIX prints main's line byte for byte."""
+
+        def denied(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(os, "kill", denied)
+        with pytest.raises(SystemExit):
+            cli_server._stop(None)
+        assert "❌ No permission to stop pid 4242 — try: sudo kirocrew stop\n" in (
+            capsys.readouterr().out
+        )
+
+    @pytest.mark.parametrize(
+        ("windows", "pids", "sep", "expected"),
+        [
+            (True, [4242], " ", "taskkill /PID 4242 /T /F"),
+            (True, [1, 2], ", ", "taskkill /PID 1 /PID 2 /T /F"),
+            (False, [4242], " ", "kill -9 4242"),
+            (False, [1, 2], " ", "kill -9 1 2"),  # port reclaim log, as on main
+            (False, [1, 2], ", ", "kill -9 1, 2"),  # restart refusal, as on main
+        ],
+    )
+    def test_force_stop_command_is_the_platform_s_own(
+        self, monkeypatch, windows, pids, sep, expected
+    ) -> None:
+        from kiro_crew.cli_server_stop import _force_stop_command
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        assert _force_stop_command(pids, posix_sep=sep) == expected
+
     def test_generic_taskkill_failure_rechecks_liveness(self, monkeypatch, capsys) -> None:
         """An OSError from taskkill is only "denied" if the pid is still alive."""
 

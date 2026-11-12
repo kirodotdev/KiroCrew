@@ -34,6 +34,7 @@ from kiro_crew.cli_server_peer import (
 )
 from kiro_crew.cli_server_stop import (
     _config_dir_owner,
+    _force_stop_command,
     _pid_exited,
     _refuse_desktop_supervised,
     _refuse_if_lock_held,
@@ -1203,7 +1204,8 @@ def _restart(cli_port: int | None = None) -> None:
                 f"   The old gateway still owns {config_dir()}, so a new one "
                 f"would be refused and exit immediately.\n"
                 f"   To inspect the shutdown, run: kirocrew logs -f\n"
-                f"   If the process is wedged, force it: kill -9 {pids}"
+                "   If the process is wedged, force it: "
+                f"{_force_stop_command(alive, posix_sep=', ')}"
             )
             sys.exit(1)
 
