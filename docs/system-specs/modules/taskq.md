@@ -1623,7 +1623,11 @@ one.
 `classify_exception(exc, scope)` runs the registered adapters in order —
 `github` (headers, GraphQL `errors[]`, `gh` stderr wording), `http` (status
 codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
-duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
+duck-typed over `urllib`/`aiohttp`/`httpx` error shapes; a retry hint that is
+no usable time, such as a 400-digit `Retry-After`, `inf`, or an instant more
+than 366 days out, from a header or from the error text, is dropped and the
+status-based retry stands, rather than raising out of the adapter or parking
+the task on a wait that never ends) and `acp_provider`
 (reuses the ACP layer's own throttle / usage-limit / auth / 5xx patterns and
 `_is_transient_raw_error`, defined in `acp.transport_errors` and read through
 `acp.client`, so a third copy cannot drift; an `AcpError` tagged
