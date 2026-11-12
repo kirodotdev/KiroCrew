@@ -1362,134 +1362,176 @@ class IngestionPipeline:
 
         await run_to_completion(_insert_job)
 
-        chunks = await asyncio.to_thread(self.chunker.chunk, text)
-        total = len(chunks)
-
-        chunk_contents = [chunk['content'] for chunk in chunks]
+        # The job row above is persisted as 'processing' BEFORE any fallible
+        # work runs, and nothing below ever wrote 'failed' on an uncaught
+        # exception -- so an extraction error left the job in 'processing'
+        # forever, a caller polling get_job_status never saw it end, and the
+        # job list showed a run that was not running. The file path already
+        # ends its job on the way out (see ingest_file); this is the same
+        # treatment for the text path. The error still reaches the caller.
         try:
-            with extraction_source(source_id):
-                extractions = await self.extractor.extract_batch(chunk_contents)
+            chunks = await asyncio.to_thread(self.chunker.chunk, text)
+            total = len(chunks)
+
+            chunk_contents = [chunk['content'] for chunk in chunks]
+            try:
+                with extraction_source(source_id):
+                    extractions = await self.extractor.extract_batch(chunk_contents)
+            except Exception as exc:
+                # The LTS harness refusal fails the job (see ingest_file); any
+                # other extraction error keeps its existing path.
+                if _is_harness_refusal(exc):
+                    await run_to_completion(functools.partial(
+                        self._record_harness_refusal, job_id, source_id, content_hash, exc))
+                raise
+
+            # What THIS call wrote, collected at the write itself rather than
+            # inferred from a before/after comparison of the source -- a snapshot
+            # diff would also attribute anything a concurrent writer (e.g.
+            # import_bundle) commits into the same aggregate source while this
+            # ingest is awaiting, handing this call delete authority over
+            # knowledge it never created (critical for the aggregate Artifacts
+            # source, where many item groups share one source_id).
+            created_item_ids: list[str] = []
+            processed = 0
+            for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
+                try:
+                    extraction['summary'] = _redact(extraction.get('summary'))
+                    for ent in extraction.get('entities', []):
+                        ent['name'] = _redact(ent.get('name')) or ''
+                        ent['description'] = _redact(ent.get('description'))
+
+                    # ONE uncancellable unit, for both reasons spelled out in
+                    # _ingest_file_body: a cancellation must not be able to land
+                    # between the COMMIT and the record of it, and the append has to
+                    # sit BETWEEN the two writes so a failing location write still
+                    # leaves the item nameable by the partial-failure rollback.
+                    def _write_chunk() -> str:
+                        new_id = self.store.add_item(
+                            title=chunk.get('section_title') or f"{title} chunk {i}",
+                            content=chunk['content'],
+                            item_type=extraction.get('category', 'document'),
+                            source_id=source_id,
+                            chunk_index=chunk.get('chunk_index', i),
+                            summary=extraction.get('summary'),
+                            content_hash=content_hash,
+                        )
+                        created_item_ids.append(new_id)
+                        self.store.add_source_location(
+                            item_id=new_id, source_id=source_id,
+                            chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
+                            section_title=chunk.get('section_title'),
+                        )
+                        return new_id
+
+                    item_id = await run_to_completion(_write_chunk)
+                    # Entity storage can be O(entities): until the alias index is
+                    # built find_entity falls back to a full-table alias scan, and
+                    # each add_entity/add_mention/add_entity_relation
+                    # commits + mutates the graph. On a many-entity chunk this blocked
+                    # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
+                    # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
+                    # and sqlite connections are thread-local, so this is thread-safe.
+                    await asyncio.to_thread(self._store_entities, extraction, item_id)
+                    await self._embed_item(
+                        item_id,
+                        chunk.get('section_title') or f"{title} chunk {i}",
+                        extraction.get('summary'),
+                        chunk['content'],
+                    )
+                    processed += 1
+                except Exception:
+                    logger.exception("Failed to process chunk %d of text '%s'", i, title)
+
+            now = datetime.now().isoformat()
+
+            def _finalize() -> None:
+                # ONE off-loop hop for the delete + state finalization, mirroring
+                # _ingest_file_body: delete_items_batch rebuilds the entity graph and
+                # cannot run on the loop, and splitting it from the finalization
+                # would let a cancellation commit the delete while leaving the job
+                # 'processing' and the source unsynced (re-ingest -> duplicates).
+                # Worker connection is autocommit; WAL + busy_timeout absorb
+                # write-lock contention.
+                if processed == total:
+                    self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
+                    self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                    self.store.update_source(source_id, last_synced=now)
+                elif processed < total:
+                    # Partial failure: remove only items created during THIS call so we
+                    # never delete another item group sharing this source_id. Taken
+                    # from the write itself, not a before/after re-read of the source
+                    # (which would misattribute concurrent writers' items).
+                    # Deliberately NOT owner-scoped -- see _ingest_file_body: chunks
+                    # of an incomplete write must be destroyed, not detached to a
+                    # duplicate-gate attacher, or that attacher keeps a truncated
+                    # document its unchanged hash never lets a rescan repair.
+                    self.store.delete_items_batch(list(created_item_ids))
+                    self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self.store.db.execute(
+                    "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
+                    (_job_status(processed, total), total, processed, now, job_id))
+                self.store.db.commit()
+
+            await run_to_completion(_finalize)
+            if processed == total:
+                # Best-effort, and AFTER the finalize hop so a failure or cancel here
+                # cannot strand the job row.
+                try:
+                    await self.generate_source_summary(source_id)
+                except Exception as exc:
+                    logger.warning("Source summary generation failed for source_id=%s: %s",
+                                   source_id, type(exc).__name__)
+            # Cross-source dedup for whole-source ingests (upload / remote / chat).
+            # Group-level replaces (old_item_ids provided -- e.g. a single artifact's
+            # group within the aggregate Artifacts source) defer to the folder-scan
+            # dedup sweep, mirroring ingest_file, so one artifact edit doesn't rescan
+            # the entire aggregate source.
+            if processed == total and old_item_ids is None:
+                # dedup_document can merge entities -> _load_graph (full graph
+                # rebuild). Offloaded so a large source's dedup cannot stall the loop
+                # (RLock-guarded graph + thread-local sqlite make this thread-safe).
+                await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
+
+            # Settle only after the fallible finalize succeeded (see _ingest_file_body):
+            # a failure before here releases via ingest_text's finally instead of
+            # staying charged. No-op when token is None.
+            self._import_budget.settle(budget_token, total)
         except Exception as exc:
-            # The LTS harness refusal fails the job (see ingest_file); any
-            # other extraction error keeps its existing path.
-            if _is_harness_refusal(exc):
-                await run_to_completion(functools.partial(
-                    self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            # The LTS harness refusal records its own remedy on the job row
+            # (see _record_harness_refusal); every other failure ends the job
+            # here.
+            if not _is_harness_refusal(exc):
+                await self._fail_ingestion_job(job_id, source_id)
             raise
 
-        # What THIS call wrote, collected at the write itself rather than
-        # inferred from a before/after comparison of the source -- a snapshot
-        # diff would also attribute anything a concurrent writer (e.g.
-        # import_bundle) commits into the same aggregate source while this
-        # ingest is awaiting, handing this call delete authority over
-        # knowledge it never created (critical for the aggregate Artifacts
-        # source, where many item groups share one source_id).
-        created_item_ids: list[str] = []
-        processed = 0
-        for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
-            try:
-                extraction['summary'] = _redact(extraction.get('summary'))
-                for ent in extraction.get('entities', []):
-                    ent['name'] = _redact(ent.get('name')) or ''
-                    ent['description'] = _redact(ent.get('description'))
+        return job_id
 
-                # ONE uncancellable unit, for both reasons spelled out in
-                # _ingest_file_body: a cancellation must not be able to land
-                # between the COMMIT and the record of it, and the append has to
-                # sit BETWEEN the two writes so a failing location write still
-                # leaves the item nameable by the partial-failure rollback.
-                def _write_chunk() -> str:
-                    new_id = self.store.add_item(
-                        title=chunk.get('section_title') or f"{title} chunk {i}",
-                        content=chunk['content'],
-                        item_type=extraction.get('category', 'document'),
-                        source_id=source_id,
-                        chunk_index=chunk.get('chunk_index', i),
-                        summary=extraction.get('summary'),
-                        content_hash=content_hash,
-                    )
-                    created_item_ids.append(new_id)
-                    self.store.add_source_location(
-                        item_id=new_id, source_id=source_id,
-                        chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
-                        section_title=chunk.get('section_title'),
-                    )
-                    return new_id
+    async def _fail_ingestion_job(self, job_id: str, source_id: str) -> None:
+        """End *job_id* as failed so a stranded 'processing' row cannot outlive its call.
 
-                item_id = await run_to_completion(_write_chunk)
-                # Entity storage can be O(entities): until the alias index is
-                # built find_entity falls back to a full-table alias scan, and
-                # each add_entity/add_mention/add_entity_relation
-                # commits + mutates the graph. On a many-entity chunk this blocked
-                # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
-                # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
-                # and sqlite connections are thread-local, so this is thread-safe.
-                await asyncio.to_thread(self._store_entities, extraction, item_id)
-                await self._embed_item(
-                    item_id,
-                    chunk.get('section_title') or f"{title} chunk {i}",
-                    extraction.get('summary'),
-                    chunk['content'],
-                )
-                processed += 1
-            except Exception:
-                logger.exception("Failed to process chunk %d of text '%s'", i, title)
+        The job row is written as 'processing' before any fallible work runs,
+        so every failure after that point has to end the job -- a row left in
+        'processing' is a run that never finishes, and the caller polling
+        get_job_status waits for it forever.
 
-        now = datetime.now().isoformat()
+        The write is a run_to_completion hop: a cancellation arriving while the
+        work item is still queued must not be able to drop it. A failure of
+        the write itself is logged and never masks the error that got us here.
+        """
 
-        def _finalize() -> None:
-            # ONE off-loop hop for the delete + state finalization, mirroring
-            # _ingest_file_body: delete_items_batch rebuilds the entity graph and
-            # cannot run on the loop, and splitting it from the finalization
-            # would let a cancellation commit the delete while leaving the job
-            # 'processing' and the source unsynced (re-ingest -> duplicates).
-            # Worker connection is autocommit; WAL + busy_timeout absorb
-            # write-lock contention.
-            if processed == total:
-                self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-                self.store.update_source(source_id, last_synced=now)
-            elif processed < total:
-                # Partial failure: remove only items created during THIS call so we
-                # never delete another item group sharing this source_id. Taken
-                # from the write itself, not a before/after re-read of the source
-                # (which would misattribute concurrent writers' items).
-                # Deliberately NOT owner-scoped -- see _ingest_file_body: chunks
-                # of an incomplete write must be destroyed, not detached to a
-                # duplicate-gate attacher, or that attacher keeps a truncated
-                # document its unchanged hash never lets a rescan repair.
-                self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+        def _mark_failed() -> None:
             self.store.db.execute(
-                "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-                (_job_status(processed, total), total, processed, now, job_id))
+                "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), job_id))
+            self.store.db.execute(
+                "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
             self.store.db.commit()
 
-        await run_to_completion(_finalize)
-        if processed == total:
-            # Best-effort, and AFTER the finalize hop so a failure or cancel here
-            # cannot strand the job row.
-            try:
-                await self.generate_source_summary(source_id)
-            except Exception as exc:
-                logger.warning("Source summary generation failed for source_id=%s: %s",
-                               source_id, type(exc).__name__)
-        # Cross-source dedup for whole-source ingests (upload / remote / chat).
-        # Group-level replaces (old_item_ids provided -- e.g. a single artifact's
-        # group within the aggregate Artifacts source) defer to the folder-scan
-        # dedup sweep, mirroring ingest_file, so one artifact edit doesn't rescan
-        # the entire aggregate source.
-        if processed == total and old_item_ids is None:
-            # dedup_document can merge entities -> _load_graph (full graph
-            # rebuild). Offloaded so a large source's dedup cannot stall the loop
-            # (RLock-guarded graph + thread-local sqlite make this thread-safe).
-            await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
-
-        # Settle only after the fallible finalize succeeded (see _ingest_file_body):
-        # a failure before here releases via ingest_text's finally instead of
-        # staying charged. No-op when token is None.
-        self._import_budget.settle(budget_token, total)
-        return job_id
+        try:
+            await run_to_completion(_mark_failed)
+        except Exception:  # noqa: BLE001 - never mask the original error
+            logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
 
     def get_job_status(self, job_id: str) -> dict | None:
         row = self.store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
