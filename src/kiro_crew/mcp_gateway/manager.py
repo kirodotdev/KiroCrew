@@ -182,6 +182,11 @@ _SENSITIVE_ENV_PREFIXES: tuple[str, ...] = (
     *_SANDBOX_SENSITIVE_ENV_PREFIXES,
 )
 
+#: gatewayd's env key for the one directory every backend it spawns runs in
+#: (:attr:`GatewaySpec.backend_work_dir`). In the daemon's env, not argv, like the
+#: target map; read by ``daemon.launch._backend_work_dir``.
+BACKEND_WORK_DIR_ENV = "KIROCREW_MCP_BACKEND_WORK_DIR"
+
 
 def is_credential_env_key(key: str) -> bool:
     """Return ``True`` if ``key`` matches :data:`_SENSITIVE_ENV_PREFIXES`.
@@ -235,6 +240,11 @@ class GatewaySpec:
     host_budget_max_procs: int = 0
     host_budget_max_rss_mb: int = 0
     host_budget_max_fds: int = 0
+    # The ``work_dir`` the rewrite wrote into every stub. Handed to gatewayd in
+    # its env (``BACKEND_WORK_DIR_ENV``) so the daemon spawns backends in this
+    # directory, never one a register frame names. Empty = the daemon resolves
+    # the default work dir itself.
+    backend_work_dir: str = ""
 
     def __post_init__(self) -> None:
         # dataclass(frozen) + mutable default → use object.__setattr__.
@@ -848,6 +858,10 @@ class GatewayManager:
         # sandbox's per-session env scrub is not enough on its own here.
         base_env = _scrub_sensitive_env(dict(os.environ))
         env = {**base_env, **self._spec.mcp_target_env}
+        # The backend cwd is this spec's, never one inherited from this process.
+        env.pop(BACKEND_WORK_DIR_ENV, None)
+        if self._spec.backend_work_dir:
+            env[BACKEND_WORK_DIR_ENV] = self._spec.backend_work_dir
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
         # ticket for any credential-gated MCP server. Off the loop: it stats
