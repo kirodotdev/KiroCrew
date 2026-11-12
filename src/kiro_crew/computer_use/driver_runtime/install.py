@@ -16,9 +16,7 @@ Every check fails closed and runs before the next step can do harm:
    before both hold;
 3. extraction refuses absolute paths, ``..`` components, drive letters, device
    and FIFO members, and any link whose target leaves the extraction root;
-4. on macOS the extracted ``CuaDriver.app`` must pass ``codesign --verify
-   --strict`` and carry team ``YCK386LBJ7`` and bundle id ``com.trycua.driver``;
-   on Windows the executable's Authenticode signature must be valid and name
+4. on Windows the executable's Authenticode signature must be valid and name
    ``Cua AI, Inc.``;
 5. ``--version`` must print the pinned version (run with the fenced environment);
 6. the tree is renamed into place atomically, write bits are removed, and the
@@ -41,9 +39,9 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.request
 import zipfile
 from collections.abc import Callable
+from contextlib import suppress as contextlib_suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -52,8 +50,6 @@ from kiro_crew import _ssl_compat, platform_compat
 from kiro_crew.computer_use.driver_runtime import env as driver_env_mod
 from kiro_crew.computer_use.driver_runtime.pin import (
     DRIVER_VERSION,
-    MACOS_BUNDLE_ID,
-    MACOS_TEAM_ID,
     OS_LINUX,
     OS_MACOS,
     OS_WINDOWS,
@@ -78,8 +74,10 @@ STAGE_EXTRACTING = "extracting"
 STAGE_SIGNATURE = "checking_signature"
 STAGE_VERSION = "checking_version"
 STAGE_FINISHING = "finishing"
-STAGE_PLACING = "placing_app"
 STAGE_DONE = "done"
+#: The driver was killed or refused by the OS as it started (not a bad install).
+STAGE_BLOCKED = "blocked"
+BLOCKED_FILE = "blocked.json"
 
 _CHUNK = 1 << 16
 _READ_TIMEOUT_SECS = 60.0
@@ -94,6 +92,115 @@ class InstallError(Exception):
         super().__init__(detail)
         self.stage = stage
         self.detail = detail
+
+
+class DriverBlocked(InstallError):
+    """The driver binary was stopped by the operating system the moment it started.
+
+    Seen on managed Macs where endpoint security software SIGKILLs an allowed,
+    signed and notarized binary at exec. Not a version mismatch and not a broken
+    install, so it is reported as itself. Kiro Crew never retries it in a loop and
+    never tries to get around the block.
+    """
+
+    def __init__(self, how: str, os_id: str) -> None:
+        super().__init__(STAGE_BLOCKED, blocked_message(how, os_id))
+        self.how = how
+
+
+#: Windows exit codes and spawn errors that mean "the system refused to run it".
+_WINDOWS_BLOCKED_EXIT = {
+    0xC0000022: "access denied",  # STATUS_ACCESS_DENIED
+    0xC0000428: "invalid image hash",  # STATUS_INVALID_IMAGE_HASH (code integrity)
+    0xC0000361: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_DEFAULT
+    0xC0000362: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_PATH
+    0xC0000363: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_PUBLISHER
+    0xC0000364: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_OTHER
+}
+_WINDOWS_BLOCKED_SPAWN = {
+    5: "access denied",  # ERROR_ACCESS_DENIED
+    225: "flagged by security software",  # ERROR_VIRUS_INFECTED
+    226: "flagged by security software",  # ERROR_VIRUS_DELETED
+    1260: "blocked by policy",  # ERROR_ACCESS_DISABLED_BY_POLICY
+    4551: "blocked by policy",  # ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION
+}
+
+
+def blocked_how(
+    returncode: "int | None" = None, error: "OSError | None" = None, *, os_id: "str | None" = None
+) -> "str | None":
+    """How the OS stopped the driver at launch, or ``None`` when it did not.
+
+    POSIX: a negative return code (killed by a signal) or a spawn refused with
+    EPERM / EACCES. Windows: the access-denied and blocked-by-policy exit codes and
+    spawn errors. Anything else (a non-zero exit, wrong output) is not a block.
+    """
+    host = os_id or current_os()
+    if error is not None:
+        if host == OS_WINDOWS:
+            return _WINDOWS_BLOCKED_SPAWN.get(getattr(error, "winerror", None) or -1)
+        import errno as errno_mod
+
+        if error.errno in (errno_mod.EPERM, errno_mod.EACCES):
+            return "the system refused to start it"
+        return None
+    if returncode is None:
+        return None
+    if host == OS_WINDOWS:
+        return _WINDOWS_BLOCKED_EXIT.get(returncode & 0xFFFFFFFF)
+    if returncode < 0:
+        return f"signal {-returncode}"
+    return None
+
+
+def blocked_message(how: str, os_id: str) -> str:
+    """The plain, model-safe reason shown in setup and in every tool refusal."""
+    text = (
+        f"The driver was stopped as soon as it started ({how}). Security software on "
+        "this computer is probably blocking it. Ask your IT team to allow the open-source driver"
+    )
+    if os_id == OS_WINDOWS:
+        return text + ", or keep using the built-in driver."
+    return text + "."
+
+
+def blocked_path(home: "str | os.PathLike[str]") -> Path:
+    return runtime_root(home) / BLOCKED_FILE
+
+
+def record_blocked(home: "str | os.PathLike[str]", how: str) -> None:
+    """Remember that the installed driver was blocked, for ``auto`` and for setup."""
+    path = blocked_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps({"how": how, "at": int(time.time())}) + "\n"
+    # A private temp file (``mkstemp``: O_EXCL, 0600) renamed into place, so two
+    # writers never race on creating the same name.
+    fd, tmp = tempfile.mkstemp(prefix=".blocked-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib_suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def clear_blocked(home: "str | os.PathLike[str]") -> None:
+    try:
+        blocked_path(home).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_blocked(home: "str | os.PathLike[str]") -> str:
+    """``how`` the installed driver was last blocked, or ``""`` (display read only)."""
+    try:
+        data = json.loads(blocked_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    how = data.get("how") if isinstance(data, dict) else None
+    return how if isinstance(how, str) else ""
 
 
 class UnsafeArchiveMember(InstallError):
@@ -171,35 +278,6 @@ def record_path(home: "str | os.PathLike[str]") -> Path:
     return runtime_root(home) / RECORD_FILE
 
 
-#: Where the macOS driver app lives. Upstream's ``cua-driver mcp`` on macOS starts
-#: the app daemon from this exact location and nowhere else, so the owner's install
-#: places the verified bundle here. A module attribute so tests point it at a
-#: temporary directory; nothing else changes it.
-APPLICATIONS_DIR = Path("/Applications")
-MACOS_APP_NAME = "CuaDriver.app"
-MACOS_APP_BINARY = "Contents/MacOS/cua-driver"
-_LSREGISTER = (
-    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
-    "/Support/lsregister"
-)
-
-ERR_FOREIGN_APP = (
-    "another version of CuaDriver is installed at {path}; remove it or update it to "
-    "{version}, then install the driver again ({why})"
-)
-ERR_APPS_NOT_WRITABLE = (
-    "{dir} is not writable for this user, so the driver app cannot be placed there; "
-    "an administrator can make it writable or install CuaDriver {version} there, then "
-    "install the driver again"
-)
-ERR_APP_GONE = "CuaDriver.app is no longer in {dir}; install the driver again"
-
-
-def applications_app() -> Path:
-    """``/Applications/CuaDriver.app`` (or the test root's equivalent)."""
-    return Path(APPLICATIONS_DIR) / MACOS_APP_NAME
-
-
 def current_os() -> str:
     if platform_compat.IS_MACOS:
         return OS_MACOS
@@ -262,22 +340,6 @@ def install_state(
             installed=False, version=version, detail="the install is for another OS or CPU"
         )
     binary = version_dir(home, version) / PurePosixPath(pinned.binary)
-    if pinned.os == OS_MACOS:
-        app_record = record.get("applications_app")
-        app = applications_app()
-        if not isinstance(app_record, dict) or app_record.get("path") != str(app):
-            return InstallState(
-                installed=False,
-                version=version,
-                detail=ERR_APP_GONE.format(dir=APPLICATIONS_DIR),
-            )
-        binary = app / MACOS_APP_BINARY
-        if not binary.is_file():
-            return InstallState(
-                installed=False,
-                version=version,
-                detail=ERR_APP_GONE.format(dir=APPLICATIONS_DIR),
-            )
     try:
         present = binary.is_file()
     except OSError:
@@ -293,6 +355,38 @@ def install_state(
     )
 
 
+def exec_ready_binary(
+    home: "str | os.PathLike[str]", *, asset: "PinnedAsset | None" = None
+) -> Path:
+    """The driver binary Kiro Crew may execute directly, re-verified right now.
+
+    The ONE source of a driver executable for a direct exec (``mcp``,
+    ``--version``): the copy in the sealed ``<data-home>/computer-use/driver/<version>``
+    tree (read-only to the agent's sandbox), hashed against the PIN immediately
+    before it is returned.
+
+    Raises :class:`InstallError` when the copy is missing, a link, or not the pin.
+    """
+    pinned = _pinned_for_host(asset)
+    if pinned is None or not pinned.binary_sha256:
+        raise InstallError(STAGE_VERIFYING, "there is no pinned driver for this computer")
+    binary = version_dir(home) / PurePosixPath(pinned.binary)
+    try:
+        if binary.is_symlink() or not binary.is_file():
+            raise InstallError(STAGE_VERIFYING, "the installed driver binary is missing")
+        digest = sha256_file(binary)
+    except OSError as exc:
+        raise InstallError(
+            STAGE_VERIFYING, f"the installed driver cannot be read ({exc.strerror or exc})"
+        ) from exc
+    if digest != pinned.binary_sha256:
+        raise InstallError(
+            STAGE_VERIFYING,
+            "the installed driver does not match its pinned hash; it was not run (reinstall it)",
+        )
+    return binary
+
+
 def verify_installed(
     home: "str | os.PathLike[str]",
     *,
@@ -302,8 +396,8 @@ def verify_installed(
     """``(binary, "")`` when the installed driver may run, else ``(None, reason)``.
 
     Hashes the binary against the PINNED digest first, so a replaced file never
-    executes even when the record beside it was rewritten to match; on macOS the
-    bundle's code signature is re-verified; only then is ``--version`` run.
+    executes even when the record beside it was rewritten to match; only then is
+    ``--version`` run.
     """
     pinned = _pinned_for_host(asset)
     state = install_state(home, asset=pinned)
@@ -316,17 +410,14 @@ def verify_installed(
     expected = pinned.binary_sha256 or str(read_record(home).get("binary_sha256") or "")
     if not expected or actual != expected:
         return None, "the driver binary does not match its pinned hash; reinstall it"
-    if pinned.os == OS_MACOS:
-        # The copy upstream actually starts: the one in /Applications. Signature,
-        # team, bundle id, pinned hash, version, every time, before anything runs.
-        why = check_app_copy(applications_app(), pinned, home, run=run)
-        if why:
-            return None, f"{applications_app()} failed its checks ({why}); it was not started"
-        return state.binary, ""
-    reason = check_version(state.binary, home, run=run)
+    try:
+        sealed = exec_ready_binary(home, asset=pinned)
+    except InstallError as exc:
+        return None, exc.detail
+    reason = check_version(sealed, home, run=run)
     if reason:
         return None, reason
-    return state.binary, ""
+    return sealed, ""
 
 
 def check_version(
@@ -335,7 +426,10 @@ def check_version(
     *,
     run: "Callable[..., subprocess.CompletedProcess[str]] | None" = None,
 ) -> str:
-    """``""`` when ``binary --version`` prints the pinned version, else the reason."""
+    """``""`` when ``binary --version`` prints the pinned version, else the reason.
+
+    Raises :class:`DriverBlocked` when the system stops the binary as it starts.
+    """
     runner = run or subprocess.run
     try:
         done = runner(
@@ -349,8 +443,18 @@ def check_version(
             stdin=subprocess.DEVNULL,
             cwd=str(private_home(home)),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
+        how = blocked_how(error=exc)
+        if how:
+            raise DriverBlocked(how, current_os()) from exc
         return f"the driver did not report its version ({exc})"
+    except subprocess.TimeoutExpired as exc:
+        return f"the driver did not report its version ({exc})"
+    how = blocked_how(done.returncode)
+    if how:
+        # Killed at launch (endpoint security software on a managed computer): say
+        # so, rather than "version '?'". One attempt, no retry, no workaround.
+        raise DriverBlocked(how, current_os())
     words = [word.removeprefix("v") for word in (done.stdout or "").split()]
     if done.returncode != 0 or DRIVER_VERSION not in words:
         printed = (done.stdout or done.stderr or "").strip().splitlines()[:1]
@@ -361,69 +465,41 @@ def check_version(
 # ── download ──
 
 
-class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        if not str(newurl).startswith("https://"):
-            raise InstallError(STAGE_DOWNLOADING, f"refusing a redirect off HTTPS: {newurl}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _default_opener(url: str, timeout: float) -> Any:
-    if not url.startswith("https://"):
-        raise InstallError(STAGE_DOWNLOADING, f"refusing a non-HTTPS download: {url}")
-    context = _ssl_compat.system_trust_context()
-    opener = urllib.request.build_opener(
-        _HttpsOnlyRedirects(), urllib.request.HTTPSHandler(context=context)
-    )
-    # The scheme is pinned to https above, and the URL comes from the pin table.
-    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-    return opener.open(url, timeout=timeout)  # noqa: S310 - https pinned above
-
-
 def download_verified(
     asset: PinnedAsset,
     dest: Path,
     *,
-    opener: "Callable[[str, float], Any] | None" = None,
-    stop: "threading.Event | None" = None,
     progress: "InstallProgress | None" = None,
 ) -> None:
-    """Stream *asset* to *dest*, refusing anything but the pinned bytes."""
-    open_url = opener or _default_opener
-    digest = hashlib.sha256()
-    total = 0
-    try:
-        with open_url(asset.url, _READ_TIMEOUT_SECS) as response, dest.open("wb") as out:
-            while True:
-                if stop is not None and stop.is_set():
-                    raise InstallError(STAGE_DOWNLOADING, "install stopped")
-                chunk = response.read(_CHUNK)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > asset.size:
-                    raise InstallError(
-                        STAGE_VERIFYING,
-                        f"the download is larger than the pinned {asset.size} bytes; refused",
-                    )
-                digest.update(chunk)
-                out.write(chunk)
-                if progress is not None:
-                    progress.bytes_done = total
-    except InstallError:
-        raise
-    except Exception as exc:
-        note = _ssl_compat.system_trust_note()
-        extra = f"; {note}" if note else ""
-        raise InstallError(STAGE_DOWNLOADING, f"download failed: {exc}{extra}") from exc
-    if total != asset.size:
-        raise InstallError(
-            STAGE_VERIFYING, f"the download is {total} bytes, not the pinned {asset.size}; refused"
-        )
-    if digest.hexdigest() != asset.sha256:
-        raise InstallError(
-            STAGE_VERIFYING, "the download's sha256 does not match the pinned digest; refused"
-        )
+    """Fetch *asset* to *dest* through :func:`asset_downloader.download_to`.
+
+    The shared downloader enforces HTTPS, the pinned size as a ceiling and the
+    pinned SHA-256, stages through a no-follow file and swaps the verified file
+    in atomically. The pinned GitHub release redirects to its asset host, which
+    is why cross-host redirects (HTTPS only) are allowed for this constant URL.
+    """
+    from kiro_crew import asset_downloader
+
+    def on_progress(done: int, _total: int) -> None:
+        if progress is not None:
+            progress.bytes_done = done
+
+    ok, why = asset_downloader.download_to(
+        dest,
+        asset.url,
+        sha256=asset.sha256,
+        size=asset.size,
+        min_bytes=asset.size,
+        on_progress=on_progress,
+        allow_cross_host_redirects=True,
+        label=f"the open-source driver {asset.name}",
+    )
+    if not ok:
+        stage = STAGE_VERIFYING if ("sha256" in why or "byte" in why) else STAGE_DOWNLOADING
+        note = _ssl_compat.system_trust_note() if stage == STAGE_DOWNLOADING else ""
+        raise InstallError(stage, f"{why}; refused" + (f"; {note}" if note else ""))
+    if progress is not None:
+        progress.bytes_done = asset.size
 
 
 # ── safe extraction ──
@@ -531,25 +607,6 @@ def _run_tool(run: "Runner | None", argv: list[str]) -> "subprocess.CompletedPro
     )
 
 
-def verify_macos_bundle(app: Path, *, run: "Runner | None" = None) -> None:
-    """Refuse unless *app* is the notarized ``CuaDriver.app`` from the pinned team."""
-    try:
-        strict = _run_tool(run, ["/usr/bin/codesign", "--verify", "--strict", "--deep", str(app)])
-        info = _run_tool(run, ["/usr/bin/codesign", "-dv", "--verbose=4", str(app)])
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise InstallError(STAGE_SIGNATURE, f"codesign could not run ({exc})") from exc
-    if strict.returncode != 0:
-        raise InstallError(STAGE_SIGNATURE, "the driver bundle's code signature does not verify")
-    text = f"{info.stdout}\n{info.stderr}"
-    fields = dict(
-        line.split("=", 1) for line in text.splitlines() if "=" in line and not line.startswith(" ")
-    )
-    if fields.get("TeamIdentifier", "").strip() != MACOS_TEAM_ID:
-        raise InstallError(STAGE_SIGNATURE, "the driver bundle is not signed by the pinned team")
-    if fields.get("Identifier", "").strip() != MACOS_BUNDLE_ID:
-        raise InstallError(STAGE_SIGNATURE, "the driver bundle's identifier is not the pinned one")
-
-
 def _authenticode_script(exe: Path) -> str:
     """The PowerShell check for *exe*, with the path as a quoted literal.
 
@@ -630,149 +687,6 @@ def subject_common_name(subject: str) -> str:
     return ""
 
 
-# ── macOS: the app in /Applications ──
-
-
-def check_app_copy(
-    app: Path,
-    pinned: PinnedAsset,
-    home: "str | os.PathLike[str]",
-    *,
-    run: "Runner | None" = None,
-) -> str:
-    """``""`` when *app* is exactly the pinned, signed driver app, else why not.
-
-    Ordered so nothing is executed before it is proven: link and file checks, the
-    code signature (team and bundle id), the binary's pinned hash, and only then
-    ``--version``.
-    """
-    if app.is_symlink():
-        return "it is a link"
-    binary = app / MACOS_APP_BINARY
-    if not binary.is_file() or binary.is_symlink():
-        return "it has no driver binary"
-    try:
-        verify_macos_bundle(app, run=run)
-    except InstallError as exc:
-        return exc.detail
-    try:
-        digest = sha256_file(binary)
-    except OSError as exc:
-        return f"its driver binary cannot be read ({exc.strerror or exc})"
-    if not pinned.binary_sha256 or digest != pinned.binary_sha256:
-        return f"its driver binary is not the pinned {DRIVER_VERSION}"
-    return check_version(binary, home, run=run)
-
-
-def _copy_bundle(src: Path, dst: Path) -> None:
-    """Copy an app bundle preserving its links and metadata (``ditto`` when present)."""
-    if Path("/usr/bin/ditto").is_file():
-        done = subprocess.run(  # noqa: S603 - fixed system tool, paths we chose
-            ["/usr/bin/ditto", str(src), str(dst)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_SIGNATURE_TIMEOUT_SECS,
-            stdin=subprocess.DEVNULL,
-        )
-        if done.returncode != 0:
-            raise OSError(done.stderr.strip() or f"ditto exited {done.returncode}")
-        return
-    shutil.copytree(src, dst, symlinks=True)
-
-
-def place_macos_app(
-    staged_app: Path,
-    pinned: PinnedAsset,
-    home: "str | os.PathLike[str]",
-    *,
-    previous: "dict[str, Any] | None" = None,
-    run: "Runner | None" = None,
-    copy: "Callable[[Path, Path], None] | None" = None,
-) -> dict[str, Any]:
-    """Put the verified app at ``/Applications/CuaDriver.app``; return its record.
-
-    * An existing copy is used ONLY when it passes every check our own copy passes;
-      otherwise the install fails and the existing copy is left untouched. A copy
-      Kiro Crew did not place is never replaced, moved or deleted.
-    * A non-writable ``/Applications`` is reported, never escalated.
-    * Our copy is assembled under a private temporary name in the same directory,
-      verified there, and renamed into place, so a half-copied bundle is never at
-      the path upstream launches.
-    """
-    target = applications_app()
-    if target.exists() or target.is_symlink():
-        why = check_app_copy(target, pinned, home, run=run)
-        if why:
-            raise InstallError(
-                STAGE_PLACING,
-                ERR_FOREIGN_APP.format(path=target, version=DRIVER_VERSION, why=why),
-            )
-        owned = (
-            isinstance(previous, dict)
-            and previous.get("path") == str(target)
-            and previous.get("owned") is True
-        )
-        return {"path": str(target), "owned": owned, "binary_sha256": pinned.binary_sha256}
-    parent = target.parent
-    if not parent.is_dir() or not os.access(parent, os.W_OK):
-        raise InstallError(
-            STAGE_PLACING, ERR_APPS_NOT_WRITABLE.format(dir=parent, version=DRIVER_VERSION)
-        )
-    tmp = parent / f".{MACOS_APP_NAME}.kirocrew-{os.getpid()}"
-    try:
-        (copy or _copy_bundle)(staged_app, tmp)
-        why = check_app_copy(tmp, pinned, home, run=run)
-        if why:
-            raise InstallError(STAGE_PLACING, f"the copied driver app failed its checks ({why})")
-        if target.exists() or target.is_symlink():
-            raise InstallError(
-                STAGE_PLACING,
-                ERR_FOREIGN_APP.format(
-                    path=target, version=DRIVER_VERSION, why="it appeared during the install"
-                ),
-            )
-        os.rename(tmp, target)
-    except OSError as exc:
-        raise InstallError(
-            STAGE_PLACING, f"the driver app could not be placed in {parent} ({exc})"
-        ) from exc
-    finally:
-        if tmp.exists() or tmp.is_symlink():
-            _remove_tree(tmp)
-    return {"path": str(target), "owned": True, "binary_sha256": pinned.binary_sha256}
-
-
-def _remove_owned_app(record: dict[str, Any]) -> str:
-    """Remove ``/Applications/CuaDriver.app`` only if Kiro Crew placed it and it is
-    still byte-for-byte what was placed. Returns what happened, for the log."""
-    app_record = record.get("applications_app")
-    target = applications_app()
-    if not isinstance(app_record, dict) or app_record.get("owned") is not True:
-        return "no driver app of ours to remove"
-    if app_record.get("path") != str(target) or not target.is_dir() or target.is_symlink():
-        return "the driver app we placed is gone"
-    try:
-        digest = sha256_file(target / MACOS_APP_BINARY)
-    except OSError:
-        return "the driver app we placed cannot be read; left in place"
-    if digest != app_record.get("binary_sha256"):
-        return "the driver app was changed after we placed it; left in place"
-    _remove_tree(target)
-    if Path(_LSREGISTER).is_file():
-        try:
-            subprocess.run(  # noqa: S603 - fixed system tool, a path we removed
-                [_LSREGISTER, "-u", str(target)],
-                capture_output=True,
-                timeout=_SIGNATURE_TIMEOUT_SECS,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            logger.debug("lsregister -u failed", exc_info=True)
-    return "removed the driver app we placed"
-
-
 # ── install ──
 
 
@@ -785,8 +699,9 @@ def _make_read_only(root: Path) -> None:
             if path.is_symlink():
                 continue
             mode = path.stat().st_mode
-            os.chmod(path, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-        os.chmod(dirpath, 0o555)
+            # Narrows only: clears every write bit, adds nothing.
+            os.chmod(path, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+        os.chmod(dirpath, 0o555)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
 
 
 def _make_writable(root: Path) -> None:
@@ -794,7 +709,8 @@ def _make_writable(root: Path) -> None:
         return
     for dirpath, _dirnames, _filenames in os.walk(root):
         try:
-            os.chmod(dirpath, 0o755)
+            # Owner-only: the tree lives in the private data home.
+            os.chmod(dirpath, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
         except OSError:
             pass
 
@@ -811,11 +727,8 @@ def install(
     *,
     asset: "PinnedAsset | None" = None,
     os_id: "str | None" = None,
-    opener: "Callable[[str, float], Any] | None" = None,
     run: "Runner | None" = None,
-    stop: "threading.Event | None" = None,
     progress: "InstallProgress | None" = None,
-    copy_app: "Callable[[Path, Path], None] | None" = None,
 ) -> InstallState:
     """Download, verify and install the pinned driver. Raises :class:`InstallError`."""
     prog = progress if progress is not None else PROGRESS
@@ -828,11 +741,8 @@ def install(
             home,
             asset=asset,
             os_id=os_id,
-            opener=opener,
             run=run,
-            stop=stop,
             prog=prog,
-            copy_app=copy_app,
         )
         prog.stage = STAGE_DONE
         return result
@@ -853,11 +763,8 @@ def _install_locked(
     *,
     asset: "PinnedAsset | None",
     os_id: "str | None",
-    opener: "Callable[[str, float], Any] | None",
     run: "Runner | None",
-    stop: "threading.Event | None",
     prog: InstallProgress,
-    copy_app: "Callable[[Path, Path], None] | None" = None,
 ) -> InstallState:
     host_os = os_id or current_os()
     chosen = asset or asset_for(host_os)
@@ -872,7 +779,7 @@ def _install_locked(
     try:
         archive = staging / chosen.name
         prog.stage, prog.bytes_total = STAGE_DOWNLOADING, chosen.size
-        download_verified(chosen, archive, opener=opener, stop=stop, progress=prog)
+        download_verified(chosen, archive, progress=prog)
         prog.stage = STAGE_EXTRACTING
         tree = staging / "tree"
         if chosen.is_zip:
@@ -890,26 +797,12 @@ def _install_locked(
                 STAGE_VERIFYING, "the extracted driver does not match its pinned hash; refused"
             )
         prog.stage = STAGE_SIGNATURE
-        if host_os == OS_MACOS:
-            verify_macos_bundle(tree / PurePosixPath(chosen.bundle or "CuaDriver.app"), run=run)
-        elif host_os == OS_WINDOWS:
+        if host_os == OS_WINDOWS:
             verify_windows_signature(binary, run=run)
         prog.stage = STAGE_VERSION
         reason = check_version(binary, home, run=run)
         if reason:
             raise InstallError(STAGE_VERSION, reason)
-        app_record: "dict[str, Any] | None" = None
-        if host_os == OS_MACOS:
-            prog.stage = STAGE_PLACING
-            previous = read_record(home).get("applications_app")
-            app_record = place_macos_app(
-                tree / PurePosixPath(chosen.bundle or MACOS_APP_NAME),
-                chosen,
-                home,
-                previous=previous if isinstance(previous, dict) else None,
-                run=run,
-                copy=copy_app,
-            )
         prog.stage = STAGE_FINISHING
         digest = sha256_file(binary)
         target = version_dir(home)
@@ -928,27 +821,24 @@ def _install_locked(
             "binary_sha256": digest,
             "installed_at": int(time.time()),
         }
-        if app_record is not None:
-            record["applications_app"] = app_record
         tmp = record_path(home).with_suffix(".tmp")
         tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, record_path(home))
+        clear_blocked(home)
     finally:
         _remove_tree(staging)
     return install_state(home, asset=chosen)
 
 
 def uninstall(home: "str | os.PathLike[str]") -> str:
-    """Remove what Kiro Crew installed: the record, every installed version and, on
-    macOS, ``/Applications/CuaDriver.app`` if (and only if) Kiro Crew placed it and it
-    is unchanged. The private home stays. Returns a one-line note on the app."""
-    note = _remove_owned_app(read_record(home))
+    """Remove what Kiro Crew installed: the record and every installed version. The
+    private home stays. Returns a one-line note for the log."""
     try:
         record_path(home).unlink()
     except FileNotFoundError:
         pass
     _remove_tree(driver_root(home))
-    return note
+    return "removed the installed driver"
 
 
 __all__ = [
@@ -957,8 +847,13 @@ __all__ = [
     "InstallState",
     "PROGRESS",
     "UnsafeArchiveMember",
-    "applications_app",
-    "check_app_copy",
+    "DriverBlocked",
+    "blocked_how",
+    "blocked_message",
+    "clear_blocked",
+    "read_blocked",
+    "record_blocked",
+    "exec_ready_binary",
     "check_tar_members",
     "check_version",
     "current_os",
@@ -968,7 +863,6 @@ __all__ = [
     "extract_zip",
     "install",
     "install_state",
-    "place_macos_app",
     "private_home",
     "read_record",
     "record_path",
@@ -976,7 +870,6 @@ __all__ = [
     "sha256_file",
     "uninstall",
     "verify_installed",
-    "verify_macos_bundle",
     "verify_windows_signature",
     "version_dir",
 ]

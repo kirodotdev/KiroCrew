@@ -318,13 +318,11 @@ class ComputerUseService:
         return self._act(self.backend.drag(app, req))
 
     def type_text(self, app: AppRef, rec: "ElementRec | None", text: str) -> str:
-        """Type *text* into *rec*: keystrokes only ever go to the named element."""
-        self._require_element(rec, "computer_type_text")
+        """Type *text* into *rec* (``tools`` refuses an indexless call before this)."""
         return self._act(self.backend.type_text(app, rec, text))
 
     def press_key(self, app: AppRef, rec: "ElementRec | None", key: str) -> str:
         """Send one key spec (``"cmd+shift+a"``) to *rec* in *app*."""
-        self._require_element(rec, "computer_press_key")
         return self._act(self.backend.press_key(app, rec, key))
 
     def set_value(self, app: AppRef, rec: ElementRec, value: str) -> str:
@@ -351,12 +349,6 @@ class ComputerUseService:
         if backend.confines_points_natively:
             return
         refusal = floors.check_point_in_window(app, backend.window_bounds(app), points)
-        if refusal:
-            raise ComputerUseError(refusal)
-
-    @staticmethod
-    def _require_element(rec: "ElementRec | None", verb: str) -> None:
-        refusal = floors.require_addressed_element(rec, verb)
         if refusal:
             raise ComputerUseError(refusal)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 from collections.abc import Mapping
@@ -121,9 +122,7 @@ class FakeSupervisor:
         if tool == "get_window_state":
             self.snap_counter += 1
             sid = f"s{self.snap_counter:08x}"
-            out = args.get("screenshot_out_file")
-            if out and args.get("include_screenshot"):
-                Path(out).write_bytes(self.png)
+            assert "screenshot_out_file" not in args, "a capture must never be written to disk"
             els = [dict(e, element_token=f"{sid}:{i}") for i, e in enumerate(self.elements)]
             sc = {
                 "pid": PID,
@@ -139,7 +138,16 @@ class FakeSupervisor:
             if args.get("include_accessibility_tree") is not False:
                 sc["elements"] = els
             sc.update(self.state_extra)
-            return {"content": [{"type": "text", "text": "state"}], "structuredContent": sc}
+            content: list[dict] = [{"type": "text", "text": "state"}]
+            if args.get("include_screenshot"):
+                content.append(
+                    {
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(self.png).decode(),
+                    }
+                )
+            return {"content": content, "structuredContent": sc}
         if tool == "check_permissions":
             return {"structuredContent": {"accessibility": True, "screen_recording": False}}
         return self.action_reply
@@ -243,13 +251,14 @@ class TestSnapshotMapping:
         fake.state_extra = {"elements_complete": False}
         assert _read(backend).truncated
 
-    def test_screenshot_is_converted_to_jpeg_and_the_png_removed(self, tmp_path: Path) -> None:
+    def test_screenshot_comes_back_inline_and_is_converted_to_jpeg(self, tmp_path: Path) -> None:
         backend, fake = _backend(home=tmp_path)
         snap = _read(backend, SnapshotRequest(want_image=True, image_max_px=200))
         assert snap.image_jpeg[:2] == b"\xff\xd8"
         assert max(snap.image_width, snap.image_height) == 200
-        out = fake.calls[-1][1]["screenshot_out_file"]
-        assert not Path(out).exists()
+        assert "screenshot_out_file" not in fake.calls[-1][1]
+        # Nothing was written anywhere under the data home for the capture.
+        assert not any(p.is_file() for p in tmp_path.rglob("*"))
 
     def test_secure_window_is_never_converted(self, tmp_path: Path) -> None:
         backend, fake = _backend(home=tmp_path)
@@ -259,6 +268,20 @@ class TestSnapshotMapping:
 
 
 class TestActions:
+    def test_a_field_that_turned_secure_since_the_cached_walk_refuses_input(self) -> None:
+        # A GTK entry whose text was hidden keeps its role and label, but the newer
+        # walk marks it secure (no copy/cut any more). Input must not be forwarded
+        # on the strength of the older, non-secure record.
+        backend, fake = _backend()
+        cached = _read(backend).elements[1]
+        assert not cached.secure
+        fake.elements = [dict(e, actions=[]) if i == 1 else e for i, e in enumerate(_elements())]
+        assert _read(backend).elements[1].secure
+        n = len(fake.calls)
+        result = backend.type_text(APP, cached, "hunter2")
+        assert not result.ok
+        assert all(tool != "type_text" for tool, _ in fake.calls[n:])
+
     def test_element_click_uses_the_latest_walks_token(self) -> None:
         backend, fake = _backend()
         _read(backend)
@@ -372,6 +395,26 @@ class TestActions:
         args = fake.calls[-1][1]
         assert args["key"] == "a" and args["modifiers"] == ["ctrl"] and args["element_token"]
 
+    @pytest.mark.parametrize(
+        ("os_id", "spec", "key", "mods"),
+        [
+            (OS_WINDOWS, "delete", "delete", []),
+            (OS_LINUX, "delete", "delete", []),
+            (OS_WINDOWS, "backspace", "backspace", []),
+            (OS_WINDOWS, "cmd+s", "s", ["ctrl"]),
+            (OS_LINUX, "win+d", "d", ["super"]),
+        ],
+    )
+    def test_keys_match_the_native_drivers(
+        self, os_id: str, spec: str, key: str, mods: list[str]
+    ) -> None:
+        backend, fake = _backend(os_id=os_id)
+        _read(backend)
+        assert backend.press_key(APP, FIELD, spec).ok
+        args = fake.calls[-1][1]
+        assert args["key"] == key
+        assert args.get("modifiers", []) == mods
+
     def test_unsupported_key_refuses_before_the_driver(self) -> None:
         backend, fake = _backend()
         _read(backend)
@@ -443,6 +486,78 @@ class TestLaunch:
         result = backend.launch_app("zen", permit=lambda who: f"denied {who.display}")
         assert not result.ok and result.text == "denied Zenity"
 
+    def _identity_backend(self, windows: list[dict]):  # type: ignore[no-untyped-def]
+        from kiro_crew.computer_use.types import LaunchIdentity
+
+        spawned: list[str] = []
+        backend, fake = _backend(
+            launcher={
+                "resolve": lambda q: ("/usr/lib/firefox/firefox", "Firefox Web Browser"),
+                "identity": lambda target, display: LaunchIdentity(
+                    display=display, key=target.rsplit("/", 1)[-1]
+                ),
+                "spawn": spawned.append,
+            },
+            launch_timeout=0.0,
+        )
+        fake.windows = windows
+        return backend, spawned
+
+    def test_a_running_app_is_found_by_its_resolved_identity_not_its_display_name(self) -> None:
+        # The catalog says "Firefox Web Browser"; the window says "firefox".
+        backend, spawned = self._identity_backend(
+            [{"pid": 7, "window_id": 1, "app_name": "firefox", "title": "News", "bounds": BOUNDS}]
+        )
+        result = backend.launch_app("Firefox Web Browser")
+        assert not result.ok and "already" in result.text.lower()
+        assert spawned == []  # no second copy
+
+    def test_a_running_flatpak_app_is_found_by_its_app_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.computer_use.driver_runtime import linux_apps
+
+        spawned: list[str] = []
+        backend, fake = _backend(
+            launcher={
+                "resolve": lambda q: (
+                    "/usr/bin/flatpak\0/usr/bin/flatpak\0run\0--command=gnome-calculator\0org.gnome.Calculator",
+                    "Calculator",
+                ),
+                "identity": linux_apps.target_identity,
+                "spawn": spawned.append,
+            },
+            launch_timeout=0.0,
+        )
+        fake.windows = [
+            {
+                "pid": 9,
+                "window_id": 3,
+                "app_name": "gnome-calculator",
+                "title": "Calculator",
+                "bounds": BOUNDS,
+            }
+        ]
+        monkeypatch.setattr(
+            linux_apps, "flatpak_app_id", lambda pid: "org.gnome.Calculator" if pid == 9 else ""
+        )
+        result = backend.launch_app("Calculator")
+        assert not result.ok and "already" in result.text.lower()
+        assert spawned == []  # no second copy
+
+    def test_a_window_of_another_app_with_the_same_display_name_is_not_accepted(self) -> None:
+        decoy = {
+            "pid": 8,
+            "window_id": 2,
+            "app_name": "Firefox Web Browser",
+            "title": "Firefox Web Browser",
+            "bounds": BOUNDS,
+        }
+        backend, spawned = self._identity_backend([decoy])
+        result = backend.launch_app("Firefox Web Browser")
+        assert spawned == ["/usr/lib/firefox/firefox"]  # the decoy did not count as running
+        assert result.ok and result.app is None  # and it is not reported as the launched window
+
 
 class TestFloorsThroughTheService:
     """Every lifted floor, with the upstream driver as the backend."""
@@ -494,12 +609,6 @@ class TestFloorsThroughTheService:
             self._svc(backend).click(
                 APP, None, ClickRequest(method="app_post", point=(150.0, 80.0))
             )
-        assert fake.calls == []
-
-    def test_keys_need_an_addressed_element(self) -> None:
-        backend, fake = _backend()
-        with pytest.raises(ComputerUseError, match="element_index"):
-            self._svc(backend).type_text(APP, None, "x")
         assert fake.calls == []
 
 
@@ -611,3 +720,85 @@ def test_status_keeps_the_settings_setup_flow_reachable(tmp_path: Path) -> None:
     assert status.supported and "Settings -> Computer Use" in status.reason
     unknown, _ = _backend(os_id="plan9", home=tmp_path)
     assert not unknown.status().supported
+
+
+@pytest.mark.parametrize("os_id", [OS_LINUX, OS_WINDOWS])
+def test_the_permission_probe_is_unsupported_and_never_starts_the_driver(
+    tmp_path: Path, os_id: str
+) -> None:
+    # The probe also runs in short-lived child processes, where a driver start would
+    # replace the gateway's own live child. Neither OS grants anything per app.
+    backend, fake = _backend(os_id=os_id, home=tmp_path)
+    probe = backend.probe_permissions()
+    assert (probe.accessibility, probe.screen_recording) == ("unsupported", "unsupported")
+    assert fake.calls == []
+
+
+def test_a_not_installed_refusal_leads_with_what_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat shows this text under "Set up Computer Use": it must not read as a
+    permanent "not supported", and it names where to fix it (the link's marker)."""
+    from kiro_crew.computer_use.driver_runtime import backend as cua_backend
+    from kiro_crew.computer_use.driver_runtime import install as install_mod
+
+    monkeypatch.setattr(install_mod.PROGRESS, "error", "")
+    backend = CuaBackend(home=tmp_path, os_id=OS_LINUX, session=lambda: X11_SESSION)
+    result = backend.list_apps()
+    assert not result.ok
+    assert result.text.startswith("The open-source driver is not installed")
+    assert "You can install it in Settings -> Computer Use." in result.text
+    assert "not supported" not in result.text
+    assert "Settings -> Computer Use" in result.text
+    assert cua_backend.ERR_NOT_INSTALLED in result.text
+
+
+def test_windows_keeps_each_window_of_one_process_addressable_by_title() -> None:
+    backend, fake = _backend(os_id=OS_WINDOWS)
+    fake.windows = [
+        {"pid": 7, "window_id": 1, "app_name": "chrome.exe", "title": "Mail", "bounds": BOUNDS},
+        {"pid": 7, "window_id": 2, "app_name": "chrome.exe", "title": "Docs", "bounds": BOUNDS},
+    ]
+    listed = backend.list_apps()
+    assert listed.ok and sorted(a.window_title for a in listed.apps) == ["Docs", "Mail"]
+    found = backend.resolve_app("Docs")
+    assert found.ok and found.app is not None and found.app.window_id == 2
+
+
+def test_linux_still_lists_one_target_per_process() -> None:
+    backend, fake = _backend(os_id=OS_LINUX)
+    fake.windows = [
+        {"pid": 7, "window_id": 1, "app_name": "firefox", "title": "Mail", "bounds": BOUNDS},
+        {"pid": 7, "window_id": 2, "app_name": "firefox", "title": "Docs", "bounds": BOUNDS},
+    ]
+    assert len(backend.list_apps().apps) == 1
+
+
+def test_the_window_caches_are_bounded() -> None:
+    # A long-lived gateway sees many windows; the token and bounds maps keep the
+    # most recent MAX_TRACKED_WINDOWS, not one entry per window ever seen.
+    from kiro_crew.computer_use.driver_runtime import backend as cua_backend
+
+    cache: dict = {}
+    for n in range(cua_backend.MAX_TRACKED_WINDOWS + 10):
+        cua_backend._remember(cache, (n, n), n)
+    assert len(cache) == cua_backend.MAX_TRACKED_WINDOWS
+    assert (0, 0) not in cache and (cua_backend.MAX_TRACKED_WINDOWS + 9,) * 2 in cache
+    # Storing a key again makes it the most recent, so it outlives older ones.
+    cua_backend._remember(cache, (10, 10), "again")
+    for n in range(1000, 1000 + cua_backend.MAX_TRACKED_WINDOWS - 1):
+        cua_backend._remember(cache, (n, n), n)
+    assert cache.get((10, 10)) == "again"
+
+
+def test_an_oversized_element_token_is_not_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.computer_use.driver_runtime import backend as cua_backend
+
+    backend, _fake = _backend()
+    _read(backend)
+    _gen, tokens = backend._tokens[(APP.pid, APP.window_id)]
+    assert tokens  # the fake's tokens ("s00000001:0") fit the cap
+    monkeypatch.setattr(cua_backend, "MAX_TOKEN_CHARS", 5)
+    _read(backend)
+    _gen, tokens = backend._tokens[(APP.pid, APP.window_id)]
+    assert tokens == {}

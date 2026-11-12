@@ -53,6 +53,14 @@ async function renderPanel(data: ComputerUseConfigData = snapshot(), route = '/s
   return utils
 }
 
+async function openMore() {
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }))
+}
+
+// The setup dialog sits behind ComputerUsePanel's React.lazy import, then waits for the
+// setup query: that chain can outlast the default 1 s find on a loaded coverage worker.
+const LAZY_DIALOG = { timeout: 5000 }
+
 describe('ComputerUsePanel', () => {
   beforeEach(() => vi.clearAllMocks())
 
@@ -167,7 +175,7 @@ describe('ComputerUsePanel', () => {
   it('opens the setup dialog from the status card', async () => {
     await renderPanel()
     fireEvent.click(await screen.findByTestId('cu-open-setup'))
-    expect(await screen.findByTestId('cu-setup-dialog')).toHaveAttribute('data-view', 'intro')
+    expect(await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)).toHaveAttribute('data-view', 'intro')
   })
 
   it('opens the setup dialog once when arriving with ?setup=1', async () => {
@@ -183,7 +191,7 @@ describe('ComputerUsePanel', () => {
       </>
     )
     const { rerender } = renderWithProviders(tree, { route: '/settings/computer-use?setup=1' })
-    expect(await screen.findByTestId('cu-setup-dialog')).toBeInTheDocument()
+    expect(await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)).toBeInTheDocument()
     // The parameter is consumed as the dialog opens.
     await waitFor(() => expect(screen.getByTestId('route-search')).toHaveTextContent(''))
     fireEvent.click(await screen.findByRole('button', { name: /not now/i }))
@@ -232,6 +240,7 @@ describe('ComputerUsePanel', () => {
     // Windows — "leave your pointer alone" is the per-process case macOS has and
     // Windows does not — so the sentence is platform-gated rather than reworded.
     await renderPanel(snapshot({ supported: true, enabled: true, platform: 'windows' }))
+    await openMore()
     expect(await screen.findByText(/keystrokes take your keyboard focus/i)).toBeInTheDocument()
   })
 
@@ -241,6 +250,63 @@ describe('ComputerUsePanel', () => {
     await renderPanel(snapshot({ supported: true, enabled: true, platform: 'macos' }))
     expect(await screen.findByText('macOS only')).toBeInTheDocument()
     expect(screen.queryByText(/keystrokes take your keyboard focus/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the way back to the built-in driver on a Mac where the open-source driver was chosen', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'the open-source desktop driver is not offered on macOS yet' }),
+    )
+    const macUpstream = setupDoc('unsupported', {
+      platform: 'macos',
+      session: { kind: 'aqua' },
+      driver: { kind: 'upstream', version: '', installed: false, healthy: false },
+      problem: { code: 'unsupported_platform', message: 'not offered on macOS', recoverable: false },
+      steps: [{ id: 'verify', status: 'failed' }, { id: 'ready', status: 'pending' }],
+    })
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(macUpstream)
+    ;(api.runComputerUseSetupAction as ReturnType<typeof vi.fn>).mockResolvedValue(macUpstream)
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    expect(await screen.findByText('the open-source desktop driver is not offered on macOS yet')).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('cu-open-setup'))
+    await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)
+    fireEvent.click(await screen.findByTestId('cu-use-builtin'))
+    await waitFor(() => expect(api.runComputerUseSetupAction).toHaveBeenCalledWith('use_builtin_driver'))
+  })
+
+  it('shows a failed setup read on an unsupported Mac with Check again', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'the open-source desktop driver is not offered on macOS yet' }),
+    )
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('connection reset'))
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    await screen.findByText('the open-source desktop driver is not offered on macOS yet')
+    await waitFor(() => expect(api.getComputerUseSetup).toHaveBeenCalled())
+    expect(await screen.findByTestId('cu-mac-recovery-error')).toBeInTheDocument()
+    // One read, not a refetch loop.
+    expect(api.getComputerUseSetup).toHaveBeenCalledTimes(1)
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('unsupported', {
+        platform: 'macos',
+        session: { kind: 'aqua' },
+        driver: { kind: 'upstream', version: '', installed: false, healthy: false },
+        problem: { code: 'unsupported_platform', message: 'not offered on macOS', recoverable: false },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }))
+    expect(await screen.findByTestId('cu-open-setup')).toBeInTheDocument()
+  })
+
+  it('offers no setup entry on an unsupported Mac whose cause is not the driver choice', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'ApplicationServices could not be loaded' }),
+    )
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('ready', { platform: 'macos', session: { kind: 'aqua' }, driver: { kind: 'native' } }),
+    )
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    expect(await screen.findByText('ApplicationServices could not be loaded')).toBeInTheDocument()
+    await waitFor(() => expect(api.getComputerUseSetup).toHaveBeenCalled())
+    expect(screen.queryByTestId('cu-open-setup')).not.toBeInTheDocument()
   })
 
   it('renders only the reason and no toggle when the platform is unsupported', async () => {
@@ -306,6 +372,7 @@ describe('ComputerUsePanel', () => {
     // committed, so the absence of a SECOND call is a settled fact rather than a
     // race with a mutation that may not have fired yet.
     await renderPanel()
+    await openMore()
     const input = await screen.findByLabelText('Max tree nodes')
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.blur(input)
@@ -333,5 +400,27 @@ describe('ComputerUsePanel', () => {
     // Inverse guard: every healthy install would otherwise carry a scary banner.
     await renderPanel()
     expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ComputerUsePanel layout (one card, like Settings > Browser)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('shows one card and one main control; everything else is under a collapsed More', async () => {
+    await renderPanel(snapshot({ supported: true, enabled: true, platform: 'macos', cursor_motion_supported: true }))
+    const card = await screen.findByTestId('cu-main-card')
+    expect(within(card).getByRole('switch', { name: ENABLE_LABEL })).toBeInTheDocument()
+    expect(await within(card).findByTestId('cu-setup-status')).toHaveAttribute('data-part', 'summary')
+    expect(screen.getByRole('switch', { name: /attach screenshots/i })).toBeInTheDocument()
+    expect(screen.getByTestId('cu-privacy-footer')).toBeInTheDocument()
+    // Collapsed by default: no limit field, cursor toggle or driver rows yet.
+    expect(screen.queryByLabelText('Max tree nodes')).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /cursor motion/i })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('cu-status-driver')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('switch')).toHaveLength(2)
+    await openMore()
+    expect(await screen.findByLabelText('Max tree nodes')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: /cursor motion/i })).toBeInTheDocument()
+    expect(await screen.findByTestId('cu-status-driver')).toBeInTheDocument()
   })
 })

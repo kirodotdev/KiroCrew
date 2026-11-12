@@ -335,6 +335,8 @@ class TestPlatformSelection:
         assert isinstance(select_default_backend(), CuaBackend)
         monkeypatch.setattr(backend_mod, "upstream_installed", lambda: False)
         assert not isinstance(select_default_backend(), CuaBackend)
+        # The installed (and not blocked) driver is the only condition: no flag.
+        assert not hasattr(backend_mod, "WINDOWS_AUTO_UPSTREAM")
 
     @pytest.mark.parametrize("choice", ["auto", "upstream"])
     def test_linux_selects_the_upstream_driver(self, monkeypatch, choice):
@@ -354,7 +356,8 @@ class TestPlatformSelection:
             ("windows", "upstream", True),
             ("macos", "auto", False),
             ("macos", "native", False),
-            ("macos", "upstream", True),
+            # The upstream driver is not offered on macOS: refused, never built.
+            ("macos", "upstream", False),
         ],
     )
     def test_driver_choice_per_platform(self, monkeypatch, flag, choice, upstream):
@@ -364,6 +367,15 @@ class TestPlatformSelection:
         monkeypatch.setattr(backend_mod, "upstream_installed", lambda: False)
         monkeypatch.setattr(backend_mod, "_driver_choice", lambda: choice)
         assert isinstance(select_default_backend(), CuaBackend) is upstream
+
+    def test_macos_upstream_is_refused_with_a_plain_reason(self, monkeypatch):
+        self._pin(monkeypatch, macos=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "upstream")
+        driver = select_default_backend()
+        assert isinstance(driver, UnsupportedBackend)
+        assert driver.platform_id == PLATFORM_MACOS
+        assert driver.status().reason == backend_mod.MACOS_UPSTREAM_REASON
+        assert "not offered on macOS" in driver.status().reason
 
     def test_unknown_platform_degrades(self, monkeypatch):
         self._pin(monkeypatch)

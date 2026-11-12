@@ -91,7 +91,13 @@ const EXPECTED: Record<ComputerUseSetupState, SetupView> = {
 }
 
 const PLATFORM_DOC: Record<'macos' | 'windows' | 'linux', Parameters<typeof setupDoc>[1]> = {
-  macos: { platform: 'macos', session: { kind: 'aqua' } },
+  // macOS has the built-in driver only: the open-source one is not offered there.
+  macos: {
+    platform: 'macos',
+    session: { kind: 'aqua' },
+    driver: { kind: 'native', version: '' },
+    permissions: { accessibility: 'granted', screen_recording: 'granted', owner_name: 'Terminal' },
+  },
   windows: {
     platform: 'windows',
     session: { kind: 'windows_interactive' },
@@ -129,28 +135,49 @@ describe('ComputerUseSetupDialog', () => {
       await view()
       const rail = screen.getByTestId('cu-setup-steps')
       const ids = Array.from(rail.querySelectorAll('li')).map(li => li.getAttribute('data-step'))
-      if (platform === 'macos') expect(ids).toEqual(['install', 'accessibility', 'screen_recording', 'verify', 'ready'])
+      if (platform === 'macos') expect(ids).toEqual(['verify', 'ready'])
       else expect(ids).toEqual(['install', 'session', 'verify', 'ready'])
     })
   })
 
-  it.each(['macos', 'linux'] as const)('states the /Applications location before a %s install only on a Mac', async platform => {
-    renderDialog(setupDoc('not_configured', { ...PLATFORM_DOC[platform], driver: { installed: false, healthy: false } }))
-    expect(await view()).toBe('install')
-    const line = screen.queryByTestId('cu-setup-install-macos-path')
-    if (platform === 'macos') expect(line?.textContent).toContain('/Applications/CuaDriver.app')
-    else expect(line).toBeNull()
+  it('explains on a Mac that the open-source driver is not offered and offers the built-in one', async () => {
+    runAction.mockResolvedValue(setupDoc('ready', { ...PLATFORM_DOC.macos }))
+    renderDialog(
+      setupDoc('unsupported', {
+        platform: 'macos',
+        session: { kind: 'aqua' },
+        driver: { kind: 'upstream', version: '', installed: false, healthy: false },
+        problem: { code: 'unsupported_platform', message: 'not offered on macOS', recoverable: false },
+        steps: [{ id: 'verify', status: 'failed' }, { id: 'ready', status: 'pending' }],
+      }),
+    )
+    expect(await view()).toBe('unsupported')
+    const dialog = screen.getByTestId('cu-setup-dialog')
+    expect(within(dialog).getByText(/not offered on macOS yet/i)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/cannot run Computer Use/i)).not.toBeInTheDocument()
+    // The heading names the refused choice; it never says Computer Use is unavailable.
+    expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('The open-source driver is not offered on macOS')
+    expect(within(dialog).queryByText(/not available here/i)).not.toBeInTheDocument()
+    // Said once, in the body: the backend's sentence is not repeated as a notice.
+    expect(within(dialog).queryByTestId('cu-setup-problem')).not.toBeInTheDocument()
+    // No install step anywhere on a Mac.
+    const ids = Array.from(screen.getByTestId('cu-setup-steps').querySelectorAll('li')).map(li => li.getAttribute('data-step'))
+    expect(ids).toEqual(['verify', 'ready'])
+    fireEvent.click(screen.getByTestId('cu-use-builtin'))
+    await waitFor(() => expect(runAction).toHaveBeenCalledWith('use_builtin_driver'))
   })
 
-  it.each([
-    ['macos', 'upstream', true],
-    ['macos', 'native', false],
-    ['linux', 'upstream', false],
-  ] as const)('labels the %s %s driver a preview: %s', async (platform, kind, preview) => {
-    getSetup.mockResolvedValue(setupDoc('ready', { ...PLATFORM_DOC[platform], driver: { kind } }))
+  it('offers no built-in driver switch on an unsupported Linux desktop', async () => {
+    renderDialog(setupDoc('unsupported', { ...PLATFORM_DOC.linux, problem: { code: 'unsupported_session', message: 'x', recoverable: false } }))
+    expect(await view()).not.toBe('install')
+    expect(screen.queryByTestId('cu-use-builtin')).not.toBeInTheDocument()
+  })
+
+  it.each(['macos', 'windows', 'linux'] as const)('never labels the %s driver a preview', async platform => {
+    getSetup.mockResolvedValue(setupDoc('ready', PLATFORM_DOC[platform]))
     renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} />)
     const row = await screen.findByTestId('cu-status-driver')
-    expect(row.textContent?.includes('Preview')).toBe(preview)
+    expect(row.textContent).not.toMatch(/preview/i)
   })
 
   it('names the app to enable exactly as the document does', async () => {
@@ -301,6 +328,15 @@ describe('ComputerUseSetupDialog', () => {
     expect(runAction).not.toHaveBeenCalled()
   })
 
+  it('says so when the enable saved but the agent spec was not rewritten', async () => {
+    saveConfig.mockResolvedValue(config({ enabled: true, agent_spec_rewritten: false } as Partial<ComputerUseConfigData>))
+    renderDialog(setupDoc('disabled'))
+    await view()
+    getSetup.mockResolvedValue(setupDoc('not_configured', { driver: { installed: false, healthy: false } }))
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))
+    expect(await screen.findByTestId('agent-spec-not-rewritten')).toBeInTheDocument()
+  })
+
   it('keeps Continue disabled when policy locks the feature', async () => {
     renderDialog(setupDoc('disabled'), { cfg: config({ locked_by_policy: true }) })
     await view()
@@ -341,6 +377,144 @@ describe('ComputerUseSetupDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /install driver/i }))
     expect(await screen.findByText(/did not go through/i)).toBeInTheDocument()
     expect(screen.getByTestId('cu-setup-dialog')).toHaveAttribute('data-view', 'install')
+  })
+
+  it('names endpoint security software, not a version, when the driver was stopped at launch', async () => {
+    renderDialog(setupDoc('install_failed', { blocked: 'signal 9', user_action: 'English only' }))
+    expect(await view()).toBe('install_failed')
+    expect(screen.getByText(/stopped as soon as it started \(signal 9\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/keep using the built-in driver/i)).toBeInTheDocument()
+    expect(screen.queryByText('English only')).not.toBeInTheDocument()
+    expect(screen.queryByText(/version/i)).not.toBeInTheDocument()
+  })
+
+  it('says the built-in driver is in use when the upstream one was blocked', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { platform: 'windows', blocked: 'access denied', driver: { kind: 'native' } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="summary" />)
+    expect(await screen.findByTestId('cu-status-blocked')).toHaveTextContent(/is using the built-in driver/i)
+    expect(screen.queryByTestId('cu-open-setup')).not.toBeInTheDocument()
+  })
+
+  it('explains Restart driver in one line beside it', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { driver: { kind: 'upstream', installed: true, healthy: true } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    expect(await screen.findByTestId('cu-restart-hint')).toHaveTextContent(/only if computer use stops responding/i)
+  })
+
+  it('shows the setup problem through an error notice in the card, never as a limitation', async () => {
+    getSetup.mockResolvedValue(
+      setupDoc('error', {
+        platform: 'linux',
+        problem: { code: 'verify_failed', message: 'no on-screen window was found to read', recoverable: true },
+        user_action: 'Fix the reason above, then check again.',
+        limitations: ['Key presses in the background need /dev/uinput.'],
+      }),
+    )
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} />)
+    const notice = await screen.findByTestId('cu-status-problem')
+    expect(within(notice).getByRole('alert')).toHaveTextContent(/no on-screen window was found to read\. Fix the reason above/i)
+    expect(screen.queryByTestId('cu-status-user-action')).not.toBeInTheDocument()
+    // The standing limit is still listed, and the failure is not.
+    const list = screen.getByText(/background need \/dev\/uinput/i).closest('ul') as HTMLElement
+    expect(within(list).queryByText(/no on-screen window/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the problem in the dialog once, as an error notice', async () => {
+    renderDialog(
+      setupDoc('unsupported', {
+        platform: 'linux',
+        session: { kind: 'wayland' },
+        problem: { code: 'unsupported_session', message: 'this Wayland session has no X server', recoverable: false },
+        user_action: 'this Wayland session has no X server',
+      }),
+    )
+    await view()
+    const notice = screen.getByTestId('cu-setup-problem')
+    expect(within(notice).getByRole('alert')).toHaveTextContent('this Wayland session has no X server')
+    expect(screen.getAllByText('this Wayland session has no X server')).toHaveLength(1)
+    expect(screen.queryByTestId('cu-setup-user-action')).not.toBeInTheDocument()
+  })
+
+  it('merges the install failure reason and the hint into one notice', async () => {
+    renderDialog(
+      setupDoc('install_failed', {
+        problem: { code: 'install_failed', message: 'The download was blocked before it finished.', recoverable: true },
+        user_action: 'Try the install again.',
+      }),
+    )
+    expect(await view()).toBe('install_failed')
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]).toHaveTextContent(/blocked before it finished\. Try the install again\. Nothing was installed/i)
+  })
+
+  it('offers the built-in driver when the upstream one was blocked at launch', async () => {
+    runAction.mockResolvedValue(setupDoc('ready', { driver: { kind: 'native' } }))
+    renderDialog(setupDoc('install_failed', { blocked: 'signal 9', problem: { code: 'install_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('install_failed')
+    fireEvent.click(screen.getByTestId('cu-use-builtin'))
+    await waitFor(() => expect(runAction).toHaveBeenCalledWith('use_builtin_driver'))
+  })
+
+  it('offers no built-in driver on Linux, where none exists', async () => {
+    renderDialog(setupDoc('install_failed', { platform: 'linux', blocked: 'signal 9', problem: { code: 'install_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('install_failed')
+    expect(screen.queryByTestId('cu-use-builtin')).not.toBeInTheDocument()
+  })
+
+  it('keeps the blocked-driver view to two actions: retry, and the built-in driver', async () => {
+    renderDialog(setupDoc('temporarily_unavailable', { blocked: 'signal 9', problem: { code: 'launch_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('unavailable')
+    const footer = screen.getByTestId('cu-use-builtin').parentElement as HTMLElement
+    expect(within(footer).getAllByRole('button')).toHaveLength(2)
+    expect(within(footer).queryByRole('button', { name: /check again/i })).not.toBeInTheDocument()
+  })
+
+  it('reruns the desktop check from Check again after a failed check', async () => {
+    runAction.mockResolvedValue(setupDoc('ready'))
+    renderDialog(setupDoc('error', { problem: { code: 'verify_failed', message: 'no on-screen window', recoverable: true } }))
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }))
+    await waitFor(() => expect(runAction).toHaveBeenCalledWith('verify'))
+  })
+
+  it('offers Run check in the card after a failed desktop check', async () => {
+    getSetup.mockResolvedValue(setupDoc('error', { platform: 'linux', problem: { code: 'verify_failed', message: 'x', recoverable: true } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    expect(await screen.findByRole('button', { name: /run check/i })).toBeInTheDocument()
+  })
+
+  it('tells the user the install keeps going if the dialog is closed', async () => {
+    renderDialog(setupDoc('installing', { driver: { installed: false } }))
+    expect(await view()).toBe('installing')
+    expect(screen.getByTestId('cu-installing-keeps-going')).toHaveTextContent(/close this window; the install keeps going/i)
+  })
+
+  it('shows a failed Restart driver under More, where the button is', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { driver: { kind: 'upstream', installed: true, healthy: true } }))
+    runAction.mockRejectedValue(new Error('network'))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    fireEvent.click(await screen.findByRole('button', { name: /restart driver/i }))
+    expect(await screen.findByText(/did not go through/i)).toBeInTheDocument()
+  })
+
+  it('says so when the background grant recheck fails, instead of waiting silently', async () => {
+    vi.useFakeTimers()
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    try {
+      renderDialog(setupDoc('requesting_accessibility', { permissions: { accessibility: 'missing' } }))
+      runAction.mockRejectedValue(new Error('network'))
+      await tick()
+      expect(screen.queryByText(/could not read the computer use setup status/i)).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('cu-setup-open-accessibility'))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SETUP_POLL_MS * 2 + 50)
+      })
+      expect(runAction).toHaveBeenCalledWith('recheck')
+      expect(screen.getByText(/could not read the computer use setup status/i)).toBeInTheDocument()
+    } finally {
+      open.mockRestore()
+    }
   })
 
   it('renders a failed status read with Check again, never a spinner', async () => {

@@ -3,9 +3,8 @@
 A graceful shutdown stops the supervised child through ``on_cleanup``. An in-place
 restart's ``exec`` skips every cleanup hook while keeping the pid, so the same stop
 is registered with :mod:`kiro_crew.pre_exec_stops` too; the cleanup hook
-unregisters it. Nothing starts the child here: it starts on the first desktop call,
-and a child left behind by an earlier life of this gateway is reclaimed then (the
-supervisor's pid file names it).
+unregisters it. Nothing starts the child here: it starts on the first desktop call.
+No pid is ever killed by number: a child whose gateway died exits on stdin EOF.
 """
 
 from __future__ import annotations

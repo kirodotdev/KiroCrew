@@ -7,20 +7,20 @@ type Overrides = Partial<Omit<ComputerUseSetupDoc, 'driver' | 'session' | 'permi
   capabilities?: Partial<ComputerUseSetupDoc['capabilities']>
 }
 
-/** A complete setup document for tests: macOS, upstream driver installed and
- *  healthy, both grants given, unless the overrides say otherwise. */
+/** A complete setup document for tests: Windows, upstream driver installed and
+ *  healthy, in an interactive desktop session, unless the overrides say
+ *  otherwise. (The upstream driver is not offered on macOS.) */
 export function setupDoc(state: ComputerUseSetupState, overrides: Overrides = {}): ComputerUseSetupDoc {
   const { driver, session, permissions, capabilities, ...rest } = overrides
   return {
     state,
-    platform: 'macos',
+    platform: 'windows',
     driver: { kind: 'upstream', version: '0.47.8', installed: true, healthy: true, ...driver },
-    session: { kind: 'aqua', detail: '', ...session },
+    session: { kind: 'windows_interactive', detail: '', ...session },
     permissions: {
-      accessibility: 'granted',
-      screen_recording: 'granted',
-      owner_name: 'CuaDriver',
-      previously_granted: false,
+      accessibility: 'not_applicable',
+      screen_recording: 'not_applicable',
+      owner_name: '',
       ...permissions,
     },
     capabilities: {

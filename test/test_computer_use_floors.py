@@ -185,22 +185,6 @@ class TestPointerConfinement:
         assert floors.point_in_bounds((0.0, 0.0, 100.0, 100.0), (x, y)) is inside
 
 
-class TestAddressedKeystrokes:
-    @pytest.mark.parametrize("verb", ["type_text", "press_key"])
-    def test_keyboard_verbs_without_an_element_are_refused(self, verb: str) -> None:
-        stub = _Stub(_snap())
-        svc = _service(stub)
-        with pytest.raises(ComputerUseError, match="element_index"):
-            getattr(svc, verb)(APP, None, "x")
-        assert stub.calls == []
-
-    def test_keyboard_verbs_with_an_element_reach_the_backend(self) -> None:
-        stub = _Stub(_snap())
-        rec = ElementRec(index=1, role="text box")
-        _service(stub).type_text(APP, rec, "12")
-        assert stub.calls == ["type_text"]
-
-
 class TestSelfWindowAndLaunch:
     def test_denied_title_represents_its_process(self) -> None:
         plain = AppRef(name="Firefox", pid=9, window_id=1, window_title="News")

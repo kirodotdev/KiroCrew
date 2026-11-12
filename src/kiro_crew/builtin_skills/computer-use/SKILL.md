@@ -35,10 +35,10 @@ Two things to internalise before your first call:
   the file tools for a file's contents. Driving a window is the slowest and least
   exact way to do either.
 
-### Which desktop driver runs
+### Which driver runs
 
 Kiro Crew drives the desktop through one of two drivers, chosen in Settings: its
-own macOS/Windows driver, or the open-source desktop driver it downloads and checks
+built-in macOS/Windows driver, or the open-source driver it downloads and checks
 when the owner installs it (the default on Linux, and on Windows once installed).
 The tools, the element indexes and the refusals are the same with either. What
 differs:
@@ -46,8 +46,8 @@ differs:
 - **Windows, own driver**: no per-process input, so a keystroke takes the user's
   keyboard focus and a coordinate click moves their real cursor — the result says
   so; relay it.
-- **Open-source driver** (Linux, Windows, optionally macOS): `sky_click` and
-  `app_post` are not macOS-native here; coordinate clicks run in the background, and
+- **Open-source driver** (Linux, Windows; not offered on macOS yet): `sky_click`
+  and `app_post` do not exist here; coordinate clicks run in the background, and
   `global` is the foreground path. A field whose password status cannot be proven
   is treated as a password field (`<secure>`): you cannot type into it.
 - **Linux**: X11, or apps running under XWayland on a Wayland desktop. Native
@@ -382,7 +382,7 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `computer use is not supported on this platform (…)` | no usable driver here: not installed, a session with no desktop (Windows Session 0, Wayland with no XWayland), or an OS with no driver | say so once; installing the driver is the user's step in Settings |
 | `this desktop cannot deliver the … in the background (…)` | the background route is unavailable for this action here | use an element action if there is one; for a click or drag, name `click_method: "global"` (tell the user first); a key press has no foreground path you can name, so report it |
 | `… could not confirm its effect; re-read the state …` | the action was sent but not confirmed | read the refreshed tree for the change before repeating |
-| `the desktop driver … restarted; whether the action happened is unknown` | the driver stopped mid-action and was restarted | call `computer_get_state` and check before acting again; never assume it did or did not happen |
+| `the open-source driver … restarted; whether the action happened is unknown` | the driver stopped mid-action and was restarted | call `computer_get_state` and check before acting again; never assume it did or did not happen |
 | `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
 | `click_method 'sky_click' supports only the left mouse button (…)` | `sky_click` is a left-button-only recipe | use `left`, or switch to `app_post` for a right/middle click — the refusal names it |
 | `click_method 'auto' with coordinates cannot be served on Windows` | `auto` + x/y, where the only coordinate route moves the real cursor | pass an `element_index`, or name `global` explicitly — `auto` never takes the pointer on its own |

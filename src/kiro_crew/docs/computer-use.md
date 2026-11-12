@@ -23,8 +23,9 @@ setup dialog walks you through what this computer needs, one step at a time:
    Not now closes the dialog and changes nothing.
 2. **Install the driver**, when this computer uses the open-source driver (see
    [The driver](#the-driver)).
-3. **The platform's own step**: two privacy permissions on macOS, a desktop
-   session check on Windows and Linux.
+3. **The desktop session check**, with the open-source driver on Windows and
+   Linux. On macOS the built-in driver needs no setup step; its two privacy
+   permissions show on the Setup card (see [macOS](#macos)).
 4. **Verify.** Kiro Crew lists your windows, reads one window's controls and
    takes one picture. The check never clicks or types.
 5. **Ready.** The dialog says Ready only after the check passed.
@@ -45,12 +46,14 @@ of the page. Nothing else turns it on or off, and an agent cannot.
 
 ## The driver
 
-On Linux Kiro Crew drives apps through the open-source **cua-driver** (MIT
-licensed). On Windows it uses that driver once you install it from the setup
-dialog, and its own Windows driver until then. On macOS Kiro Crew's own driver
-stays the default and the open-source one can be chosen. The driver is not
-bundled: the install downloads one pinned release from the project's official
-GitHub releases, and Kiro Crew checks its size, checksum and signature before it
+Kiro Crew has two drivers: the **built-in driver** (its own, on macOS and
+Windows) and the **open-source driver** (the MIT-licensed cua-driver project). On
+Linux it uses the open-source driver. On Windows it uses the open-source driver
+once you install it from the setup dialog, and the built-in driver until then. On
+macOS Kiro Crew uses the built-in driver; the open-source driver is not offered on macOS yet, and choosing it there
+shows as not supported. The open-source driver is not bundled: the install
+downloads one pinned release from the project's official GitHub releases, and
+Kiro Crew checks its size, checksum and signature before it
 runs anything. A file that does not match is never run, and the check repeats
 every time the driver starts. The driver's telemetry and update checks are
 turned off, and the agent never talks to the driver directly: every call still
@@ -65,80 +68,20 @@ macOS asks for two permissions in **System Settings → Privacy & Security**:
 | **Accessibility** | Reading the buttons and fields of an app window, and clicking or typing in them. |
 | **Screen Recording** (Screen & System Audio Recording) | Taking a picture of the one window the agent is working in, to check what happened. |
 
-With the open-source driver, the entry you turn on is called **CuaDriver**, not
-Kiro Crew. That is the driver's own signed app, and macOS grants permissions to
-the app that asks for them. The setup dialog names the exact entry to look for.
-Because the grant belongs to CuaDriver, it survives Kiro Crew updates.
-
-Each permission step has an **Open … Settings** button that opens the right pane
-once per click, and a **Check again** button. After you turn a switch on, the
-dialog notices by itself for a couple of minutes. Kiro Crew never changes these
-settings for you.
+The grant belongs to the app that started Kiro Crew (for example the Kiro Crew
+app, or Terminal when you started it from a shell), so that is the entry to turn
+on. The Setup card shows what Kiro Crew can read about both permissions and
+names that app. The reading is advisory: macOS does not always report a grant
+given to the app that started Kiro Crew, so a "not detected" reading never
+blocks Computer Use on its own. When a permission reads as missing, the card has
+an **Open … Settings** button for it that opens the right pane once per click.
+Kiro Crew never changes these settings for you.
 
 macOS delivers a click to the target application alone, so your own pointer does
 not move and you can keep working while the agent drives another window. One
 route deliberately warps the real cursor, for a click that has to be physically
 real. The agent has to name that route explicitly, it is never chosen
 automatically, and it should warn you first.
-
-### The open-source driver on macOS (preview)
-
-On a Mac, Kiro Crew's own driver is the default. The open-source driver is a
-**preview** there: its download, signature checks and refusals are proven, but
-granting the permissions and real control of apps have not been proven yet. The
-Setup card marks it **Preview**.
-
-When you install it, the driver app is placed at `/Applications/CuaDriver.app`.
-That is the only place macOS lets it start from, and where Privacy & Security
-lists it. The setup dialog says so before you click **Install driver**.
-
-- If a `CuaDriver.app` is already there, Kiro Crew uses it only when it is
-  exactly the pinned version with the expected signature. Otherwise the install
-  stops with "another version of CuaDriver is installed"; remove or update that
-  copy yourself, then install again. Kiro Crew never replaces or removes a copy
-  it did not install.
-- Every time the driver starts, Kiro Crew checks the copy in `/Applications`
-  again (signature, team, bundle id, checksum, version). A copy that fails is
-  never started.
-- If your account cannot write to `/Applications`, the install says so. Kiro
-  Crew never asks for an administrator password.
-- **Reset setup** removes the driver Kiro Crew installed, including its copy in
-  `/Applications` if it is unchanged.
-- The driver app runs one shared background process per user. Another tool that
-  uses the same driver shares that process with Kiro Crew; Kiro Crew stops only
-  what it started.
-
-#### How to check it on your Mac
-
-About 15 minutes, signed in at your Mac's desktop, with no
-`/Applications/CuaDriver.app` already present. Use a throwaway data home so your
-real setup is untouched:
-
-1. From a source checkout of this version, create a virtual environment and
-   install Kiro Crew into it, then `export KIROCREW_HOME=/tmp/kc-cu-home`.
-2. Choose the open-source driver and turn the feature on in that home:
-   `python -c "from kiro_crew.computer_use import enable_state as e; s=e.load_state(); s.update(enabled=True, driver='upstream'); e.save_state(s)"`
-3. Install: `python -c "import time; from kiro_crew.computer_use import setup as s; s.run_setup_action('install'); time.sleep(30); print(s.get_setup_status()['state'])"`.
-   Expect `requesting_accessibility`, and `/Applications/CuaDriver.app` present.
-4. Ask for the permissions with `run_setup_action('request_permissions')`. Note
-   whether a prompt appears and what name Privacy & Security shows (expect
-   **CuaDriver**). Turn on Accessibility and Screen & System Audio Recording.
-5. Run `recheck`, then `restart_driver`, then `verify`, printing the state after
-   each. Expect `ready` at the end.
-6. Open TextEdit with a new document and run
-   `kirocrew computer call --calls '[{"tool":"computer_get_state","args":{"app":"TextEdit"}}]'`.
-   Take the text area's index N, then type into it with `computer_type_text`
-   (`element_index` N, `text` "hello") in the same `--calls` list. Expect "hello"
-   in the document and in the refreshed tree. A password field (a login page or
-   Users settings) must show as `<secure>`, and typing into it must be refused.
-7. Turn Accessibility off for CuaDriver, run `recheck`, and expect
-   `permission_revoked`.
-8. Clean up: `run_setup_action('reset')` (removes the app from `/Applications`),
-   `tccutil reset Accessibility com.trycua.driver`,
-   `tccutil reset ScreenCapture com.trycua.driver`, and delete `/tmp/kc-cu-home`.
-
-Report the state after each step, the name Privacy & Security showed, and
-whether typing landed.
 
 ## Windows
 
@@ -174,15 +117,14 @@ supported on this platform" refusal that says why.
 
 ## Troubleshooting
 
-**I turned the permission on, but setup still says it is missing.** Choose
-**Check again**. macOS applies a new permission only to a freshly started
-process, so the dialog may ask you to **Restart driver**; that restarts the
-driver only, never Kiro Crew or your chats. Make sure the switch you turned on is
-the entry the dialog names (CuaDriver for the open-source driver).
+**I turned the permission on, but the Mac card still says it is missing.**
+macOS applies a new permission only to a freshly started process: quit and
+reopen the app the card names (the one that started Kiro Crew). Make sure the
+switch you turned on is for that app.
 
-**Setup says a permission was turned off.** Something removed a grant you gave
-earlier (you, an administrator, or a macOS update). Use **Open … Settings** to
-turn it back on, then **Check again**.
+**macOS says the open-source driver is not supported.** It is not offered on
+macOS yet. Choose **Use the built-in driver** in the setup dialog, or set the
+driver to **auto** or **native**.
 
 **The driver is not answering.** Choose **Restart driver** on the dialog or the
 Setup card. If it keeps happening, include the **Diagnostics** list when you
@@ -191,6 +133,15 @@ report it.
 **The driver download failed.** Nothing was installed. A network that blocks
 GitHub downloads stops the install: allow `github.com` and
 `objects.githubusercontent.com`, then choose **Try the install again**.
+
+**Setup says the driver was stopped as soon as it started.** The download and
+every check passed, but the system stopped the driver the moment it ran (on
+Linux this shows as "signal 9", on Windows as "access denied" or "blocked by
+policy"). On a managed computer this is usually endpoint security software that
+has not been told to allow it. Ask your IT team to allow the open-source driver. Until then,
+on Windows keep the driver on **auto** (or **native**): Computer Use keeps
+working on the built-in driver, and the Settings card says so. Kiro Crew tries the open-source driver once per install or
+**Restart driver**, and never tries to get around the block.
 
 **Windows says there is no desktop to control (Session 0).** Kiro Crew is
 running as a background service, which has no desktop. Start Kiro Crew from your

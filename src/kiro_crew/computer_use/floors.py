@@ -2,8 +2,12 @@
 
 A rule kept inside one driver's files would bind only that driver, and a new
 backend (the upstream driver, a remote executor, a test double) could skip it by
-not re-implementing it. These are enforced here, by :mod:`.service`, on whatever a
-backend returns, so swapping the driver cannot weaken them:
+not re-implementing it. The floors below are enforced here, by :mod:`.service`, on
+whatever a backend returns, so swapping the driver cannot weaken them. Two helpers
+are NOT service floors: :func:`check_launch_query` and :func:`representative_window`
+are called by the upstream backend (``driver_runtime.backend.CuaBackend``) only,
+because the native backends resolve launches and windows through their own
+catalogs:
 
 * **Screenshot suppression** (:func:`screenshot_permitted`,
   :func:`harden_snapshot`): no pixels leave a backend for a window that holds a
@@ -21,9 +25,6 @@ backend returns, so swapping the driver cannot weaken them:
   app B. A backend with an occlusion-aware native hit test says so with
   ``confines_points_natively``; every other backend is held to the window bounds,
   and a backend that cannot report bounds is refused (fail closed).
-* **Addressed keystrokes** (:func:`require_addressed_element`): typed text and
-  key presses go to the element the model named and :func:`policy.check_input_target`
-  cleared, never to "whatever has focus".
 * **Self-window preference** (:func:`representative_window`): when one process
   owns several windows, the one whose title trips the built-in denylist (Kiro
   Crew's own dashboard in a browser tab) represents the process, so the deny
@@ -45,7 +46,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from kiro_crew.computer_use import policy
-from kiro_crew.computer_use.types import AppRef, ElementRec, Snapshot
+from kiro_crew.computer_use.types import AppRef, Snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,6 @@ ERR_POINT_OUTSIDE_WINDOW = (
 ERR_POINT_UNCONFINED = (
     "{app}'s window position is unknown, so a coordinate gesture cannot be confined to it; "
     "call computer_get_state again, or address an element by element_index"
-)
-ERR_KEYS_NEED_ELEMENT = (
-    "{verb} needs an element_index: keystrokes are only sent to the element you name, "
-    "never to whatever currently has focus"
 )
 ERR_LAUNCH_NOT_A_NAME = (
     "'{query}' is not an application name: give the app's name as the OS shows it "
@@ -159,11 +156,6 @@ def check_point_in_window(
     return None
 
 
-def require_addressed_element(rec: "ElementRec | None", verb: str) -> "str | None":
-    """Refuse a keyboard verb that names no element."""
-    return ERR_KEYS_NEED_ELEMENT.format(verb=verb) if rec is None else None
-
-
 def representative_window(windows: Sequence[AppRef]) -> "AppRef | None":
     """The window that stands for its process: a denied title wins, else the first."""
     if not windows:
@@ -183,7 +175,6 @@ def check_launch_query(query: str) -> "str | None":
 
 
 __all__ = [
-    "ERR_KEYS_NEED_ELEMENT",
     "ERR_LAUNCH_NOT_A_NAME",
     "ERR_POINT_OUTSIDE_WINDOW",
     "ERR_POINT_UNCONFINED",
@@ -196,7 +187,6 @@ __all__ = [
     "harden_snapshot",
     "point_in_bounds",
     "representative_window",
-    "require_addressed_element",
     "screenshot_permitted",
     "screenshot_withheld_reason",
 ]

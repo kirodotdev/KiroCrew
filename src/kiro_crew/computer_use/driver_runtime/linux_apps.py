@@ -45,6 +45,13 @@ SYSTEM_APPLICATION_DIRS: tuple[str, ...] = (
     "/var/lib/snapd/desktop/applications",
 )
 
+#: Catalog directories whose entries are symlinks by design, and the root-owned
+#: tree each link must resolve inside. Flatpak exports every app's ``.desktop``
+#: file as a link into ``/var/lib/flatpak/app/<id>/current/active/export/``.
+SYMLINKED_DIR_ROOTS: dict[str, str] = {
+    "/var/lib/flatpak/exports/share/applications": "/var/lib/flatpak",
+}
+
 #: The PATH an Exec program is resolved on. Never the gateway's own PATH.
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/games"
 
@@ -130,7 +137,35 @@ def parse_entry(path: Path, desktop_id: str) -> "DesktopEntry | None":
     )
 
 
-def installed_apps(dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS) -> "tuple[DesktopEntry, ...]":
+def _entry_file(path: Path, link_root: "str | None") -> "Path | None":
+    """The file to read for catalog entry *path*, or ``None`` to skip it.
+
+    A plain root-owned file is read as is. A symlink is followed only in a
+    directory listed in :data:`SYMLINKED_DIR_ROOTS`, and only when it resolves
+    to a root-owned file inside that directory's tree whose every parent is
+    root-owned and not group/other-writable.
+    """
+    if not path.is_symlink():
+        return path if path.is_file() and _secure_owner(path) else None
+    if link_root is None:
+        return None
+    try:
+        target = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    base = Path(link_root)
+    if base not in target.parents or not target.is_file():
+        return None
+    if not _secure_owner(target) or not _secure_chain(target.parent):
+        return None
+    return target
+
+
+def installed_apps(
+    dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS,
+    link_roots: "dict[str, str] | None" = None,
+) -> "tuple[DesktopEntry, ...]":
+    roots = SYMLINKED_DIR_ROOTS if link_roots is None else link_roots
     seen: dict[str, DesktopEntry] = {}
     for directory in dirs:
         root = Path(directory)
@@ -143,8 +178,8 @@ def installed_apps(dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS) -> "tuple[
         for name in names:
             if not name.endswith(".desktop"):
                 continue
-            path = root / name
-            if path.is_symlink() or not path.is_file() or not _secure_owner(path):
+            path = _entry_file(root / name, roots.get(directory))
+            if path is None:
                 continue
             desktop_id = name[: -len(".desktop")]
             if desktop_id in seen:
@@ -182,7 +217,14 @@ def _matches(entry: DesktopEntry, wanted: str) -> bool:
 def resolve_target(
     query: str, *, catalog: "tuple[DesktopEntry, ...] | None" = None
 ) -> "tuple[str, str]":
-    """Resolve *query* to ``(argv joined by NUL, display name)``, or raise."""
+    """Resolve *query* to ``(target, display name)``, or raise.
+
+    *target* is NUL-joined: the vetted program's real path (what is executed and
+    what the ownership check judged), then the entry's own ``argv`` with its
+    original ``argv[0]``. Some programs pick their mode from ``argv[0]`` (gvim
+    is vim.gtk3 through an alternatives link, and starts its GUI only when
+    called gvim), so the real path never replaces the name the entry gave.
+    """
     entries = installed_apps() if catalog is None else catalog
     wanted = query.strip().casefold()
     exact = [e for e in entries if _matches(e, wanted)]
@@ -202,18 +244,75 @@ def resolve_target(
         program = resolve_program(entry.argv[0])
     except ValueError as exc:
         raise ComputerUseError(ERR_UNSAFE_PROGRAM.format(name=entry.name, detail=exc)) from exc
-    return "\0".join((program, *entry.argv[1:])), entry.name
+    return "\0".join((program, *entry.argv)), entry.name
+
+
+def _wrapped(argv: "list[str]", start: int) -> "str | None":
+    """The first argument at or after *start* that is not an option or ``VAR=value``."""
+    for arg in argv[start:]:
+        if arg.startswith("-") or "=" in arg:
+            continue
+        return arg
+    return None
+
+
+def launch_key(argv: "list[str] | tuple[str, ...]") -> str:
+    """The identity a launched app's window carries, from its vetted argv.
+
+    Usually the program's basename. A desktop entry may start the app through a
+    wrapper, whose own name no window carries, so the wrapped app is named
+    instead: ``env VAR=value prog`` and ``snap run name`` give that program's
+    basename (a Snap's window process is the program itself), and ``flatpak run
+    <app-id>`` gives the app id, which :func:`flatpak_app_id` reads back from the
+    window's process.
+    """
+    args = list(argv)
+    if not args:
+        return ""
+    prog = os.path.basename(args[0])
+    if prog == "env":
+        inner = _wrapped(args, 1)
+        return os.path.basename(inner) if inner else prog
+    if prog in ("snap", "flatpak") and len(args) > 1 and args[1] == "run":
+        inner = _wrapped(args, 2)
+        if inner:
+            return inner if prog == "flatpak" else os.path.basename(inner)
+    return prog
 
 
 def target_identity(target: str, display: str) -> LaunchIdentity:
-    return LaunchIdentity(display=display, key=os.path.basename(target.split("\0", 1)[0]))
+    return LaunchIdentity(display=display, key=launch_key(target.split("\0")[1:]))
+
+
+def flatpak_app_id(pid: int) -> str:
+    """The Flatpak app id *pid* runs as (``name=`` in its ``.flatpak-info``), or ``""``.
+
+    Flatpak writes that file into every sandbox it starts; a process outside a
+    Flatpak sandbox has none.
+    """
+    if pid <= 0:
+        return ""
+    try:
+        with open(f"/proc/{pid}/root/.flatpak-info", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(65536)
+    except OSError:
+        return ""
+    in_application = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_application = stripped == "[Application]"
+        elif in_application and stripped.startswith("name="):
+            return stripped[len("name=") :].strip()
+    return ""
 
 
 def spawn_detached(target: str, env: "dict[str, str] | None" = None) -> None:
     """Start *target* (from :func:`resolve_target`) detached, with no extra arguments."""
-    argv = target.split("\0")
+    program, *argv = target.split("\0")
     subprocess.Popen(  # noqa: S603 - argv is a vetted, root-owned desktop entry
-        argv,
+        argv or [program],
+        executable=program,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -227,7 +326,9 @@ def spawn_detached(target: str, env: "dict[str, str] | None" = None) -> None:
 __all__ = [
     "DesktopEntry",
     "SYSTEM_APPLICATION_DIRS",
+    "flatpak_app_id",
     "installed_apps",
+    "launch_key",
     "parse_entry",
     "resolve_program",
     "resolve_target",

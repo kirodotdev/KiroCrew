@@ -94,7 +94,9 @@ describe('computerUseSetup', () => {
 
   it('falls back to the platform walk when the document carries no steps', () => {
     expect(stepsFor(setupDoc('error', { platform: 'linux' })).map(s => s.id)).toEqual(['install', 'session', 'verify', 'ready'])
-    expect(stepsFor(setupDoc('error')).map(s => s.id)).toEqual(['install', 'accessibility', 'screen_recording', 'verify', 'ready'])
+    expect(stepsFor(setupDoc('error')).map(s => s.id)).toEqual(['install', 'session', 'verify', 'ready'])
+    // macOS walks the built-in driver's check only: no install step.
+    expect(stepsFor(setupDoc('error', { platform: 'macos', driver: { kind: 'native' } })).map(s => s.id)).toEqual(['verify', 'ready'])
   })
 
   it('points a revoked or waiting state at the missing grant', () => {
@@ -105,10 +107,39 @@ describe('computerUseSetup', () => {
     ).toBe('screen_recording')
   })
 
+  it.each([
+    ['plain ready', setupDoc('ready'), 'ready'],
+    ['ready with a problem', setupDoc('ready', { problem: { code: 'action_failed', message: 'x', recoverable: true } }), 'attention'],
+    [
+      'built-in macOS, a permission missing',
+      setupDoc('ready', { platform: 'macos', driver: { kind: 'native' }, permissions: { accessibility: 'missing', screen_recording: 'granted' } }),
+      'needs_permission',
+    ],
+    [
+      'built-in macOS, screen recording missing',
+      setupDoc('ready', { platform: 'macos', driver: { kind: 'native' }, permissions: { accessibility: 'granted', screen_recording: 'missing' } }),
+      'needs_permission',
+    ],
+    [
+      'built-in macOS, both unknown',
+      setupDoc('ready', { platform: 'macos', driver: { kind: 'native' }, permissions: { accessibility: 'unknown', screen_recording: 'unknown' } }),
+      'ready',
+    ],
+    ['open-source blocked, built-in in use', setupDoc('ready', { blocked: 'access denied', driver: { kind: 'native' } }), 'ready_builtin'],
+    ['disabled', setupDoc('disabled'), 'off'],
+    ['not configured', setupDoc('not_configured'), 'needs_setup'],
+    ['error', setupDoc('error', { problem: { code: 'verify_failed', message: 'x', recoverable: true } }), 'attention'],
+  ] as const)('derives the badge for %s', (_name, doc, want) => {
+    expect(readinessFor(doc)).toBe(want)
+  })
+
   it('summarizes readiness for the status card', () => {
     expect(readinessFor(setupDoc('disabled'))).toBe('off')
     expect(readinessFor(setupDoc('ready'))).toBe('ready')
     expect(readinessFor(setupDoc('unsupported'))).toBe('unavailable')
+    // The open-source driver chosen on a Mac: the Mac works, the choice needs changing.
+    expect(readinessFor(setupDoc('unsupported', { platform: 'macos', driver: { kind: 'upstream' } }))).toBe('attention')
+    expect(readinessFor(setupDoc('unsupported', { platform: 'macos', driver: { kind: 'native' } }))).toBe('unavailable')
     expect(readinessFor(setupDoc('permission_revoked'))).toBe('attention')
     expect(readinessFor(setupDoc('requesting_accessibility'))).toBe('needs_setup')
   })

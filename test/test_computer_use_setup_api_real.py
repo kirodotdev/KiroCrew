@@ -11,7 +11,6 @@ import hashlib
 import io
 import json
 import tarfile
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +23,7 @@ from kiro_crew.computer_use.driver_runtime import install as install_mod
 from kiro_crew.computer_use.driver_runtime import pin
 from kiro_crew.computer_use.driver_runtime import session as session_mod
 from kiro_crew.dashboard.handlers import computer_use_setup as setup_api
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 OWNER = "U0OWNER0000"
 X11 = session_mod.detect_linux({"DISPLAY": ":1", "DBUS_SESSION_BUS_ADDRESS": "x"}, uinput=False)
@@ -45,7 +45,6 @@ def _status(**kw):  # type: ignore[no-untyped-def]
         install_progress={},
         session=X11,
         progress={"verify": {"ok": True, "binary_sha256": SHA}},
-        now=1_000_000.0,
     )
     args.update(kw)
     return setup.build_status(**args)
@@ -69,27 +68,21 @@ SCENARIOS = {
     ),
     "no_desktop": _status(session=session_mod.detect_linux({}, uinput=False)),
     "wayland_no_x": _status(session=WAYLAND_NO_X),
-    "mac_requesting": _status(platform="macos", choice="upstream", session=AQUA),
-    "mac_revoked": _status(
+    "mac_native": _status(
         platform="macos",
-        choice="upstream",
+        choice="auto",
         session=AQUA,
-        progress={
-            "verify": {"ok": True, "binary_sha256": SHA},
-            "permissions": {"accessibility": "missing"},
-            "ever_granted": {"accessibility": True},
+        native_permissions={
+            "accessibility": "missing",
+            "screen_recording": "granted",
+            "responsible_hint": "Grant them to Terminal.",
+            "owner_name": "Terminal",
         },
     ),
-    "mac_restart": _status(
-        platform="macos",
-        choice="upstream",
-        session=AQUA,
-        progress={
-            "verify": {"ok": True, "binary_sha256": SHA},
-            "permissions": {"accessibility": "granted", "screen_recording": "granted"},
-            "restart_required": True,
-        },
+    "mac_native_no_session": _status(
+        platform="macos", choice="auto", session=session_mod.detect_macos(console_uid=0)
     ),
+    "mac_upstream_unsupported": _status(platform="macos", choice="upstream", session=AQUA),
 }
 
 
@@ -149,8 +142,11 @@ class _FakeDriver:
         if tool == "list_windows":
             return {"structuredContent": {"windows": [{"pid": 5, "window_id": 9}]}}
         if tool == "get_window_state":
-            Path(args["screenshot_out_file"]).write_bytes(b"png")
-            return {"structuredContent": {"elements": []}}
+            assert "screenshot_out_file" not in args, "the verify capture must stay off disk"
+            return {
+                "content": [{"type": "image", "mimeType": "image/png", "data": "cG5n"}],
+                "structuredContent": {"elements": []},
+            }
         if tool == "health_report":
             return {"structuredContent": {"overall": "ok"}}
         raise AssertionError(f"setup must not call {tool}")
@@ -194,12 +190,24 @@ async def test_install_verify_ready_through_the_routes(
             root,
             asset=asset,
             os_id="linux",
-            opener=lambda url, timeout: _Resp(data),
             run=lambda argv, **k: __import__("subprocess").CompletedProcess(
                 argv, 0, "cua-driver 0.47.8\n", ""
             ),
         )
 
+    import types
+
+    from kiro_crew import asset_downloader
+
+    def open_url(req, timeout=None):  # type: ignore[no-untyped-def]
+        resp = _Resp(data)
+        resp.status = 200  # type: ignore[attr-defined]
+        resp.headers = {}  # type: ignore[attr-defined]
+        return resp
+
+    monkeypatch.setattr(
+        asset_downloader, "build_opener", lambda *_a, **_k: types.SimpleNamespace(open=open_url)
+    )
     driver = _FakeDriver()
     monkeypatch.setattr(setup, "_home", lambda h: home)
     monkeypatch.setattr(setup, "_platform", lambda: "linux")
@@ -218,12 +226,12 @@ async def test_install_verify_ready_through_the_routes(
         assert first["state"] == "not_configured"
         assert [s["status"] for s in first["steps"]][0] == "current"
         await client.post("/api/computer-use/setup", json={"action": "install"})
-        deadline = time.monotonic() + 10
-        while True:
+
+        async def settled() -> "dict | None":
             doc = await (await client.get("/api/computer-use/setup")).json()
-            if doc["state"] != "installing" or time.monotonic() > deadline:
-                break
-            time.sleep(0.05)
+            return doc if doc["state"] != "installing" else None
+
+        doc = await async_wait_until(settled, timeout=default_timeout())
         assert doc["state"] == "not_configured" and doc["driver"]["installed"] is True
         assert {s["id"]: s["status"] for s in doc["steps"]}["verify"] == "current"
         done = await (

@@ -148,26 +148,23 @@ export function viewFor(doc: ComputerUseSetupDoc): SetupView {
 
 /** The step list the progress rail shows. The document's own steps win; a
  *  document that carries none (an early error, a backend that has not run yet)
- *  gets the platform's standard walk, all pending. Windows and Linux never list
- *  a permission step: there is no such screen on those systems. */
+ *  gets the platform's standard walk, all pending. macOS walks the built-in
+ *  driver's check only: no install, and its grants are advisory rows on the card. */
 export function stepsFor(doc: ComputerUseSetupDoc): ComputerUseSetupStep[] {
   if (doc.steps.length > 0) return doc.steps
   const ids: ComputerUseSetupStep['id'][] =
-    doc.platform === 'macos'
-      ? ['install', 'accessibility', 'screen_recording', 'verify', 'ready']
-      : ['install', 'session', 'verify', 'ready']
+    doc.platform === 'macos' ? ['verify', 'ready'] : ['install', 'session', 'verify', 'ready']
   return ids.map(id => ({ id, status: 'pending' }))
 }
 
 /** Catalog key for a step's label. A flat record of literal keys so the i18n
- *  key checker can resolve every one. The `session` step reads differently on
- *  Linux, where it is the desktop and compositor check. */
+ *  key checker can resolve every one. The `session` step has one label on every
+ *  platform. */
 const STEP_LABEL_KEY: Record<string, string> = {
   install: 'pages.settings.computerUseSetup.step_install',
   accessibility: 'pages.settings.computerUseSetup.step_accessibility',
   screen_recording: 'pages.settings.computerUseSetup.step_screen_recording',
-  session: 'pages.settings.computerUseSetup.step_session_windows',
-  session_linux: 'pages.settings.computerUseSetup.step_session_linux',
+  session: 'pages.settings.computerUseSetup.step_session',
   verify: 'pages.settings.computerUseSetup.step_verify',
   ready: 'pages.settings.computerUseSetup.step_ready',
 }
@@ -187,8 +184,7 @@ export function sessionKindKey(kind: ComputerUseSetupDoc['session']['kind']): st
   return Object.prototype.hasOwnProperty.call(SESSION_KIND_KEY, kind) ? SESSION_KIND_KEY[kind] : SESSION_KIND_KEY.none
 }
 
-export function stepLabelKey(id: string, platform: string): string {
-  if (id === 'session' && platform === 'linux') return STEP_LABEL_KEY.session_linux
+export function stepLabelKey(id: string): string {
   return Object.prototype.hasOwnProperty.call(STEP_LABEL_KEY, id) ? STEP_LABEL_KEY[id] : STEP_LABEL_KEY.verify
 }
 
@@ -272,16 +268,38 @@ export function waitExpired(
 }
 
 /** Settings panel readiness summary. */
-export type Readiness = 'off' | 'ready' | 'needs_setup' | 'attention' | 'unavailable'
+export type Readiness =
+  | 'off'
+  | 'ready'
+  | 'ready_builtin'
+  | 'needs_permission'
+  | 'needs_setup'
+  | 'attention'
+  | 'unavailable'
 
+/** The one place the card's status badge is derived. A plain Ready is shown
+ *  only when nothing is wrong: the state is `ready`, there is no `problem`, and
+ *  on the built-in macOS driver no permission reads as missing. Otherwise the
+ *  badge names the specific short status, so it never sits above a problem. */
 export function readinessFor(doc: ComputerUseSetupDoc): Readiness {
   switch (doc.state) {
     case 'disabled':
       return 'off'
     case 'ready':
+      if (doc.problem) return 'attention'
+      if (
+        doc.platform === 'macos' &&
+        doc.driver.kind === 'native' &&
+        (doc.permissions.accessibility === 'missing' || doc.permissions.screen_recording === 'missing')
+      )
+        return 'needs_permission'
+      // The open-source driver was stopped at launch; the built-in one works.
+      if (doc.blocked && doc.driver.kind === 'native') return 'ready_builtin'
       return 'ready'
     case 'unsupported':
-      return 'unavailable'
+      // The open-source driver chosen on a Mac: the Mac is supported, the choice
+      // is not, and the dialog offers the built-in driver.
+      return doc.platform === 'macos' && doc.driver.kind === 'upstream' ? 'attention' : 'unavailable'
     case 'install_failed':
     case 'permission_revoked':
     case 'temporarily_unavailable':
@@ -293,10 +311,10 @@ export function readinessFor(doc: ComputerUseSetupDoc): Readiness {
   }
 }
 
-/** The name the user must find in Privacy & Security. The backend names it;
- *  this fallback only covers a document from a backend that left it empty. */
-/** The bundle name the upstream driver registers with macOS. */
-const DEFAULT_OWNER = { name: 'CuaDriver' } as const
+/** The name the user must find in Privacy & Security: the process the
+ *  permission probe reports (the app that started Kiro Crew). This fallback only
+ *  covers a document from a backend that left it empty. */
+const DEFAULT_OWNER = { name: 'Kiro Crew' } as const
 
 export function ownerName(doc: ComputerUseSetupDoc): string {
   return doc.permissions.owner_name || DEFAULT_OWNER.name
@@ -304,3 +322,30 @@ export function ownerName(doc: ComputerUseSetupDoc): string {
 
 /** The query string the chat affordance uses to open the dialog on arrival. */
 export const SETUP_QUERY_PARAM = 'setup'
+
+/** The i18n key for the reason the system (endpoint security software) stopped
+ *  the upstream driver at launch, or null. On the native driver the text says
+ *  Computer Use keeps working on it; elsewhere it replaces the English
+ *  `user_action`. Pass `{ how: doc.blocked }` when translating. */
+export function blockedKey(doc: ComputerUseSetupDoc): string | null {
+  if (!doc.blocked) return null
+  if (doc.driver.kind === 'native') return 'pages.settings.computerUseSetup.upstream_blocked_native'
+  return doc.platform === 'linux'
+    ? 'pages.settings.computerUseSetup.driver_blocked_no_native'
+    : 'pages.settings.computerUseSetup.driver_blocked'
+}
+
+/** The text of the document's current problem, for `ErrorNotice`, or null when
+ *  nothing is wrong. A launch the system blocked uses the localized reason
+ *  (`blockedMessage`); otherwise the problem's own message, followed by the next
+ *  step (`user_action`) when that adds something. */
+export function problemText(doc: ComputerUseSetupDoc, blockedMessage: string | null): string | null {
+  const problem = doc.problem
+  if (!problem) return null
+  if (blockedMessage && (problem.code === 'install_blocked' || problem.code === 'launch_blocked')) return blockedMessage
+  const next = doc.user_action && doc.user_action !== problem.message ? doc.user_action : ''
+  // A sentence break between the reason and the next step, even when the reason
+  // (a driver or OS message) ends without one.
+  const reason = next && problem.message && !/[.!?。！？]$/.test(problem.message) ? `${problem.message}.` : problem.message
+  return [reason, next].filter(Boolean).join(' ') || null
+}

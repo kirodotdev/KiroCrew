@@ -148,7 +148,7 @@ Commands:
                    Run several tools in ONE process, so element_index values from
                    an earlier computer_get_state are still valid for later calls
   call ... --json  Emit the replies as a JSON array instead of prose
-  setup            Show the desktop driver's setup state (install, session,
+  setup            Show Computer Use's setup state (driver, install, session,
                    permissions, last check) as JSON. Read-only: installing the
                    driver and running the check are done in Settings
 

@@ -82,8 +82,6 @@ ALLOWED_NAMES: frozenset[str] = frozenset(
         "NUMBER_OF_PROCESSORS",
         "HOMEDRIVE",
         "HOMEPATH",
-        # macOS: the text encoding CoreFoundation reads at launch.
-        "__CF_USER_TEXT_ENCODING",
     }
 )
 
