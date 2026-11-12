@@ -80,6 +80,8 @@ def _provider(**attrs):
         "is_process_alive": lambda: True,
         # The registry calls this on a race loser before its shutdown.
         "disown_work_dir": lambda: None,
+        # ``LLMProvider``'s default: no spawn tier to compare.
+        "sandbox_mode": None,
     }
     base.update(attrs)
     return SimpleNamespace(**base)

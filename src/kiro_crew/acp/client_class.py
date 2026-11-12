@@ -1316,6 +1316,11 @@ class AcpClient:
         """
         return self._shared_scratch or self._scratch_dir
 
+    @property
+    def sandbox_mode(self) -> str:
+        """The ``agent.sandbox`` tier this client spawns its process under."""
+        return self._sandbox_mode
+
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()

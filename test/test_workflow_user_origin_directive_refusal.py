@@ -72,6 +72,9 @@ class _Sessions:
     def is_retiring(self, key: str) -> bool:
         return False
 
+    async def recycle_if_sandbox_tightened(self, key: str) -> bool:
+        return False
+
     async def destroy(self, key: str) -> None:
         return None
 

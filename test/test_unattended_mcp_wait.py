@@ -650,6 +650,10 @@ class _WorkflowSessions:
     async def destroy(self, key):
         return None
 
+    async def recycle_if_sandbox_tightened(self, key):
+        # The sandbox tier never tightens in these tests.
+        return False
+
 
 @pytest.fixture()
 def workflow_stream(monkeypatch):

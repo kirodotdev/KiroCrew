@@ -169,6 +169,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reject_tool": ("function", True, "8f224062db90", "acp"),
     "reports_effort_support": ("data", False, "", ""),
     "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
+    "sandbox_mode": ("property", False, "f21e39ec5ffb", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
     "stream_unsolicited": ("function", "agen", "0bdd19141cbc", "acp_turns"),
     "swaps_conversation_in_place": ("property", False, "a6632a57e602", "acp"),

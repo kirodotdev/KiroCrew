@@ -440,12 +440,13 @@ state are composed behind that facade:
 
 - `session_allocation.py` — live registry, key folding, semaphore leases,
   cold-start allocation, claims, and companion runtimes. The class binds its
-  two largest member groups from the `session_allocation_parts/` owners:
+  largest member groups from the `session_allocation_parts/` owners:
   `get_or_create.py` (claiming the live session for a key, or cold-starting
-  one) and `companions.py` (companion and run runtimes, the parent-sharing
-  decision and the runtimes' process rows); `errors.py` holds the refusals
-  the class and `get_or_create.py` raise. New claim or cold-start behaviour
-  goes in `get_or_create.py`, new companion-runtime behaviour in
+  one), `eviction.py` (ending a registered session a claim cannot hand out,
+  `_evict_stale_session`) and `companions.py` (companion and run runtimes, the
+  parent-sharing decision and the runtimes' process rows); `errors.py` holds
+  the refusals the class and `get_or_create.py` raise. New claim or cold-start
+  behaviour goes in `get_or_create.py`, new companion-runtime behaviour in
   `companions.py`. Each moved member's body is a function there whose first
   parameter is `self`, bound on the class by name, so every member stays an
   attribute of the one class. A bound member's `__qualname__` and `__module__`
@@ -1227,7 +1228,9 @@ or idle, with `park_only=True` and the spawn-identity park grace
 `get_bg_session()` spawns a replacement that reads the new map. The persistent
 `_bg` session of a backend without a shared runtime, and `_hb`, are registered
 sessions (`_PERSISTENT_KEYS`) and keep the environment they started with, like
-any running session.
+any running session. A stricter `agent.sandbox` parks the runtime the same way
+(the fourth trigger; see
+[A stricter `agent.sandbox` recycles a session at its next turn](#a-stricter-agentsandbox-recycles-a-session-at-its-next-turn)).
 
 `close_all()` detaches both holders atomically under
 `_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
@@ -2879,8 +2882,11 @@ document validates. Otherwise it does three things, in order:
   three because the warm pool captures its agent and cwd). `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
-  NEW sessions see the new defaults. `reload_provider_factory` (which retires
-  sessions built by the old factory) is not on this path.
+  NEW sessions see the new defaults. The one value that does reach a running
+  session is a stricter `agent.sandbox`, and the claim does that, not this path
+  (see [A stricter `agent.sandbox` recycles a session at its next turn](#a-stricter-agentsandbox-recycles-a-session-at-its-next-turn)).
+  `reload_provider_factory` (which retires sessions built by the old factory) is
+  not on this path.
   `session.eager_spawn` is deliberately absent: it is read live per spawn in
   `chat_runner`, so draining the pool for it would be pure churn.
 - **Re-clamp the watchdog windows on every live handle** when the change touches
@@ -2920,6 +2926,88 @@ Two more reads on this area follow config without a restart:
 `acp/client_timeouts.py`'s `resolve_prompt_timeout` already loads config per prompt
 (`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
 applier — a raised turn budget is in force on the next prompt.
+
+### A stricter `agent.sandbox` recycles a session at its next turn
+
+A process keeps the `agent.sandbox` tier it was spawned under, so rebuilding the
+factory alone would leave every running session at the old tier. A tightening
+(`off`, then `auto`, then `strict`, ordered by the governance `sandbox` scale with
+`auto` read as `standard`) therefore recycles each holder of a looser process at
+its next turn boundary. A looser value changes nothing for a running session. The
+check compares configured values, so a tightening that changes nothing where
+Crew's own sandbox does not confine the spawn (Windows, a macOS spawn delegated to
+kiro-cli's sandbox) still costs one restart. Each provider reports the tier its
+process was spawned under (`LLMProvider.sandbox_mode`, harness-parity H14):
+`AcpClient` its own, `AcpSessionProvider` its runtime's, owned or shared, and the
+ABC default `None` (never recycled for its tier), so the check reads the provider
+and never the harness.
+
+- **A claim.** `_reacquire_and_validate` counts a session whose spawn tier is
+  looser than `_cfg.agent.sandbox` as not valid. It decides after it holds the
+  session's permit, so a turn already running finishes on the old process.
+  `_evict_stale_session` then pops it, parks its queued follow-ups for the
+  successor as `reset` does, records `end_reason=retired`, releases the
+  provider's lease and kills its whole process tree with
+  `session_pid._sync_kill_provider` (awaited on the subprocess executor), and then
+  runs the ordinary shutdown. An incognito or temporary session skips that kill:
+  its ordinary shutdown deletes the harness record while the engine still answers
+  (KAS removes it only through that verb) and then ends the tree. The session map
+  keeps its entry, so the claim's cold
+  start under the new factory resumes the conversation as any process recycle
+  does (a stateless key starts a fresh one, as it always does). That cold start
+  fills each argument the claim leaves unset from the ended session's
+  `allocation_identity`, so an agentless claim (a subagent completion) does not
+  restart the conversation as the default agent, and a claim that names its own
+  model or agent keeps it. A turn that took
+  the permit between the refusal and the pop (`try_acquire` needs no claim) keeps
+  the session, and the claim's retry recycles it once that turn ends. That holder
+  is named (`turn_owner`); a permit locked with no named holder is one the refused
+  claim's own release just handed to the next parked claimant, which finds the
+  session gone and re-enters the claim, so the eviction does not wait for it. A
+  session the Kiro account check also flagged (`retire_on_identity_change`) keeps that
+  retirement's eviction (`end_reason=evicted`).
+- **A claim held for life.** A channel member and a workflow pool worker claim
+  once and reuse the session, so they never meet that check. The member's
+  listening loop calls `SessionManager.recycle_if_sandbox_tightened` before each
+  message and its provider-identity check re-acquires the key; the worker calls it
+  in `reset()` before a reuse and cold-starts when it returns True.
+- **The background helpers.** The provider-backed `_bg` session takes its permit
+  directly, so `recycle_background` claims it with `refuse_looser_tier=False` and
+  replaces it in place, a looser spawn tier being its first recycle reason.
+  `_provider_backed_bg_session` runs that recycle before it hands out a handle on
+  a looser entry, so a running turn finishes on the old process and the next one
+  streams on the replacement. An entry the recycle cannot replace (a dead process
+  no claim validates, or a failed start) is evicted and started afresh. A handle
+  can outlive a tightening, so each turn through it checks once it holds the
+  permit and, while the entry is still looser, refuses as `background session
+  unavailable` before streaming; the caller's post-turn `recycle_background`
+  replaces the entry. The shared background
+  runtime is claimed by nothing, so
+  `_on_config_change` parks it on a tightening (`retire_for_agent_env_change`),
+  and its in-flight sessions finish first.
+- **A shared chat.** A chat on a runtime it shares (the `chat_runtime_sharing`
+  preview) is recycled by its claim like any other; the release leaves the runtime
+  to the chats still leasing it. Its successor's placement keys on the raw spawn
+  tier as well as the effective one (`ChatRuntimeKey.spawn_sandbox_mode`), so it
+  founds a process of its own instead of rejoining the looser one, even where a
+  governance floor or the LTS floor makes both tiers effectively equal. Each chat
+  on the old runtime moves with one restart, and the next to recycle joins the
+  successor.
+- **A shared runtime.** `get_subagent_runtime` does not reuse a live companion
+  runtime spawned looser than a fresh one would be, and
+  `_get_or_bootstrap_run_runtime` does not reuse a run runtime looser than
+  `agent.sandbox`; each is killed and replaced. A companion with no parent tier to
+  mirror spawns at a configured tier stricter than the default. A subagent or task
+  step mid-turn on the old runtime holds a tenancy, so the kill is refused until
+  that turn ends, and the last tenant to leave completes it (`runtime_ownership`).
+  A task step's registered session reports its run runtime's tier, so its next
+  claim refuses it and the eviction ends that one session: it holds no lease and
+  no pid of its own, so the tree kill signals nothing and its shutdown destroys
+  only its handle. `open_task_session` then reaches `_get_or_bootstrap_run_runtime`,
+  which replaces the runtime.
+
+A session that takes no further turn keeps its process until it does, or until the
+idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
 
 ## Stop Orchestration
 

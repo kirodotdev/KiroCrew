@@ -47,6 +47,7 @@ SHARED_BINDINGS_CHECKS = (
 _HOMES: dict[str, str] = {
     "facade": "kiro_crew.session_allocation",
     "companions": "kiro_crew.session_allocation_parts.companions",
+    "eviction": "kiro_crew.session_allocation_parts.eviction",
     "get_or_create": "kiro_crew.session_allocation_parts.get_or_create",
 }
 
@@ -62,7 +63,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_crew_pins_effort": ("function", True, "24de81494340", "get_or_create"),
     "_dispatch_hard_kill": ("function", False, "06546ba55a30", "get_or_create"),
     "_draining_subagent_runtimes": ("property", False, "0624c13b3dee", "facade"),
-    "_evict_stale_session": ("function", True, "a6707a152144", "get_or_create"),
+    "_evict_stale_session": ("function", True, "264b2325abb3", "eviction"),
     "_fold_key": ("function", False, "f1d40e624ae4", "facade"),
     "_generation_key": ("function", False, "f1d40e624ae4", "facade"),
     "_get_or_bootstrap_run_runtime": ("function", True, "dc9735619fc4", "companions"),
@@ -77,7 +78,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_ownership_generations": ("property", False, "d8be45664668", "facade"),
     "_parent_aws_profile": ("function", False, "410e4e9178a1", "companions"),
     "_parent_runtime_kwargs": ("function", False, "f408fa261a2b", "companions"),
-    "_reacquire_and_validate": ("function", True, "c69e8f69c8aa", "get_or_create"),
+    "_reacquire_and_validate": ("function", True, "a7bd750ed9a6", "get_or_create"),
     "_refuse_if_ending": ("function", False, "4fa619d0b3bc", "facade"),
     "_release_reacquired": ("function", False, "a6707a152144", "get_or_create"),
     "_remember_capability_failure": ("function", False, "6efcfdf79280", "get_or_create"),
@@ -86,6 +87,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_resolve_agent_model": ("function", False, "e7a565bb1ba0", "facade"),
     "_runtime_pid": ("staticmethod", False, "9a018c130ad5", "companions"),
     "_safe_cleanup": ("function", True, "76a7c030508f", "facade"),
+    "_sandbox_tightened": ("function", False, "29a1792fd34b", "eviction"),
     "_sessions": ("property", False, "16d9fe32838b", "facade"),
     "_start_sem": ("property", False, "1f1197566c49", "facade"),
     "_starting_pids": ("property", False, "d657ba783a38", "facade"),
@@ -378,6 +380,7 @@ def _listed(doc: str, label: str) -> set[str]:
     "owner",
     [
         "kiro_crew.session_allocation_parts.companions",
+        "kiro_crew.session_allocation_parts.eviction",
         "kiro_crew.session_allocation_parts.get_or_create",
     ],
 )

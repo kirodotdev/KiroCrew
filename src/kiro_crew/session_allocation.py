@@ -6,14 +6,15 @@ and cleanup policy remain separate owner-facade responsibilities.  This module
 never imports :mod:`kiro_crew.session` at runtime; patchable compatibility seams
 are supplied through :class:`AllocationDeps`.
 
-The class keeps its whole interface; the bodies of its two largest member groups
-live in the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create``
-(claiming or cold-starting the session for a key) and ``companions`` (companion and
-run runtimes). Each member there is a function whose first parameter is ``self``,
-bound on the class by name, and the refusals the class and ``get_or_create`` raise
-live in its ``errors`` module. Every project name this module bound before the owners
-existed still resolves here, and :mod:`kiro_crew._facade_mirror` carries a patch of
-one of them through this module to every owner that reads it.
+The class keeps its whole interface; the bodies of its largest member groups live in
+the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create`` (claiming or
+cold-starting the session for a key), ``eviction`` (ending a session a claim cannot
+hand out) and ``companions`` (companion and run runtimes). Each member there is a
+function whose first parameter is ``self``, bound on the class by name, and the
+refusals the class and ``get_or_create`` raise live in its ``errors`` module. Every
+project name this module bound before the owners existed still resolves here, and
+:mod:`kiro_crew._facade_mirror` carries a patch of one of them through this module to
+every owner that reads it.
 """
 
 from __future__ import annotations
@@ -315,6 +316,8 @@ class _AllocationOwner(Protocol):
 
     def retire_turn_permit(self, key: str, session: Any) -> None: ...
 
+    def _lifecycle_boundary(self) -> Any: ...
+
     def get_provider(self, key: str) -> LLMProvider | None: ...
 
     async def get_subagent_runtime(
@@ -343,6 +346,7 @@ class _AllocationOwner(Protocol):
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        refuse_looser_tier: bool = True,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
@@ -384,6 +388,7 @@ class _AllocationOwner(Protocol):
 # end of this module installs the mirror over them, so they load here.
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.session_allocation_parts import companions as _sa_companions  # noqa: E402
+from kiro_crew.session_allocation_parts import eviction as _sa_eviction  # noqa: E402
 from kiro_crew.session_allocation_parts import get_or_create as _sa_get_or_create  # noqa: E402
 
 
@@ -816,11 +821,14 @@ class SessionAllocationService:
     _runtime_pid = staticmethod(_sa_companions._runtime_pid)
     runtime_pids = _sa_companions.runtime_pids
     _append_companion_runtime_rows = _sa_companions._append_companion_runtime_rows
+    # Ending a registered session a claim cannot hand out:
+    # ``kiro_crew.session_allocation_parts.eviction``.
+    _evict_stale_session = _sa_eviction._evict_stale_session
+    _sandbox_tightened = _sa_eviction._sandbox_tightened
     # Claiming the live session for a key or cold-starting one:
     # ``kiro_crew.session_allocation_parts.get_or_create``.
     _reacquire_and_validate = _sa_get_or_create._reacquire_and_validate
     _release_reacquired = _sa_get_or_create._release_reacquired
-    _evict_stale_session = _sa_get_or_create._evict_stale_session
     _is_member_key = staticmethod(_sa_get_or_create._is_member_key)
     _crew_pins_effort = _sa_get_or_create._crew_pins_effort
     _dispatch_hard_kill = _sa_get_or_create._dispatch_hard_kill
@@ -1585,6 +1593,7 @@ class SessionAllocationService:
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
     "kiro_crew.session_allocation_parts.companions",
+    "kiro_crew.session_allocation_parts.eviction",
     "kiro_crew.session_allocation_parts.get_or_create",
 )
 #: Project names this module bound before the owners existed that only the owners read.

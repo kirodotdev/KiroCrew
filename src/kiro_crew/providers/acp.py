@@ -349,6 +349,11 @@ class AcpProvider(LLMProvider):
         return self._client.work_scratch_dir
 
     @property
+    def sandbox_mode(self) -> str | None:
+        """The tier this session's process was spawned under (H14), read like ``work_scratch_dir``."""
+        return self._client.sandbox_mode
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware.
 

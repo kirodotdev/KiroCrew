@@ -34,7 +34,9 @@ from kiro_crew.acp.runtime import AcpRuntime
 _SPAWN_INPUT_KEYED = {
     "work_dir": "work_dir",
     "agent": "agent",
-    "sandbox_mode": "sandbox_mode",
+    # The raw value the runtime spawns with and reports; ``sandbox_mode`` in the
+    # key is the effective tier observed from it (_OBSERVED_KEYED).
+    "sandbox_mode": "spawn_sandbox_mode",
     "extra_env": "extra_env",
     "mcp_gateway_overlay": "mcp_gateway_overlay",
     "mcp_gateway_socket": "mcp_gateway_socket",
@@ -111,6 +113,11 @@ _SETTINGS_KEYED = {
 #: it. Neither population above can carry these, and a field with no producer at
 #: all is dead weight in a compatibility key -- so each names its source here.
 _OBSERVED_KEYED = {
+    "sandbox_mode": (
+        "The effective tier: the raw sandbox_mode parameter clamped by the governed "
+        "sandbox.min_level floor, which wrap_argv reads at spawn rather than taking "
+        "from the caller; a floor raised after a spawn makes two keys of one raw value."
+    ),
     "spawn_identity": (
         "The account era the allocator read immediately before start(). The process "
         "authenticates once, at spawn, and every parameter a session passes is "

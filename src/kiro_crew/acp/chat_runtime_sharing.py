@@ -312,8 +312,16 @@ class ChatRuntimeKey:
         holding only the founder's row, and the joiner runs at its own model's
         default. Keying effort alone does not close that.
     ``sandbox_mode``
-        Chooses the wrap, the credential mask and whether the host's internal
-        sandbox is delegated to.
+        The EFFECTIVE tier (``effective_sandbox_mode``, the governed
+        ``sandbox.min_level`` floor applied), which chooses the wrap, the
+        credential mask and whether the host's internal sandbox is delegated to.
+        A floor raised after a spawn makes two keys of one configured value.
+    ``spawn_sandbox_mode``
+        The raw ``agent.sandbox`` value the spawn starts with, which the runtime
+        reports as its ``sandbox_mode``. A stricter configured value recycles a
+        session whose runtime reports a looser raw one, even where a floor makes
+        both effective tiers equal, so the successor must not rejoin that runtime:
+        two raw values are two keys.
     ``extra_env``
         The child's environment, which one process has exactly one of.
     ``acp_backend``
@@ -403,6 +411,7 @@ class ChatRuntimeKey:
     agent: str
     model: str
     sandbox_mode: str
+    spawn_sandbox_mode: str
     extra_env: tuple[tuple[str, str], ...]
     acp_backend: str
     tool_search: tuple[object, ...]
@@ -442,6 +451,7 @@ class ChatRuntimeKey:
         harness_pin: str | None = None,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        spawn_sandbox_mode: str | None = None,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -460,6 +470,7 @@ class ChatRuntimeKey:
             agent=agent or "",
             model=model or "",
             sandbox_mode=sandbox_mode or "",
+            spawn_sandbox_mode=spawn_sandbox_mode or "",
             extra_env=_freeze_env(extra_env),
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),

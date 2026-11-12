@@ -22,6 +22,7 @@ from kiro_crew.cold_start_sizing import cached_cold_start_concurrency, configure
 from kiro_crew.config import live
 from kiro_crew.config.loader import published_autocompact_pct
 from kiro_crew.session_allocation import widen_cold_start_semaphore
+from kiro_crew.session_allocation_parts.companions import sandbox_tier_tightened
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
@@ -108,6 +109,12 @@ async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
             # environment it was spawned with; the factory rebuild above does
             # not reach it, so free its slot for one that reads the new map.
             await self._background_runtime.retire_for_agent_env_change()
+        elif change.old is not None and sandbox_tier_tightened(
+            change.old.agent.sandbox, change.new.agent.sandbox
+        ):
+            # Its sandbox tier too: a registered session meets a stricter tier at
+            # its next claim, and this runtime is claimed by nothing.
+            await self._background_runtime.retire_for_agent_env_change("agent.sandbox tightened")
     else:
         async with self._lock:
             self._cfg = change.new

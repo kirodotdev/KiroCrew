@@ -1059,8 +1059,8 @@ deliberately leaves `~/.aws`, `~/.ssh` and `~/.kube` visible so the `aws` CLI,
 `sso/cache` grant store remote-MCP OAuth uses), `~/.ssh` (except
 `known_hosts`), `~/.kube`, `~/.config/gh` and the credential files `~/.npmrc`,
 `~/.pypirc`, `~/.netrc` and `~/.git-credentials`, and the tools that read them
-stop working inside the agent as a result; it applies to sessions started after
-the change. See the
+stop working inside the agent as a result; a session already running restarts
+under it at its next turn. See the
 [Sandbox section of the configuration guide](../../src/kiro_crew/docs/configuration.md#sandbox).
 If the sandbox cannot be built,
 Kiro Crew **refuses to run the agent** rather than run it unisolated: spawns fail

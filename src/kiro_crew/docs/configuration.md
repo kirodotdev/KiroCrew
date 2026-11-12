@@ -115,9 +115,10 @@ OAuth-connected remote MCP servers (their grants live in `~/.aws/sso/cache`)
 stop working — they cannot see their config, keys or tokens, even though the
 gateway-side Connections page, which reads your real home, still shows the grant.
 It is opt-in and per host; nothing changes for you until you set it.
-Like every value of this key, a change applies to sessions started after it: a
-session already running keeps the tier it was spawned with until it ends, so
-restart the sessions (or the gateway) you want confined at the new tier.
+A stricter value of this key also reaches sessions that are already running:
+each one restarts under the new tier at its next turn (a turn in progress
+finishes first) and picks its conversation up as it does after any restart. A
+looser value applies to sessions started after the change.
 `strict` only tightens where Kiro Crew's own sandbox is what confines the
 spawn: on Windows there is no OS backend, and a macOS spawn delegated to
 kiro-cli's internal sandbox is confined by that profile instead.
@@ -390,7 +391,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
 | `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
-| `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). Applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |
+| `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). A stricter value restarts each running session under it at its next turn; a looser one applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |
 | `agent.sandbox_readonly_paths` | Absolute directories the sandboxed agent may read but never write, enforced by the OS sandbox. Kiro Crew's own masks and seals always win. See [Read-only paths](#read-only-paths) | `[]` |
 | `agent.sandbox_readonly_exceptions` | Absolute directories strictly inside a `sandbox_readonly_paths` entry that stay writable. See [Read-only paths](#read-only-paths) | `[]` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
