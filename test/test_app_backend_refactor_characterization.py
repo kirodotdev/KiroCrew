@@ -440,6 +440,24 @@ class TestDepsActivationGate:
         self._mark(root, bmod._DEPS_ABI_NAME, bmod._deps_abi_tag())
         assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
 
+    @requires_symlinks
+    def test_a_stamp_link_planted_after_the_screen_never_activates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No ABI marker is written: a valid one would activate on its own.
+        root = self._app(tmp_path)
+        target = tmp_path / "outside-stamp"
+        target.write_text(bmod._deps_digest(b"requests==2.0\n"), encoding="utf-8")
+        (bmod.app_deps_dir(root) / bmod._DEPS_STAMP_NAME).symlink_to(target)
+        # The screen ran before the link landed, so only the open can refuse it.
+        real = bmod.platform_compat.is_link_or_junction
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "is_link_or_junction",
+            lambda p: False if Path(p).name == bmod._DEPS_STAMP_NAME else real(p),
+        )
+        assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
+
 
 class TestPathBasedPinnedDir:
     """The arm a platform without a pinned walk (Windows) takes, on any host."""
