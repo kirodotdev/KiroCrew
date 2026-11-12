@@ -21,7 +21,8 @@ Behaviour:
 - opaque files are preserved byte-for-byte with path and metadata, but are not
   automatically parsed or executed
 - text and documents are redacted, then truncated, then wrapped in
-  ``[File: …]`` / ``[Document: …]`` markers
+  ``[File: …]`` / ``[Document: …]`` markers; a cut one also lands its whole
+  redacted text in a temp ``.txt`` the caller must delete
 - size is re-checked AFTER download, so an absent or dishonest Slack ``size``
   (which defaults to 0) cannot bypass the cap
 - image bytes must match the declared mimetype's signature
@@ -462,8 +463,9 @@ async def process_slack_files(
     ``orch.slack`` is read once.
 
     Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
+        (attachment_paths, text_blocks) — local paths for images, opaque
+        files and the whole text of a cut text file or document (caller must
+        clean up), plus prompt-ready text and metadata.
     """
     resolved = slack if slack is not None else orch.slack
     if not resolved:
