@@ -153,3 +153,39 @@ async def test_an_apply_is_refused_before_any_write_when_the_store_does_not_pars
     for path, raw in before.items():
         assert path.read_bytes() == raw, path
     rebuild.assert_not_called()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a POSIX file mode that the test user cannot read through",
+)
+@pytest.mark.asyncio
+async def test_an_apply_names_a_store_it_cannot_open_as_unreadable(
+    store, tmp_path, monkeypatch
+) -> None:
+    store.write_text(json.dumps({"mcpServers": {"github": {"command": "gh"}}}), encoding="utf-8")
+    store.chmod(0o000)
+    monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro_global.json")
+    monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", list)
+    monkeypatch.setattr(mcp_mod, "kiro_agents_dir", lambda: tmp_path / "agents")
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers._shared._capability_manager",
+        lambda: MagicMock(**{"available.return_value": False}),
+    )
+    monkeypatch.setattr(mcp_mod, "sel", MagicMock)
+    monkeypatch.setattr(mcp_mod, "_get_mcp_lock", lambda: _NoLock())
+    try:
+        resp = await mcp_mod.api_mcp_apply(
+            _apply_request({"changes": [{"name": "srv", "kirocrew": False}]})
+        )
+    finally:
+        store.chmod(0o600)
+
+    assert resp.status == 500
+    assert json.loads(resp.body) == {
+        "error": "cannot read the Kiro Crew mcp.json",
+        "code": "config_unreadable",
+    }
+    assert json.loads(store.read_text(encoding="utf-8")) == {
+        "mcpServers": {"github": {"command": "gh"}}
+    }
