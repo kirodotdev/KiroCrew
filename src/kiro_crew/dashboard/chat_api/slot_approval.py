@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
+from kiro_crew.kas_workflows.person_hold import held_for_person
 
 if TYPE_CHECKING:
     import time
@@ -736,11 +737,12 @@ async def apply_approval_mode(
         # Background (cron/subagent/taskrunner) and channel approvals are NOT
         # slot-scoped, so a slot-scoped ``trust`` must leave them pending — it
         # asked for auto-approval on one session and cannot answer for unrelated
-        # background work. Only ``yolo`` and an all-slots ``trust`` sweep them.
+        # background work. Only ``yolo`` and an all-slots ``trust`` sweep them,
+        # and never a KAS plan handoff held for the person (``person_hold``).
         if not scoped:
             for aid in list(state._approval_futures):
                 fut = state._approval_futures[aid]
-                if not fut.done():
+                if not fut.done() and not held_for_person(fut):
                     state.resolve_approval(aid, True)
                     try:
                         sel().log_api_access(
@@ -757,7 +759,7 @@ async def apply_approval_mode(
                 for ch in mgr._channels.values():
                     for agent in ch.members.values():
                         fut = agent._approval_future
-                        if fut and not fut.done():
+                        if fut and not fut.done() and not held_for_person(fut):
                             fut.set_result("approved")
                             try:
                                 sel().log_api_access(
